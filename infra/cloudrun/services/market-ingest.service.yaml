@@ -1,0 +1,46 @@
+# Cloud Run Service definition (template).
+# Apply with:
+#   gcloud run services replace infra/cloudrun/services/market-ingest.service.yaml --region REGION --project PROJECT_ID
+#
+# Required env var names (set via deploy script / gcloud flags):
+# - FIREBASE_PROJECT_ID
+# - ALPACA_API_KEY
+# - ALPACA_SECRET_KEY
+# - MONITORED_SYMBOLS
+# - ALPACA_DATA_FEED
+#
+# NOTE: Replace REPLACE_ME_* placeholders before applying.
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: market-ingest
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "1"
+    spec:
+      serviceAccountName: REPLACE_ME_SERVICE_ACCOUNT_EMAIL
+      containerConcurrency: 1
+      timeoutSeconds: 3600
+      containers:
+        - name: market-ingest
+          image: REPLACE_ME_IMAGE
+          command: ["uvicorn"]
+          args:
+            - backend.ingestion.market_data_ingest_service:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8080"
+          ports:
+            - name: http1
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+

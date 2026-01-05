@@ -1,0 +1,18 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System deps for Postgres drivers used by backend/requirements.txt
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install python deps first for better layer caching
+COPY backend/requirements.txt /app/backend/requirements.txt
+RUN pip install --no-cache-dir -r backend/requirements.txt
+
+# Copy the repo after deps are installed
+COPY . /app
+
+# Cloud Run Jobs can override args; keep python as entrypoint.
+ENTRYPOINT ["python"]
+CMD ["-m", "backend.ingestion.market_data_ingest"]

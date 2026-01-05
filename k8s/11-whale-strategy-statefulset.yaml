@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: whale-strategy
+  namespace: trading-floor
+spec:
+  serviceName: "whale-strategy"
+  replicas: 1
+  selector:
+    matchLabels:
+      strategy: whale
+  template:
+    metadata:
+      labels:
+        strategy: whale
+    spec:
+      priorityClassName: high-priority
+      containers:
+      - name: whale-strategy-container
+        image: gcr.io/agenttrader-prod/whale-strategy:latest
+        ports:
+        - containerPort: 8080
+          name: http

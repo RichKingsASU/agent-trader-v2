@@ -1,0 +1,12 @@
+
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args:
+  - 'build'
+  - '-t'
+  - 'gcr.io/$PROJECT_ID/${_JOB_NAME}'
+  - '.'
+  - '-f'
+  - 'infra/Dockerfile.strategy_engine'
+images:
+- 'gcr.io/$PROJECT_ID/${_JOB_NAME}'

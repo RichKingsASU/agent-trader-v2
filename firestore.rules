@@ -1,0 +1,204 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function tenantClaim() {
+      // We standardize on snake_case, but accept camelCase as back-compat.
+      return request.auth.token.tenant_id != null
+        ? request.auth.token.tenant_id
+        : request.auth.token.tenantId;
+    }
+
+    function isTenantMember(tenantId) {
+      return exists(/databases/$(database)/documents/tenants/$(tenantId)/users/$(request.auth.uid));
+    }
+
+    function inTenant(tenantId) {
+      return signedIn() && tenantClaim() == tenantId && isTenantMember(tenantId);
+    }
+
+    // Tenant root metadata: readable by members, writable only by trusted backend/admin.
+    match /tenants/{tenantId} {
+      allow read: if inTenant(tenantId);
+      allow write: if false;
+    }
+
+    // Membership documents are immutable from clients to prevent role escalation.
+    match /tenants/{tenantId}/users/{uid} {
+      allow read: if inTenant(tenantId) && uid == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+
+    // Immutable, append-only trade ledger.
+    //
+    // Path:
+    //   tenants/{tenantId}/ledger_trades/{tradeId}
+    //
+    // SaaS Scale Optimizations:
+    // - Composite indexes on (uid, strategy_id, ts) for per-user queries
+    // - Composite index on (ts) for global analytics
+    // - Exemption on 'ts' field to bypass 500 writes/sec limit during high volatility
+    //
+    // Notes:
+    // - Client SDKs may append entries, but cannot modify or delete them.
+    // - Backend/Admin SDK bypasses rules; enforce immutability in application code too.
+    // - High-frequency writes: Use batch writes to optimize throughput
+    match /tenants/{tenantId}/ledger_trades/{tradeId} {
+      function isValidLedgerTradeCreate() {
+        // Required fields per spec:
+        // - uid, strategy_id, run_id, symbol, side, qty, price, ts, fees
+        return request.resource.data.keys().hasAll([
+            "uid",
+            "strategy_id",
+            "run_id",
+            "symbol",
+            "side",
+            "qty",
+            "price",
+            "ts",
+            "fees"
+          ])
+          // Basic type/value checks (best-effort in rules)
+          && request.resource.data.uid is string
+          && request.resource.data.strategy_id is string
+          && request.resource.data.run_id is string
+          && request.resource.data.symbol is string
+          && (request.resource.data.side == "buy" || request.resource.data.side == "sell")
+          && request.resource.data.qty is number
+          && request.resource.data.qty > 0
+          && request.resource.data.price is number
+          && request.resource.data.price > 0
+          && request.resource.data.ts is timestamp
+          && request.resource.data.fees is number
+          && request.resource.data.fees >= 0
+          // Tenant/uid scoping for client writes.
+          && (request.resource.data.tenant_id == null || request.resource.data.tenant_id == tenantId)
+          && request.resource.data.uid == request.auth.uid;
+      }
+
+      allow read: if inTenant(tenantId);
+      allow create: if inTenant(tenantId) && isValidLedgerTradeCreate();
+      allow update, delete: if false;
+    }
+
+    // Monthly performance snapshots are derived data (computed server-side).
+    // Clients may read but must not be able to forge or overwrite snapshots.
+    match /tenants/{tenantId}/strategy_performance/{perfId} {
+      allow read: if inTenant(tenantId);
+      allow create, update, delete: if false;
+    }
+
+    // All tenant-scoped application data lives under tenants/{tenantId}/...
+    match /tenants/{tenantId}/{document=**} {
+      allow read, write: if inTenant(tenantId);
+    }
+
+    // User-scoped data: Each user can only access their own data
+    // Path: users/{userId}/...
+    // 
+    // SaaS Scale Optimizations:
+    // - All high-frequency writes (shadowTradeHistory) isolated to user sub-collections
+    // - Prevents cross-user contention
+    // - Enables horizontal scaling to 1,000+ concurrent users
+    match /users/{userId} {
+      function isOwner() {
+        return signedIn() && request.auth.uid == userId;
+      }
+      
+      // User root document: readable/writable by owner only
+      allow read, write: if isOwner();
+      
+      // Config subcollection: user can read/write their own config
+      match /config/{configId} {
+        allow read, write: if isOwner();
+      }
+      
+      // Secrets subcollection: user can read/write their own secrets
+      // WARNING: Ensure these are properly encrypted at rest
+      match /secrets/{secretId} {
+        allow read, write: if isOwner();
+      }
+      
+      // Status subcollection: user can read/write their own status (kill-switch, etc.)
+      match /status/{statusId} {
+        allow read, write: if isOwner();
+      }
+      
+      // Data subcollection: user can read their own data, write is backend-managed
+      match /data/{dataId} {
+        allow read: if isOwner();
+        // Writes are managed by backend (pulse function), but allow user to initialize
+        allow write: if isOwner();
+      }
+      
+      // Trading signals: user can read their own signals
+      // HIGH-FREQUENCY: Composite index on (user_id, timestamp)
+      match /signals/{signalId} {
+        allow read: if isOwner();
+        // Writes managed by backend (generate_trading_signal function)
+        allow create: if isOwner();
+        allow update, delete: if false;
+      }
+      
+      // Shadow trade history: user can read their own shadow trades
+      // HIGH-FREQUENCY: Composite indexes on (status, created_at) and (symbol, created_at)
+      // SaaS Scale: This is the PRIMARY high-frequency collection
+      // Each user's trades are isolated to prevent write contention
+      match /shadowTradeHistory/{tradeId} {
+        allow read: if isOwner();
+        // Writes managed by backend (pulse function, trade executor)
+        allow create: if isOwner();
+        // Updates allowed for P&L tracking by backend
+        // High-frequency: P&L updates happen every minute for OPEN trades
+        allow update: if isOwner();
+        // Immutable: trades cannot be deleted (audit trail)
+        allow delete: if false;
+      }
+      
+      // Alpaca accounts: user can read their own account snapshots
+      // HIGH-FREQUENCY: Updated every minute by pulse function
+      match /alpacaAccounts/{accountId} {
+        allow read: if isOwner();
+        // Writes managed by backend (pulse function)
+        allow write: if isOwner();
+      }
+      
+      // System status: user can read/write their own system status
+      match /systemStatus/{statusId} {
+        allow read, write: if isOwner();
+      }
+      
+      // Catch-all for other user subcollections
+      match /{document=**} {
+        allow read, write: if isOwner();
+      }
+    }
+    
+    // Ops collection: read-only for authenticated users (monitoring/debugging)
+    match /ops/{document} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+    
+    // Legacy collections (kept for backward compatibility during migration)
+    // alpacaAccounts, tradingSignals - read-only for authenticated users
+    match /alpacaAccounts/{document} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+    
+    match /tradingSignals/{document} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    // Default deny: no global collection access from client SDKs.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+

@@ -1,0 +1,5 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'infra/Dockerfile.ingest', '-t', 'gcr.io/$PROJECT_ID/agenttrader-alpaca-ingest', '.']
+images:
+  - 'gcr.io/$PROJECT_ID/agenttrader-alpaca-ingest'

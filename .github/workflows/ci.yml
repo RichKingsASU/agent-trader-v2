@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Blockers: banned vendor refs + secret patterns
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Scanning tracked files for banned vendor references..."
+          if git grep -n -I -i \
+            -e "supa[b]ase" \
+            -e "SUPA[B]ASE_" \
+            -e "VITE_SUPA[B]ASE" \
+            -e "@supa[b]ase" \
+            -e "postg[re]st" \
+            -e "go[tr]ue" \
+            -- . ":(exclude).github/workflows/**"; then
+            echo "ERROR: banned vendor reference detected." >&2
+            exit 1
+          fi
+
+          echo "Scanning tracked files for secret markers..."
+          if git grep -n -I -E \
+            -e "-----BEGIN( [A-Z]+)? PRIVATE KEY-----" \
+            -e "\"type\"[[:space:]]*:[[:space:]]*\"service_account\"" \
+            -e "\"client_email\"[[:space:]]*:" \
+            -e "\"private_key\"[[:space:]]*:" \
+            -e "\"private_key_id\"[[:space:]]*:" \
+            -- . ":(exclude).github/workflows/**"; then
+            echo "ERROR: possible secret material detected." >&2
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Backend compile check
+        run: python -m compileall backend
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Frontend build (or typecheck)
+        working-directory: frontend
+        run: |
+          if node -e "const s=require('./package.json').scripts||{}; process.exit(s.build?0:1)"; then
+            npm run build
+          elif node -e "const s=require('./package.json').scripts||{}; process.exit(s.typecheck?0:1)"; then
+            npm run typecheck
+          else
+            echo "ERROR: No 'build' or 'typecheck' script found in frontend/package.json" >&2
+            exit 1
+          fi
+

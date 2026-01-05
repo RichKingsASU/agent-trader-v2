@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marketdata-mcp-server
+  namespace: trading-floor
+  labels:
+    app: marketdata-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: marketdata-mcp-server
+  template:
+    metadata:
+      labels:
+        app: marketdata-mcp-server
+    spec:
+      containers:
+      - name: marketdata-mcp-server-container
+        image: gcr.io/agenttrader-prod/marketdata-mcp-server:latest
+        ports:
+        - containerPort: 8080
+        env:
+          - name: APCA_API_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: trader-secrets
+                key: APCA_API_KEY_ID
+          - name: FIREBASE_KEY
+            valueFrom:
+              secretKeyRef:
+                name: trader-secrets
+                key: FIREBASE_KEY
+        resources:
+          requests:
+            cpu:                250m
+            ephemeral-storage:  1Gi
+            memory:             1Gi
+      priorityClassName: high-priority
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketdata-mcp-server
+  namespace: trading-floor
+spec:
+  selector:
+    app: marketdata-mcp-server
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080

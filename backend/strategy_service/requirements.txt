@@ -1,0 +1,17 @@
+fastapi
+psycopg[binary]
+uvicorn
+python-dotenv
+httpx
+requests
+tenacity
+asyncpg==0.29.0
+websockets
+alpaca-py==0.43.2
+psycopg2-binary==2.9.9
+nats-py
+pandas
+pandas-ta
+google-cloud-firestore
+firebase-admin
+google-genai

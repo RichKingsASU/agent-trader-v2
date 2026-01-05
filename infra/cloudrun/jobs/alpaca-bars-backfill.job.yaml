@@ -1,0 +1,32 @@
+# Cloud Run Job definition (template).
+#
+# Apply with:
+#   gcloud run jobs replace infra/cloudrun/jobs/alpaca-bars-backfill.job.yaml --region REGION --project PROJECT_ID
+#
+# Required env var names (set via deploy script / gcloud flags):
+# - DATABASE_URL
+# - ALPACA_API_KEY
+# - ALPACA_SECRET_KEY
+#
+# NOTE: Replace REPLACE_ME_* placeholders before applying.
+
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: alpaca-bars-backfill
+spec:
+  template:
+    template:
+      spec:
+        taskCount: 1
+        template:
+          spec:
+            serviceAccountName: REPLACE_ME_SERVICE_ACCOUNT_EMAIL
+            maxRetries: 0
+            timeoutSeconds: 3600
+            containers:
+              - name: alpaca-bars-backfill
+                image: REPLACE_ME_IMAGE
+                command: ["python"]
+                args: ["-m", "backend.streams.alpaca_backfill_bars"]
+

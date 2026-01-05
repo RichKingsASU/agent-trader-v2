@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Secrets (CRITICAL)
+.env
+secret.json
+serviceAccountKey.json
+service-account-key.json
+*.json
+*.pem
+*.key

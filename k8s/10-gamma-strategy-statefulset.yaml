@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: gamma-strategy
+  namespace: trading-floor
+spec:
+  serviceName: "gamma-strategy"
+  replicas: 1
+  selector:
+    matchLabels:
+      strategy: gamma
+  template:
+    metadata:
+      labels:
+        strategy: gamma
+    spec:
+      priorityClassName: high-priority
+      containers:
+      - name: gamma-strategy-container
+        image: gcr.io/agenttrader-prod/gamma-strategy:latest
+        ports:
+        - containerPort: 8080
+          name: http

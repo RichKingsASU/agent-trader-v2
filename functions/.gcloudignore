@@ -1,0 +1,12 @@
+# Files not uploaded for Python Functions deploy
+.gcloudignore
+.git
+.gitignore
+
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+#!include:.gitignore
+

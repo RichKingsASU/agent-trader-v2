@@ -1,0 +1,4 @@
+{"protocol":"v1","type":"market_event","event_id":"evt_1","ts":"2025-01-01T00:00:00Z","symbol":"SPY","source":"sim","payload":{"price":99.5,"kind":"trade"}}
+{"protocol":"v1","type":"market_event","event_id":"evt_2","ts":"2025-01-01T00:00:01Z","symbol":"SPY","source":"sim","payload":{"price":100.0,"kind":"trade"}}
+{"protocol":"v1","type":"market_event","event_id":"evt_3","ts":"2025-01-01T00:00:02Z","symbol":"SPY","source":"sim","payload":{"price":101.25,"kind":"trade"}}
+

@@ -1,0 +1,304 @@
+from __future__ import annotations
+
+import json
+import logging
+import os
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
+
+from backend.persistence.firebase_client import get_firestore_client
+from backend.persistence.firestore_retry import with_firestore_retry
+
+logger = logging.getLogger(__name__)
+
+
+# --- Vertex AI Gemini defaults (hardcoded to match the known-good Vertex test) ---
+VERTEX_PROJECT_ID = "agenttrader-prod"
+VERTEX_LOCATION = "global"
+VERTEX_MODEL = "gemini-2.5-flash"
+VERTEX_HTTP_API_VERSION = "v1"
+
+
+class WarmCacheError(RuntimeError):
+    pass
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_float(v: Any) -> float:
+    if v is None:
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        s = v.strip()
+        if s == "":
+            return 0.0
+        return float(s)
+    raise TypeError(f"Expected number-like value, got {type(v).__name__}")
+
+
+def _read_alpaca_snapshot_doc(
+    *,
+    db=None,
+    user_id: str = None,
+    require_exists: bool = True,
+) -> Dict[str, Any]:
+    """
+    Warm-cache read for buying power.
+
+    Multi-tenant path: users/{user_id}/alpacaAccounts/snapshot
+    
+    Falls back to legacy global path: alpacaAccounts/snapshot (for backward compatibility)
+    
+    Args:
+        db: Firestore client (optional)
+        user_id: User ID for multi-tenant lookup (required for new multi-tenant model)
+        require_exists: Whether to raise error if doc doesn't exist
+    """
+    client = db or get_firestore_client()
+
+    def _get():
+        if user_id:
+            # Multi-tenant path
+            return client.collection("users").document(user_id).collection("alpacaAccounts").document("snapshot").get()
+        else:
+            # Legacy global path (deprecated)
+            logger.warning("Using legacy global alpacaAccounts/snapshot path. Please provide user_id for multi-tenant support.")
+            return client.collection("alpacaAccounts").document("snapshot").get()
+
+    snap = with_firestore_retry(_get)
+    if require_exists and not snap.exists:
+        path = f"users/{user_id}/alpacaAccounts/snapshot" if user_id else "alpacaAccounts/snapshot"
+        raise WarmCacheError(f"Missing warm-cache snapshot at Firestore doc {path}")
+    return snap.to_dict() or {}
+
+
+def get_warm_cache_buying_power_usd(
+    *,
+    db=None,
+    user_id: str = None,
+    max_age_s: Optional[float] = None,
+) -> Tuple[float, Dict[str, Any]]:
+    """
+    Returns (buying_power_usd, snapshot_dict).
+
+    Args:
+        db: Firestore client (optional)
+        user_id: User ID for multi-tenant lookup (optional, but recommended)
+        max_age_s: Maximum age of snapshot in seconds before considering it stale
+
+    Safety behavior:
+    - If snapshot is missing, stale, or buying_power <= 0 => returns 0 and logs a warning.
+    """
+    if max_age_s is None:
+        # Configurable, but defaults conservative.
+        max_age_s = float(os.getenv("ALPACA_SNAPSHOT_MAX_AGE_S", "300"))
+
+    try:
+        snap = _read_alpaca_snapshot_doc(db=db, user_id=user_id, require_exists=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Warm-cache read failed; forcing buying_power=0: %s", e)
+        return 0.0, {}
+
+    buying_power = _as_float(snap.get("buying_power"))
+    if buying_power <= 0:
+        logger.warning("Warm-cache buying_power <= 0 (buying_power=%s); forcing flat", buying_power)
+        return 0.0, snap
+
+    # Optional freshness check: prefer updated_at_iso if present, else accept.
+    updated_at_iso = (snap.get("updated_at_iso") or "").strip() if isinstance(snap.get("updated_at_iso"), str) else ""
+    if updated_at_iso:
+        try:
+            updated_at = datetime.fromisoformat(updated_at_iso.replace("Z", "+00:00"))
+            age_s = max(0.0, (_utc_now() - updated_at).total_seconds())
+            if max_age_s is not None and age_s > max_age_s:
+                logger.warning(
+                    "Warm-cache snapshot is stale (age_s=%.1f > max_age_s=%.1f); forcing flat",
+                    age_s,
+                    max_age_s,
+                )
+                return 0.0, snap
+        except Exception:  # noqa: BLE001
+            # If parsing fails, be conservative.
+            logger.warning("Warm-cache updated_at_iso unparseable; forcing flat")
+            return 0.0, snap
+
+    return buying_power, snap
+
+
+@dataclass(frozen=True)
+class TradeSignal:
+    """
+    A minimal, execution-oriented signal.
+
+    action: "buy" | "sell" | "flat"
+    symbol: e.g. "SPY"
+    notional_usd: total dollars intended to deploy (must be <= buying_power)
+    """
+
+    action: str
+    symbol: str
+    notional_usd: float
+    reason: str
+    raw_model_output: Optional[Dict[str, Any]] = None
+
+
+def enforce_affordability(*, signal: TradeSignal, buying_power_usd: float) -> TradeSignal:
+    """
+    Hard safety gate: never return a trade whose notional exceeds buying power.
+    """
+    if buying_power_usd <= 0:
+        return TradeSignal(
+            action="flat",
+            symbol=signal.symbol,
+            notional_usd=0.0,
+            reason="Warm-cache buying power unavailable/zero; refusing to trade.",
+            raw_model_output=signal.raw_model_output,
+        )
+
+    if signal.action in {"buy", "sell"} and signal.notional_usd > buying_power_usd:
+        return TradeSignal(
+            action="flat",
+            symbol=signal.symbol,
+            notional_usd=0.0,
+            reason=(
+                f"Refusing to trade: requested notional ${signal.notional_usd:,.2f} "
+                f"exceeds buying power ${buying_power_usd:,.2f}."
+            ),
+            raw_model_output=signal.raw_model_output,
+        )
+
+    return signal
+
+
+def _get_vertex_genai_client():
+    """
+    Vertex AI client configured to match the successful Vertex AI test:
+    - location: global
+    - project: agenttrader-prod
+    - model: gemini-2.5-flash (used by caller)
+    - http_options.api_version: v1
+    """
+    try:
+        from google import genai  # type: ignore
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(
+            "Missing dependency 'google-genai'. Add it to requirements and ensure it is installed."
+        ) from e
+
+    # The `HttpOptions` type path has varied slightly across versions; handle both.
+    http_options = None
+    try:
+        from google.genai.types import HttpOptions  # type: ignore
+
+        http_options = HttpOptions(api_version=VERTEX_HTTP_API_VERSION)
+    except Exception:  # noqa: BLE001
+        try:
+            from google.genai import types  # type: ignore
+
+            http_options = types.HttpOptions(api_version=VERTEX_HTTP_API_VERSION)
+        except Exception:
+            # Fall back to a plain dict (supported by some versions).
+            http_options = {"api_version": VERTEX_HTTP_API_VERSION}
+
+    kwargs: dict[str, Any] = {
+        "vertexai": True,
+        "project": VERTEX_PROJECT_ID,
+        "location": VERTEX_LOCATION,
+    }
+    kwargs["http_options"] = http_options
+
+    return genai.Client(**kwargs)
+
+
+def generate_signal_with_warm_cache(
+    *,
+    symbol: str,
+    market_context: str,
+    db=None,
+    user_id: str = None,
+) -> TradeSignal:
+    """
+    Generates a trade signal using Vertex AI Gemini with a warm-cache affordability gate.
+
+    Args:
+        symbol: Trading symbol (e.g., "SPY")
+        market_context: Context information for the model
+        db: Firestore client (optional)
+        user_id: User ID for multi-tenant support (optional but recommended)
+
+    Behavior:
+    - Reads buying power from Firestore warm-cache doc users/{userId}/alpacaAccounts/snapshot.
+    - Includes buying power in the prompt as a hard constraint.
+    - Validates the returned notional against buying power and forces "flat" if unaffordable.
+    """
+    buying_power_usd, snapshot = get_warm_cache_buying_power_usd(db=db, user_id=user_id)
+    if buying_power_usd <= 0:
+        return TradeSignal(
+            action="flat",
+            symbol=symbol,
+            notional_usd=0.0,
+            reason="Warm-cache buying power unavailable/zero or snapshot stale; refusing to generate trade.",
+            raw_model_output={"snapshot": snapshot},
+        )
+
+    client = _get_vertex_genai_client()
+
+    prompt = f"""
+You are a trading signal generator. You MUST obey all constraints.
+
+## Constraints (hard safety rules)
+- The account buying power is: ${buying_power_usd:,.2f} USD.
+- NEVER propose a trade whose notional_usd exceeds buying power.
+- If you cannot find a valid trade within buying power, return action="flat".
+
+## Output format
+Return a single JSON object with keys:
+- action: "buy" | "sell" | "flat"
+- symbol: string
+- notional_usd: number (0 if flat)
+- reason: string
+
+## Market context
+Symbol: {symbol}
+{market_context}
+""".strip()
+
+    # `google-genai` supports structured JSON responses via response_mime_type on many versions.
+    # Fall back to plain text if not supported.
+    model_output_text: str
+    try:
+        resp = client.models.generate_content(
+            model=VERTEX_MODEL,
+            contents=prompt,
+            config={"response_mime_type": "application/json"},
+        )
+        model_output_text = getattr(resp, "text", None) or str(resp)
+    except Exception:
+        resp = client.models.generate_content(model=VERTEX_MODEL, contents=prompt)
+        model_output_text = getattr(resp, "text", None) or str(resp)
+
+    parsed: Dict[str, Any]
+    try:
+        parsed = json.loads(model_output_text)
+    except Exception:
+        # Try to recover from "```json ... ```" wrappers.
+        cleaned = model_output_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = "\n".join(line for line in cleaned.splitlines() if not line.strip().startswith("```")).strip()
+        parsed = json.loads(cleaned)
+
+    signal = TradeSignal(
+        action=str(parsed.get("action") or "flat").strip().lower(),
+        symbol=str(parsed.get("symbol") or symbol).strip().upper(),
+        notional_usd=_as_float(parsed.get("notional_usd")),
+        reason=str(parsed.get("reason") or "").strip() or "No reason provided.",
+        raw_model_output=parsed,
+    )
+
+    return enforce_affordability(signal=signal, buying_power_usd=buying_power_usd)
+

@@ -1,0 +1,16 @@
+FROM python:3.10-slim-buster
+
+WORKDIR /app
+
+# Crucial: Add both the root and the backend folder to PYTHONPATH
+ENV PYTHONPATH="/app:/app/backend"
+
+# Leverage layer caching by copying requirements first
+COPY backend/requirements.txt ./backend/
+RUN pip install --no-cache-dir -r backend/requirements.txt
+
+# Copy the entire project structure
+COPY . .
+
+# Run using the module flag from the /app context
+CMD ["python", "-m", "backend.app"]
