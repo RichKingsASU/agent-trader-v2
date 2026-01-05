@@ -416,3 +416,69 @@
 [debug] [2026-01-05T15:26:51.825Z] <<< [apiv2][body] GET https://cloudbilling.googleapis.com/v1/projects/agenttrader-prod/billingInfo {"name":"projects/agenttrader-prod/billingInfo","projectId":"agenttrader-prod","billingAccountName":"billingAccounts/0104CC-E3E0B7-CC7D4A","billingEnabled":true}
 [debug] [2026-01-05T15:26:51.828Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
 [debug] [2026-01-05T15:26:51.828Z] > authorizing via signed-in user (richkingsasu@gmail.com)
+[debug] [2026-01-05T17:19:45.428Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-01-05T17:19:45.432Z] > authorizing via signed-in user (richkingsasu@gmail.com)
+[debug] [2026-01-05T17:19:45.433Z] Checked if tokens are valid: false, expires at: 1767629410091
+[debug] [2026-01-05T17:19:45.433Z] Checked if tokens are valid: false, expires at: 1767629410091
+[debug] [2026-01-05T17:19:45.433Z] > refreshing access token with scopes: []
+[debug] [2026-01-05T17:19:45.436Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-01-05T17:19:45.436Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-01-05T17:19:45.447Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-01-05T17:19:45.447Z] > authorizing via signed-in user (richkingsasu@gmail.com)
+[debug] [2026-01-05T17:19:45.448Z] Checked if tokens are valid: false, expires at: 1767629410091
+[debug] [2026-01-05T17:19:45.448Z] Checked if tokens are valid: false, expires at: 1767629410091
+[debug] [2026-01-05T17:19:45.448Z] > refreshing access token with scopes: []
+[debug] [2026-01-05T17:19:45.448Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-01-05T17:19:45.448Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-01-05T17:19:45.484Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-01-05T17:19:45.485Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-01-05T17:19:45.497Z] >>> [apiv2][query] GET https://cloudbilling.googleapis.com/v1/projects/agenttrader-prod/billingInfo [none]
+[debug] [2026-01-05T17:19:45.501Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-01-05T17:19:45.501Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-01-05T17:19:45.511Z] >>> [apiv2][query] GET https://cloudbilling.googleapis.com/v1/projects/agenttrader-prod/billingInfo [none]
+[debug] [2026-01-05T17:19:45.617Z] <<< [apiv2][status] GET https://cloudbilling.googleapis.com/v1/projects/agenttrader-prod/billingInfo 200
+[debug] [2026-01-05T17:19:45.617Z] <<< [apiv2][body] GET https://cloudbilling.googleapis.com/v1/projects/agenttrader-prod/billingInfo {"name":"projects/agenttrader-prod/billingInfo","projectId":"agenttrader-prod","billingAccountName":"billingAccounts/0104CC-E3E0B7-CC7D4A","billingEnabled":true}
+[debug] [2026-01-05T17:19:45.649Z] Checked if tokens are valid: true, expires at: 1767637184502
+[debug] [2026-01-05T17:19:45.649Z] Checked if tokens are valid: true, expires at: 1767637184502
+[debug] [2026-01-05T17:19:45.650Z] Checked if tokens are valid: true, expires at: 1767637184502
+[debug] [2026-01-05T17:19:45.650Z] Checked if tokens are valid: true, expires at: 1767637184502
+[debug] [2026-01-05T17:19:45.650Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseapphosting.googleapis.com [none]
+[debug] [2026-01-05T17:19:45.650Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseapphosting.googleapis.com x-goog-quota-user=projects/agenttrader-prod
+[debug] [2026-01-05T17:19:45.652Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseio.com [none]
+[debug] [2026-01-05T17:19:45.652Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseio.com x-goog-quota-user=projects/agenttrader-prod
+[debug] [2026-01-05T17:19:45.815Z] <<< [apiv2][status] GET https://cloudbilling.googleapis.com/v1/projects/agenttrader-prod/billingInfo 200
+[debug] [2026-01-05T17:19:45.815Z] <<< [apiv2][body] GET https://cloudbilling.googleapis.com/v1/projects/agenttrader-prod/billingInfo {"name":"projects/agenttrader-prod/billingInfo","projectId":"agenttrader-prod","billingAccountName":"billingAccounts/0104CC-E3E0B7-CC7D4A","billingEnabled":true}
+[debug] [2026-01-05T17:19:45.826Z] Checked if tokens are valid: true, expires at: 1767637184502
+[debug] [2026-01-05T17:19:45.826Z] Checked if tokens are valid: true, expires at: 1767637184502
+[debug] [2026-01-05T17:19:45.826Z] Checked if tokens are valid: true, expires at: 1767637184502
+[debug] [2026-01-05T17:19:45.827Z] Checked if tokens are valid: true, expires at: 1767637184502
+[debug] [2026-01-05T17:19:45.827Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseapphosting.googleapis.com [none]
+[debug] [2026-01-05T17:19:45.827Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseapphosting.googleapis.com x-goog-quota-user=projects/agenttrader-prod
+[debug] [2026-01-05T17:19:45.829Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseio.com [none]
+[debug] [2026-01-05T17:19:45.829Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseio.com x-goog-quota-user=projects/agenttrader-prod
+[debug] [2026-01-05T17:19:46.064Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseapphosting.googleapis.com 200
+[debug] [2026-01-05T17:19:46.064Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseapphosting.googleapis.com [omitted]
+[debug] [2026-01-05T17:19:46.141Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseio.com 403
+[debug] [2026-01-05T17:19:46.141Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseio.com [omitted]
+[debug] [2026-01-05T17:19:46.149Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-01-05T17:19:46.149Z] > authorizing via signed-in user (richkingsasu@gmail.com)
+[debug] [2026-01-05T17:19:46.150Z] Checked if tokens are valid: true, expires at: 1767637184502
+[debug] [2026-01-05T17:19:46.150Z] Checked if tokens are valid: true, expires at: 1767637184502
+[debug] [2026-01-05T17:19:46.150Z] >>> [apiv2][query] GET https://cloudbilling.googleapis.com/v1/projects/agenttrader-prod/billingInfo [none]
+[debug] [2026-01-05T17:19:46.245Z] <<< [apiv2][status] GET https://cloudbilling.googleapis.com/v1/projects/agenttrader-prod/billingInfo 200
+[debug] [2026-01-05T17:19:46.246Z] <<< [apiv2][body] GET https://cloudbilling.googleapis.com/v1/projects/agenttrader-prod/billingInfo {"name":"projects/agenttrader-prod/billingInfo","projectId":"agenttrader-prod","billingAccountName":"billingAccounts/0104CC-E3E0B7-CC7D4A","billingEnabled":true}
+[debug] [2026-01-05T17:19:46.248Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-01-05T17:19:46.248Z] > authorizing via signed-in user (richkingsasu@gmail.com)
+[debug] [2026-01-05T17:19:46.260Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-01-05T17:19:46.260Z] > authorizing via signed-in user (richkingsasu@gmail.com)
+[debug] [2026-01-05T17:19:46.260Z] Checked if tokens are valid: true, expires at: 1767637184502
+[debug] [2026-01-05T17:19:46.260Z] Checked if tokens are valid: true, expires at: 1767637184502
+[debug] [2026-01-05T17:19:46.261Z] >>> [apiv2][query] GET https://cloudbilling.googleapis.com/v1/projects/agenttrader-prod/billingInfo [none]
+[debug] [2026-01-05T17:19:46.339Z] <<< [apiv2][status] GET https://cloudbilling.googleapis.com/v1/projects/agenttrader-prod/billingInfo 200
+[debug] [2026-01-05T17:19:46.339Z] <<< [apiv2][body] GET https://cloudbilling.googleapis.com/v1/projects/agenttrader-prod/billingInfo {"name":"projects/agenttrader-prod/billingInfo","projectId":"agenttrader-prod","billingAccountName":"billingAccounts/0104CC-E3E0B7-CC7D4A","billingEnabled":true}
+[debug] [2026-01-05T17:19:46.341Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-01-05T17:19:46.341Z] > authorizing via signed-in user (richkingsasu@gmail.com)
+[debug] [2026-01-05T17:19:46.355Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseio.com 403
+[debug] [2026-01-05T17:19:46.356Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseio.com [omitted]
+[debug] [2026-01-05T17:19:46.463Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseapphosting.googleapis.com 200
+[debug] [2026-01-05T17:19:46.463Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects/agenttrader-prod/services/firebaseapphosting.googleapis.com [omitted]

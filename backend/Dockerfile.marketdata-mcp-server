@@ -2,15 +2,14 @@ FROM python:3.10-slim-buster
 
 WORKDIR /app
 
-# Crucial: Add both the root and the backend folder to PYTHONPATH
-ENV PYTHONPATH="/app:/app/backend"
+# Copy the entire project structure into /app
+COPY . /app
+
+# Crucial: Add agenttrader and agenttrader/backend to PYTHONPATH
+ENV PYTHONPATH="/app"
 
 # Leverage layer caching by copying requirements first
-COPY backend/requirements.txt ./backend/
-RUN pip install --no-cache-dir -r backend/requirements.txt
+RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
-# Copy the entire project structure
-COPY . .
-
-# Run using the module flag from the /app context
-CMD ["python", "-m", "backend.app"]
+# Run using the module flag from the /app/agenttrader/backend context
+CMD ["python", "-m", "agenttrader.backend.app"]
