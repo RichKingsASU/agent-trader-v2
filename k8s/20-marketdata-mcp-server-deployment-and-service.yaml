@@ -21,6 +21,8 @@ spec:
         ports:
         - containerPort: 8080
         env:
+          - name: AGENT_MODE
+            value: "DISABLED"
           - name: APCA_API_KEY_ID
             valueFrom:
               secretKeyRef:
