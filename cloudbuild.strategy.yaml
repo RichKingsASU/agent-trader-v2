@@ -1,0 +1,12 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: [
+    'build',
+    '-t', 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:${_TAG}',
+    '-t', 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:latest',
+    '-f', 'backend/strategy_service/Dockerfile',
+    '.'
+  ]
+images:
+- 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:${_TAG}'
+- 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:latest'
