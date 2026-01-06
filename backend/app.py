@@ -4,6 +4,7 @@ import asyncio
 import sys
 import os
 
+from backend.common.agent_boot import configure_startup_logging
 
 from agenttrader.backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
 
@@ -20,6 +21,10 @@ except Exception as e:  # pragma: no cover
 
 @app.on_event("startup")
 async def startup_event():
+    configure_startup_logging(
+        agent_name="marketdata-mcp-server",
+        intent="Serve marketdata MCP endpoints and run the Alpaca streamer background task.",
+    )
     print("Starting Alpaca streamer...")
     asyncio.create_task(alpaca_streamer_main())
 

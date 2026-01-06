@@ -12,4 +12,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["uvicorn", "agenttrader.backend.entrypoint_wrapper:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "backend.risk_service.app:app", "--host", "0.0.0.0", "--port", "8080"]

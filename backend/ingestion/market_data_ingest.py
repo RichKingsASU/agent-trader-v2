@@ -15,6 +15,7 @@ from alpaca.data.live.stock import StockDataStream
 from backend.ingestion.firebase_writer import FirebaseWriter, FirestorePaths
 from backend.ingestion.rate_limit import Backoff, TokenBucket
 from backend.streams.alpaca_env import load_alpaca_env
+from backend.common.agent_boot import configure_startup_logging
 
 
 def _utc_now() -> datetime:
@@ -523,6 +524,10 @@ def load_config_from_env() -> IngestConfig:
 
 
 async def _amain() -> int:
+    configure_startup_logging(
+        agent_name="market-data-ingest",
+        intent="Continuously ingest stock quotes from Alpaca and write latest snapshots to Firestore.",
+    )
     cfg = load_config_from_env()
     ingestor = MarketDataIngestor(cfg)
 

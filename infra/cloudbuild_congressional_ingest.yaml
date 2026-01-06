@@ -9,8 +9,6 @@ steps:
       - 'infra/Dockerfile.congressional_ingest'
       - '-t'
       - 'gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA'
-      - '-t'
-      - 'gcr.io/$PROJECT_ID/congressional-ingest:latest'
       - '.'
     id: 'build-image'
 
@@ -20,12 +18,6 @@ steps:
       - 'push'
       - 'gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA'
     id: 'push-image-sha'
-
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'push'
-      - 'gcr.io/$PROJECT_ID/congressional-ingest:latest'
-    id: 'push-image-latest'
 
   # Deploy to Cloud Run
   - name: 'gcr.io/cloud-builders/gcloud'
@@ -40,6 +32,7 @@ steps:
       - '--set-env-vars=NATS_URL=${_NATS_URL}'
       - '--set-env-vars=POLL_INTERVAL_SECONDS=${_POLL_INTERVAL_SECONDS}'
       - '--set-env-vars=LOOKBACK_DAYS=${_LOOKBACK_DAYS}'
+      - '--set-env-vars=GIT_SHA=$SHORT_SHA'
       - '--update-secrets=QUIVER_API_KEY=quiver-api-key:latest'
       - '--cpu=1'
       - '--memory=512Mi'
@@ -60,7 +53,6 @@ substitutions:
 # Image outputs
 images:
   - 'gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA'
-  - 'gcr.io/$PROJECT_ID/congressional-ingest:latest'
 
 # Build options
 options:

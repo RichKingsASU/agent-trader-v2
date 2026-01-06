@@ -13,6 +13,7 @@ spec:
     metadata:
       labels:
         strategy: whale
+        git_sha: a2466ec
     spec:
       priorityClassName: high-priority
       containers:
@@ -21,3 +22,12 @@ spec:
         ports:
         - containerPort: 8080
           name: http
+        env:
+          - name: GIT_SHA
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['git_sha']
+          - name: WORKLOAD
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['strategy']

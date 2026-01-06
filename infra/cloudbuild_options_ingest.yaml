@@ -4,10 +4,8 @@ steps:
       [
         'build',
         '-f', 'infra/Dockerfile.options_ingest',
-        '-t', 'gcr.io/$PROJECT_ID/agenttrader-options-ingest:$BUILD_ID',
-        '-t', 'gcr.io/$PROJECT_ID/agenttrader-options-ingest:latest',
+        '-t', 'gcr.io/$PROJECT_ID/agenttrader-options-ingest:$SHORT_SHA',
         '.'
       ]
 images:
-  - 'gcr.io/$PROJECT_ID/agenttrader-options-ingest:$BUILD_ID'
-  - 'gcr.io/$PROJECT_ID/agenttrader-options-ingest:latest'
+  - 'gcr.io/$PROJECT_ID/agenttrader-options-ingest:$SHORT_SHA'

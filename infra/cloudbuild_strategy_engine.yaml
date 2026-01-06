@@ -1,12 +1,12 @@
 
 steps:
-- name: 'gcr.io/cloud-builders/docker'
-  args:
-  - 'build'
-  - '-t'
-  - 'gcr.io/$PROJECT_ID/${_JOB_NAME}'
-  - '.'
-  - '-f'
-  - 'infra/Dockerfile.strategy_engine'
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'infra/Dockerfile.strategy_engine'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/${_JOB_NAME}:$SHORT_SHA'
+      - '.'
 images:
-- 'gcr.io/$PROJECT_ID/${_JOB_NAME}'
+  - 'gcr.io/$PROJECT_ID/${_JOB_NAME}:$SHORT_SHA'

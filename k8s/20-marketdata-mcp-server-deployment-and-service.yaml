@@ -5,6 +5,7 @@ metadata:
   namespace: trading-floor
   labels:
     app: marketdata-mcp-server
+    git_sha: a2466ec
 spec:
   replicas: 1
   selector:
@@ -14,6 +15,7 @@ spec:
     metadata:
       labels:
         app: marketdata-mcp-server
+        git_sha: a2466ec
     spec:
       containers:
       - name: marketdata-mcp-server-container
@@ -21,6 +23,14 @@ spec:
         ports:
         - containerPort: 8080
         env:
+          - name: GIT_SHA
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['git_sha']
+          - name: WORKLOAD
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['app']
           - name: APCA_API_KEY_ID
             valueFrom:
               secretKeyRef:

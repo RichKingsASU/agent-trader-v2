@@ -1,5 +1,5 @@
 steps:
 - name: 'gcr.io/cloud-builders/docker'
-  args: [ 'build', '-t', 'gcr.io/$PROJECT_ID/agenttrader-stream-bridge', '.', '-f', 'infra/Dockerfile.stream_bridge' ]
+  args: [ 'build', '-t', 'gcr.io/$PROJECT_ID/agenttrader-stream-bridge:$SHORT_SHA', '.', '-f', 'infra/Dockerfile.stream_bridge' ]
 images:
-- 'gcr.io/$PROJECT_ID/agenttrader-stream-bridge'
+- 'gcr.io/$PROJECT_ID/agenttrader-stream-bridge:$SHORT_SHA'
