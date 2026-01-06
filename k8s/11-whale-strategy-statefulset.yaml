@@ -17,7 +17,7 @@ spec:
       priorityClassName: high-priority
       containers:
       - name: whale-strategy-container
-        image: gcr.io/agenttrader-prod/whale-strategy:latest
+        image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:a2466ec
         ports:
         - containerPort: 8080
           name: http

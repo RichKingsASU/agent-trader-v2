@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: marketdata-mcp-server-container
-        image: gcr.io/agenttrader-prod/marketdata-mcp-server:latest
+        image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:a2466ec
         ports:
         - containerPort: 8080
         env:
