@@ -30,6 +30,11 @@ spec:
           ports:
             - name: http1
               containerPort: 8080
+          env:
+            - name: MARKETDATA_HEALTH_URL
+              value: "REPLACE_ME_MARKETDATA_HEALTH_URL"
+            - name: MARKETDATA_MAX_AGE_SECONDS
+              value: "60"
           resources:
             limits:
               cpu: "1"

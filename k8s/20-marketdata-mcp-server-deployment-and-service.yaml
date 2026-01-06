@@ -21,6 +21,8 @@ spec:
         ports:
         - containerPort: 8080
         env:
+          - name: MARKETDATA_MAX_AGE_SECONDS
+            value: "60"
           - name: APCA_API_KEY_ID
             valueFrom:
               secretKeyRef:
@@ -31,6 +33,22 @@ spec:
               secretKeyRef:
                 name: trader-secrets
                 key: FIREBASE_KEY
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 6
         resources:
           requests:
             cpu:                250m
