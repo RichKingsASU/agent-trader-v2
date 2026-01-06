@@ -21,6 +21,13 @@ spec:
         ports:
         - containerPort: 8080
         env:
+          - name: EXECUTION_HALTED
+            valueFrom:
+              configMapKeyRef:
+                name: agenttrader-kill-switch
+                key: EXECUTION_HALTED
+          - name: EXECUTION_HALTED_FILE
+            value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
           - name: APCA_API_KEY_ID
             valueFrom:
               secretKeyRef:
@@ -31,11 +38,22 @@ spec:
               secretKeyRef:
                 name: trader-secrets
                 key: FIREBASE_KEY
+        volumeMounts:
+          - name: kill-switch
+            mountPath: /etc/agenttrader/kill-switch
+            readOnly: true
         resources:
           requests:
             cpu:                250m
             ephemeral-storage:  1Gi
             memory:             1Gi
+      volumes:
+        - name: kill-switch
+          configMap:
+            name: agenttrader-kill-switch
+            items:
+              - key: EXECUTION_HALTED
+                path: EXECUTION_HALTED
       priorityClassName: high-priority
 ---
 apiVersion: v1

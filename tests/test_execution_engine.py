@@ -41,7 +41,7 @@ class _BrokerStub:
 
 
 def test_dry_run_does_not_place_order(monkeypatch):
-    monkeypatch.delenv("EXEC_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("EXECUTION_HALTED", raising=False)
     broker = _BrokerStub()
     risk = RiskManager(
         config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True),
@@ -64,7 +64,7 @@ def test_dry_run_does_not_place_order(monkeypatch):
 
 
 def test_kill_switch_rejects(monkeypatch):
-    monkeypatch.setenv("EXEC_KILL_SWITCH", "1")
+    monkeypatch.setenv("EXECUTION_HALTED", "1")
     broker = _BrokerStub()
     # fail_open doesn't matter for kill switch
     risk = RiskManager(
@@ -89,7 +89,7 @@ def test_kill_switch_rejects(monkeypatch):
 
 
 def test_max_daily_trades_rejects(monkeypatch):
-    monkeypatch.delenv("EXEC_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("EXECUTION_HALTED", raising=False)
     broker = _BrokerStub()
     risk = RiskManager(
         config=RiskConfig(max_position_qty=100, max_daily_trades=2, fail_open=True),
@@ -113,7 +113,7 @@ def test_max_daily_trades_rejects(monkeypatch):
 
 
 def test_max_position_size_rejects(monkeypatch):
-    monkeypatch.delenv("EXEC_KILL_SWITCH", raising=False)
+    monkeypatch.delenv("EXECUTION_HALTED", raising=False)
     broker = _BrokerStub()
     risk = RiskManager(
         config=RiskConfig(max_position_qty=5, max_daily_trades=50, fail_open=True),

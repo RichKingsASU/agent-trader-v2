@@ -31,8 +31,11 @@ Contains:
 Implemented in `RiskManager`:
 
 - **Kill switch**
-  - Env: `EXEC_KILL_SWITCH=1` (default env var name is configurable; see below)
-  - Optional Firestore doc: `ops/execution_kill_switch` with `{ "enabled": true }`
+  - **Preferred**: Env `EXECUTION_HALTED=1`
+  - **Recommended for K8s**: mount a ConfigMap key as a file and set:
+    - `EXECUTION_HALTED_FILE=/etc/agenttrader/kill-switch/EXECUTION_HALTED`
+    - File contents: `1` to halt, `0` to allow
+  - Optional (legacy): Firestore doc via `EXECUTION_HALTED_DOC` (or legacy `EXEC_KILL_SWITCH_DOC`)
 - **Max daily trades**
   - Counts docs in Firestore `ledger_trades` for `(broker_account_id, trading_date)`
 - **Max position size**
@@ -87,9 +90,10 @@ In dry-run:
 
 - `EXEC_MAX_POSITION_QTY` (float, default `100`)
 - `EXEC_MAX_DAILY_TRADES` (int, default `50`)
-- `EXEC_KILL_SWITCH` (bool-like, default `0`)
-- `EXEC_KILL_SWITCH_ENV` (string, default `EXEC_KILL_SWITCH`) – rename kill switch env var
-- `EXEC_KILL_SWITCH_DOC` (string, default `ops/execution_kill_switch`) – Firestore kill switch doc path
+- `EXECUTION_HALTED` (bool-like, default `0`) – **global kill switch**
+- `EXECUTION_HALTED_FILE` (string, optional) – path to kill switch file (ideal for ConfigMap volume mounts)
+- `EXECUTION_HALTED_DOC` (string, optional) – Firestore kill switch doc path (legacy/optional)
+- (deprecated) `EXEC_KILL_SWITCH` / `EXEC_KILL_SWITCH_FILE` / `EXEC_KILL_SWITCH_DOC` – still honored for back-compat
 - `EXEC_RISK_FAIL_OPEN` (bool-like, default `false`)
 
 ### Execution

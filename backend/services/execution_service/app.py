@@ -15,6 +15,7 @@ from backend.execution.engine import (
     ExecutionResult,
     OrderIntent,
 )
+from backend.common.kill_switch import get_kill_switch_state
 from backend.common.vertex_ai import init_vertex_ai_or_log
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,11 @@ app = FastAPI(title="AgentTrader Execution Engine")
 
 @app.on_event("startup")
 def _startup() -> None:
+    enabled, source = get_kill_switch_state()
+    if enabled:
+        # Execution service should keep serving (health/requests) but will refuse trading.
+        logger.warning("kill_switch_active enabled=true source=%s", source)
+
     # Best-effort: validate Vertex AI model config without crashing the service.
     try:
         init_vertex_ai_or_log()

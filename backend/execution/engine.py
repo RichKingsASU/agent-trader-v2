@@ -11,6 +11,12 @@ from typing import Any, Optional, Protocol, runtime_checkable
 import requests
 
 from backend.common.env import get_env
+from backend.common.kill_switch import (
+    ExecutionHaltedError,
+    get_kill_switch_state,
+    is_kill_switch_enabled,
+    require_live_mode,
+)
 from backend.streams.alpaca_env import load_alpaca_env
 
 logger = logging.getLogger(__name__)
@@ -122,8 +128,6 @@ class RiskConfig:
 
     max_position_qty: float = 100.0
     max_daily_trades: int = 50
-    kill_switch_env_var: str = "EXEC_KILL_SWITCH"
-    kill_switch_firestore_doc: str = "ops/execution_kill_switch"
     fail_open: bool = False  # default fail-closed for safety
 
     @staticmethod
@@ -149,10 +153,6 @@ class RiskConfig:
         return RiskConfig(
             max_position_qty=_float("EXEC_MAX_POSITION_QTY", 100.0),
             max_daily_trades=_int("EXEC_MAX_DAILY_TRADES", 50),
-            kill_switch_env_var=str(os.getenv("EXEC_KILL_SWITCH_ENV", "EXEC_KILL_SWITCH")),
-            kill_switch_firestore_doc=str(
-                os.getenv("EXEC_KILL_SWITCH_DOC", "ops/execution_kill_switch")
-            ),
             fail_open=_bool("EXEC_RISK_FAIL_OPEN", False),
         )
 
@@ -609,13 +609,13 @@ class RiskManager:
         self._positions = positions
 
     def _kill_switch_enabled(self) -> bool:
-        env_name = self._config.kill_switch_env_var
-        if str(get_env(env_name, "0")).strip().lower() in {"1", "true", "yes", "on"}:
+        # Standard global kill switch (env + optional file mount).
+        if is_kill_switch_enabled():
             return True
 
-        # Optional Firestore-backed kill switch.
+        # Optional Firestore-backed kill switch (legacy; keep for back-compat).
         try:
-            path = self._config.kill_switch_firestore_doc.strip().strip("/")
+            path = str(os.getenv("EXECUTION_HALTED_DOC") or os.getenv("EXEC_KILL_SWITCH_DOC") or "").strip().strip("/")
             if not path:
                 return False
             parts = path.split("/")
@@ -827,6 +827,17 @@ class ExecutionEngine:
         if self._dry_run:
             logger.info("exec.dry_run_accept %s", json.dumps(_to_jsonable(audit_ctx)))
             return ExecutionResult(status="dry_run", risk=risk, routing=routing_decision, message="dry_run_enabled")
+
+        # Defense-in-depth: never place broker orders if the global kill switch is active,
+        # even if upstream risk checks were bypassed/misconfigured.
+        try:
+            require_live_mode(operation="broker order placement")
+        except ExecutionHaltedError:
+            enabled, source = get_kill_switch_state()
+            checks = list(risk.checks or [])
+            checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
+            halted_risk = RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
+            return ExecutionResult(status="rejected", risk=halted_risk, routing=routing_decision, message="kill_switch_enabled")
 
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None
