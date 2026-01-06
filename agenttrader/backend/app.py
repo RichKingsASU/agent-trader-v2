@@ -5,7 +5,7 @@ import sys
 import os
 
 
-from agenttrader.backend.streams.alpaca_streamer import main as alpaca_streamer_main
+from agenttrader.backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
 
 app = FastAPI()
 
