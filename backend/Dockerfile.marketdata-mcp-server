@@ -12,4 +12,4 @@ ENV PYTHONPATH="/app"
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
 # Run using the module flag from the /app/agenttrader/backend context
-CMD ["python", "-m", "agenttrader.backend.app"]
+CMD ["python", "-m", "backend.app"]

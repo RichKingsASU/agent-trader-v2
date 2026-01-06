@@ -1,0 +1,5 @@
+steps:
+- name: gcr.io/cloud-builders/docker
+  args: ["build","-f","backend/strategy_service/Dockerfile","-t","us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/congressional-ingest:d9a5f5d","."]
+images:
+- "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/congressional-ingest:d9a5f5d"
