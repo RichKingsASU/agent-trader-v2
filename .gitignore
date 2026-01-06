@@ -13,3 +13,7 @@ service-account-key.json
 *.json
 *.pem
 *.key
+deploy_logs/
+firebase-debug.log
+.current_tag
+.incident_logfile
