@@ -4,7 +4,23 @@ steps:
     'build',
     '-t', 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/marketdata-mcp-server:latest',
     '-f', 'backend/Dockerfile.marketdata-mcp-server',
+    'backend'
+  ]
+- name: 'gcr.io/cloud-builders/docker'
+  args: [
+    'build',
+    '-t', 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/gamma-strategy:latest',
+    '-f', 'functions/strategies/gamma_scalper/Dockerfile',
+    '.'
+  ]
+- name: 'gcr.io/cloud-builders/docker'
+  args: [
+    'build',
+    '-t', 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/whale-strategy:latest',
+    '-f', 'functions/whale_consolidator/Dockerfile',
     '.'
   ]
 images:
 - 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/marketdata-mcp-server:latest'
+- 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/gamma-strategy:latest'
+- 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/whale-strategy:latest'

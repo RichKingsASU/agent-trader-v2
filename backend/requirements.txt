@@ -3,16 +3,15 @@ uvicorn==0.38.0
 
 # Market data + transport
 alpaca-py==0.43.2
-websockets
+alpaca-trade-api==3.2.0
+websockets==10.4
 httpx
 requests
 tenacity
-google-genai
 
 # Firebase / Firestore
 firebase-admin
 google-cloud-firestore
-google-genai
 
 # Runtime config / messaging / utilities
 python-dotenv

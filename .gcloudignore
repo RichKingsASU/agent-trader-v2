@@ -10,7 +10,7 @@ kubernetes/
 k8s/
 node_modules/
 frontend/
-functions/
+
 infra/
 mcp/
 prompts/

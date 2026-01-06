@@ -1,0 +1,8 @@
+alpaca-py==0.43.2
+alpaca-trade-api==3.2.0
+firebase-admin==6.5.0
+firebase-functions==0.5.0
+pydantic>=2.0.0,<3.0.0
+cloudevents==1.11.0
+websockets==10.4
+pytz==2024.1

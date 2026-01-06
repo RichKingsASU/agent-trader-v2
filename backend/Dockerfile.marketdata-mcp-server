@@ -9,7 +9,7 @@ COPY . /app
 ENV PYTHONPATH="/app"
 
 # Leverage layer caching by copying requirements first
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Run using the module flag from the /app/agenttrader/backend context
 CMD ["python", "-m", "agenttrader.backend.app"]
