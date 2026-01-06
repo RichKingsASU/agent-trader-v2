@@ -15,9 +15,38 @@ spec:
         strategy: gamma
     spec:
       priorityClassName: high-priority
+      serviceAccountName: trading-floor-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
       containers:
       - name: gamma-strategy-container
-        image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:a2466ec
+        image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:54afffe
         ports:
         - containerPort: 8080
           name: http
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+            ephemeral-storage: 1Gi
+          limits:
+            cpu: 1
+            memory: 1Gi
+            ephemeral-storage: 2Gi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          timeoutSeconds: 3
+          failureThreshold: 3
