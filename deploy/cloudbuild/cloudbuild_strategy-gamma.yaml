@@ -1,0 +1,13 @@
+steps:
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    args:
+      - "build"
+      - "-f"
+      - "apps/strategy-gamma/Dockerfile"
+      - "-t"
+      - "us-east4-docker.pkg.dev/${PROJECT_ID}/trader-repo/strategy-gamma:${SHORT_SHA}"
+      - "-t"
+      - "us-east4-docker.pkg.dev/${PROJECT_ID}/trader-repo/strategy-gamma:latest"
+images:
+  - "us-east4-docker.pkg.dev/${PROJECT_ID}/trader-repo/strategy-gamma:${SHORT_SHA}"
+  - "us-east4-docker.pkg.dev/${PROJECT_ID}/trader-repo/strategy-gamma:latest"
