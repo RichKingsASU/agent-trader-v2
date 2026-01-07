@@ -1,5 +1,13 @@
 steps:
 - name: 'gcr.io/cloud-builders/docker'
-  args: [ 'build', '-t', 'gcr.io/$PROJECT_ID/agenttrader-stream-bridge', '.', '-f', 'infra/Dockerfile.stream_bridge' ]
+  args:
+    [
+      'build',
+      '-t', 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/agenttrader-stream-bridge:${SHORT_SHA}',
+      '-t', 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/agenttrader-stream-bridge:latest',
+      '.',
+      '-f', 'infra/Dockerfile.stream_bridge'
+    ]
 images:
-- 'gcr.io/$PROJECT_ID/agenttrader-stream-bridge'
+- 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/agenttrader-stream-bridge:${SHORT_SHA}'
+- 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/agenttrader-stream-bridge:latest'

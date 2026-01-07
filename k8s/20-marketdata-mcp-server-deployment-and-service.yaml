@@ -15,11 +15,16 @@ spec:
       labels:
         app: marketdata-mcp-server
     spec:
+      serviceAccountName: trading-floor-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
       containers:
       - name: marketdata-mcp-server-container
-        image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/marketdata-mcp-server:a2466ec
+        image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/marketdata-mcp-server:54afffe
         ports:
         - containerPort: 8080
+          name: http
         env:
           - name: EXECUTION_HALTED
             valueFrom:

@@ -9,6 +9,11 @@ from backend.common.kill_switch import get_kill_switch_state
 app = FastAPI(title="AgentTrader Strategy Service")
 logger = logging.getLogger(__name__)
 
+# Used by Kubernetes readiness/liveness probes.
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,

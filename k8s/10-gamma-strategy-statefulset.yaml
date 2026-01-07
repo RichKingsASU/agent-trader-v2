@@ -15,9 +15,13 @@ spec:
         strategy: gamma
     spec:
       priorityClassName: high-priority
+      serviceAccountName: trading-floor-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
       containers:
       - name: gamma-strategy-container
-        image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:a2466ec
+        image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:54afffe
         ports:
         - containerPort: 8080
           name: http
