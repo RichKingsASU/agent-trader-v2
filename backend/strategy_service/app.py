@@ -23,13 +23,14 @@ from .routers import strategies, broker_accounts, paper_orders, trades, strategy
 
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.agent_boot import configure_startup_logging
-from backend.common.agent_mode_guard import enforce_agent_mode_guard
+from backend.common.app_heartbeat_writer import install_app_heartbeat
 from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.observability.ops_json_logger import OpsLogger
 from backend.strategies.registry.loader import load_all_configs
 
 app = FastAPI(title="AgentTrader Strategy Service")
 install_fastapi_correlation_middleware(app)
+install_app_heartbeat(app, service_name="strategy-service")
 
 logger = logging.getLogger(__name__)
 

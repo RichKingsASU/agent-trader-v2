@@ -25,6 +25,7 @@ from backend.observability.ops_json_logger import OpsLogger
 from .driver import run_strategy
 
 app = FastAPI(title="AgentTrader Strategy Engine")
+install_app_heartbeat(app, service_name="strategy-engine")
 
 
 def _identity() -> dict[str, Any]:
