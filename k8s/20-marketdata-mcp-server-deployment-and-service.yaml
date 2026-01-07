@@ -15,11 +15,16 @@ spec:
       labels:
         app: marketdata-mcp-server
     spec:
+      serviceAccountName: trading-floor-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
       containers:
       - name: marketdata-mcp-server-container
-        image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/marketdata-mcp-server:a2466ec
+        image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/marketdata-mcp-server:54afffe
         ports:
         - containerPort: 8080
+          name: http
         env:
           - name: AGENT_MODE
             value: "DISABLED"
@@ -35,9 +40,29 @@ spec:
                 key: FIREBASE_KEY
         resources:
           requests:
-            cpu:                250m
-            ephemeral-storage:  1Gi
-            memory:             1Gi
+            cpu: 250m
+            memory: 512Mi
+            ephemeral-storage: 1Gi
+          limits:
+            cpu: 1
+            memory: 1Gi
+            ephemeral-storage: 2Gi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          timeoutSeconds: 3
+          failureThreshold: 3
       priorityClassName: high-priority
 ---
 apiVersion: v1
