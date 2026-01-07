@@ -41,9 +41,16 @@ spec:
         ports:
         - containerPort: 8080
           name: http
-        readinessProbe:
+        startupProbe:
           httpGet:
             path: /healthz
+            port: http
+          periodSeconds: 2
+          timeoutSeconds: 2
+          failureThreshold: 30
+        readinessProbe:
+          httpGet:
+            path: /readyz
             port: http
           initialDelaySeconds: 5
           periodSeconds: 10
@@ -51,7 +58,7 @@ spec:
           failureThreshold: 6
         livenessProbe:
           httpGet:
-            path: /healthz
+            path: /livez
             port: http
           initialDelaySeconds: 10
           periodSeconds: 20
@@ -66,7 +73,13 @@ spec:
             value: "strategy_eval"
           - name: AGENT_MODE
             value: "OFF"
+          - name: SERVICE_NAME
+            value: "gamma-strategy"
           - name: GIT_SHA
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['git_sha']
+          - name: EXECUTION_HALTED
             valueFrom:
               configMapKeyRef:
                 name: agenttrader-kill-switch
@@ -77,6 +90,10 @@ spec:
           - name: kill-switch
             mountPath: /etc/agenttrader/kill-switch
             readOnly: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
       volumes:
         - name: kill-switch
           configMap:
