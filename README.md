@@ -1,6 +1,12 @@
-# AgentTrader V2 (Alpaca + Firebase)
+# AgentTrader V2 (Pre-Firebase Stabilization)
 
-AgentTrader is a monorepo for Alpaca market ingestion + a Lovable-generated UI, backed by Firebase (Firestore).
+AgentTrader is a monorepo for Alpaca market ingestion + a Vite/React UI.
+
+## Current Status: Pre-Firebase Stabilization
+
+- **Goal**: stabilize and sanitize the codebase before starting any Firebase migration work.
+- **Non-goals**: no feature changes, no Firebase rollout, no API redesign.
+- **Local run**: the frontend runs in **local mode by default** (no external SaaS required). Firebase config is optional.
 
 ## 🔒 Enforcement & Safety Guarantees (AgentTrader v2)
 
@@ -94,7 +100,7 @@ If the safety guard fails your build, read the error message carefully. It will 
 ## Repo layout
 
 - **`/backend`**: Python services + ingestion jobs
-- **`/frontend`**: Vite + React UI (Lovable export)
+- **`/frontend`**: Vite + React UI
 - **`/infra`**: Dockerfiles + Cloud Build configs
 - **`/scripts`**: local/dev automation scripts (no secrets)
 
@@ -104,7 +110,7 @@ If the safety guard fails your build, read the error message carefully. It will 
 
 - **Python**: `python3` + `pip3`
 - **Node**: `node` + `npm`
-- **GCloud** (for Firebase Admin / Firestore auth):
+- **GCloud** (optional; only if you enable Firebase locally):
   - Install the Google Cloud SDK, then run:
 
 ```bash
@@ -180,7 +186,7 @@ The primary ingestion entrypoint is:
   - `DRY_RUN` (`1` to simulate writes)
   - `STOP_AFTER_SECONDS` (optional)
 
-## Frontend: Lovable UI (Vite)
+## Frontend: UI (Vite)
 
 From `frontend/`:
 

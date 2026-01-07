@@ -23,6 +23,8 @@ interface WhaleFlowTrackerProps {
   maxTrades?: number;
 }
 
+type TradeWithGexSignal = OptionsFlowTrade & { gexSignal?: string | null };
+
 export const WhaleFlowTracker: React.FC<WhaleFlowTrackerProps> = ({ maxTrades = 100 }) => {
   const { trades, systemStatus, loading, error } = useWhaleFlow(maxTrades);
   
@@ -72,7 +74,7 @@ export const WhaleFlowTracker: React.FC<WhaleFlowTrackerProps> = ({ maxTrades = 
   }, [trades, aggressiveOnly, otmFocusOnly]);
 
   // GEX Overlay: Flag trades that match the GEX regime
-  const tradesWithGexSignals = useMemo(() => {
+  const tradesWithGexSignals = useMemo<TradeWithGexSignal[]>(() => {
     if (!gexOverlay || !systemStatus) return filteredTrades;
 
     return filteredTrades.map(trade => {

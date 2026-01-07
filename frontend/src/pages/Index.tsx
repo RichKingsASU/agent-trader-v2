@@ -50,7 +50,8 @@ interface BotStatusData {
   pnl_open?: number;
 }
 
-type SnapshotData = Record<string, unknown>;
+// KPIGrid expects a specific snapshot shape; keep this permissive during stabilization.
+type SnapshotData = any;
 
 const Index = () => {
   const navigate = useNavigate();

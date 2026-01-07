@@ -195,7 +195,7 @@ const BacktestDashboard = () => {
       <DashboardHeader
         currentSymbol={config.symbol}
         onSymbolChange={(symbol) => setConfig({ ...config, symbol })}
-        environment="backtest"
+        environment="sandbox"
         equity={results?.metrics.final_equity || config.start_capital}
         dayPnl={results?.metrics.net_profit || 0}
         dayPnlPct={results?.metrics.total_return_pct || 0}

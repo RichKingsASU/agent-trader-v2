@@ -1,11 +1,11 @@
-import asyncio
-from datetime import date
 import argparse
+import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from backend.common.agent_boot import configure_startup_logging
-from backend.common.kill_switch import get_kill_switch_state, require_live_mode
+from backend.common.freshness import check_freshness, stale_after_for_bar_interval
+from backend.common.kill_switch import get_kill_switch_state
 from backend.common.ops_http_server import OpsHttpServer
 from backend.common.ops_log import log_json
 from backend.common.ops_metrics import (
@@ -13,18 +13,13 @@ from backend.common.ops_metrics import (
     errors_total,
     mark_activity,
     order_proposals_total,
-    safety_halted_total,
     strategy_cycles_skipped_total,
     strategy_cycles_total,
 )
 
 from .config import config
 from .models import fetch_recent_bars, fetch_recent_options_flow
-from .risk import (
-    get_or_create_strategy_definition,
-    can_place_trade,
-    log_decision,
-)
+from .risk import can_place_trade, get_or_create_strategy_definition, log_decision
 from .strategies.naive_flow_trend import make_decision
 
 _last_cycle_at_iso: str | None = None
@@ -54,27 +49,33 @@ def _status_payload() -> dict[str, object]:
 
 async def run_strategy(execute: bool):
     """
-    Main function to run the strategy engine.
-    """
-    # Load strategy config from the repo-native registry (safe-by-default).
-    # Back-compat: default strategy_id to STRATEGY_NAME.
-    requested_id = (os.getenv("STRATEGY_ID") or config.STRATEGY_NAME).strip()
-    cfg = load_config(requested_id)
-    effective_mode = compute_effective_mode(cfg)
+    Main function to run the strategy engine (evaluation only).
 
-    if not cfg.enabled:
-        print(f"Strategy '{cfg.strategy_id}' is disabled; exiting (safe-by-default).")
-        return
+    Safety contract:
+    - No execution / no broker interaction (this service emits proposals only).
+    - Refuse to evaluate when market data is stale (fail-closed NOOP).
+    """
+    # This service is proposal-only. Keep `execute` for back-compat but do not act on it.
+    _ = execute
 
     # Registry-backed identity in the risk/audit subsystem.
-    strategy_id = await get_or_create_strategy_definition(cfg.strategy_id)
+    strategy_id = await get_or_create_strategy_definition(config.STRATEGY_NAME)
     today = date.today()
-    correlation_id = os.getenv("CORRELATION_ID") or uuid4().hex
-    repo_id = os.getenv("REPO_ID") or "RichKingsASU/agent-trader-v2"
-    proposal_ttl_minutes = int(os.getenv("PROPOSAL_TTL_MINUTES") or "5")
-    
+
     print(f"Running strategy '{config.STRATEGY_NAME}' for {today}...")
-    emitted_any = False
+
+    # Data freshness policy: market_data_1m => 60s bars; stale if age > 2x interval.
+    # Override via env if needed (seconds).
+    bar_interval_s = int(os.getenv("MARKETDATA_BAR_INTERVAL_SECONDS") or "60")
+    bar_interval_s = max(1, bar_interval_s)
+    stale_after = stale_after_for_bar_interval(bar_interval=timedelta(seconds=bar_interval_s), multiplier=2.0)
+    override = (os.getenv("MARKETDATA_STALE_AFTER_SECONDS") or "").strip()
+    if override:
+        try:
+            stale_after = timedelta(seconds=max(0, int(override)))
+        except Exception:
+            # Keep default on bad input; fail-closed is enforced by the check itself.
+            pass
 
     for symbol in config.STRATEGY_SYMBOLS:
         # A "cycle" is one symbol evaluation.
@@ -107,6 +108,41 @@ async def run_strategy(execute: bool):
                 pass
             continue
 
+        # Freshness contract: refuse to evaluate if latest bar timestamp is stale.
+        latest_bar_ts = bars[0].ts if bars else None
+        freshness = check_freshness(
+            latest_ts=latest_bar_ts,
+            stale_after=stale_after,
+            source="bars:public.market_data_1m",
+        )
+        if not freshness.ok:
+            strategy_cycles_skipped_total.inc(1.0)
+            try:
+                log_json(
+                    intent_type="STALE_DATA",
+                    severity="WARNING",
+                    reason_codes=["stale_data" if freshness.reason_code == "STALE_DATA" else "missing_timestamp"],
+                    symbol=symbol,
+                    strategy=config.STRATEGY_NAME,
+                    latest_ts_utc=(freshness.latest_ts_utc.isoformat() if freshness.latest_ts_utc else None),
+                    now_utc=freshness.now_utc.isoformat(),
+                    age_seconds=(float(freshness.age.total_seconds()) if freshness.age is not None else None),
+                    threshold_seconds=float(freshness.stale_after.total_seconds()),
+                    source=freshness.details.get("source"),
+                    assumed_utc=bool(freshness.details.get("assumed_utc", False)),
+                )
+            except Exception:
+                pass
+
+            reason = (
+                f"STALE_DATA: source={freshness.details.get('source')} "
+                f"age_s={freshness.details.get('age_seconds')} "
+                f"threshold_s={freshness.details.get('threshold_seconds')}"
+            )
+            await log_decision(strategy_id, symbol, "flat", reason, {"reason_code": freshness.reason_code}, False)
+            print(f"  Decision: flat. Reason: {reason}")
+            continue
+
         decision = make_decision(bars, flow_events)
         action = decision.get("action")
 
@@ -132,156 +168,24 @@ async def run_strategy(execute: bool):
         # Calculate notional
         last_price = bars[0].close if bars else 0
         notional = last_price * decision.get("size", 0)
-
-    bar_lookback = int(cfg.parameters.get("bar_lookback_minutes", config.STRATEGY_BAR_LOOKBACK_MINUTES))
-    flow_lookback = int(cfg.parameters.get("flow_lookback_minutes", config.STRATEGY_FLOW_LOOKBACK_MINUTES))
-
-    for symbol in cfg.symbols:
-        print(f"Processing symbol: {symbol}")
-
-        bars = await fetch_recent_bars(symbol, bar_lookback)
-        flow_events = await fetch_recent_options_flow(symbol, flow_lookback)
-
-        decision = make_decision(bars, flow_events)
-        action = decision.get("action")
-
-        if action == "flat":
-            await log_decision(strategy_id, symbol, "flat", decision["reason"], decision["signal_payload"], False)
-            print(f"  Decision: flat. Reason: {decision['reason']}")
+        # Risk check (proposal gating only; never executes).
+        risk_allowed = await can_place_trade(strategy_id, today, notional)
+        if not risk_allowed:
+            reason = "Risk limit exceeded."
+            await log_decision(strategy_id, symbol, action, reason, decision.get("signal_payload") or {}, False)
+            print(f"  Decision: {action}, but blocked. Reason: {reason}")
             continue
 
-        # Calculate notional
-        last_price = bars[0].close if bars else 0
-        notional = last_price * decision.get("size", 0)
-
-    for symbol in config.STRATEGY_SYMBOLS:
-        with bind_correlation_id():
-            print(f"Processing symbol: {symbol}")
-
-            bars = await fetch_recent_bars(symbol, config.STRATEGY_BAR_LOOKBACK_MINUTES)
-            flow_events = await fetch_recent_options_flow(symbol, config.STRATEGY_FLOW_LOOKBACK_MINUTES)
-
-            decision = make_decision(bars, flow_events)
-            action = decision.get("action")
-
-            sig_ctx = intent_start(
-                "signal_produced",
-                "Produced strategy signal (may be flat).",
-                payload={
-                    "strategy_name": config.STRATEGY_NAME,
-                    "strategy_id": strategy_id,
-                    "symbol": symbol,
-                    "action": action,
-                    "reason": decision.get("reason"),
-                    "signal_payload": decision.get("signal_payload") or {},
-                },
-            )
-            intent_end(sig_ctx, "success")
-
-            if action == "flat":
-                await log_decision(strategy_id, symbol, "flat", decision["reason"], decision["signal_payload"], False)
-                print(f"  Decision: flat. Reason: {decision['reason']}")
-                continue
-
-            # Calculate notional
-            last_price = bars[0].close if bars else 0
-            notional = last_price * decision.get("size", 0)
-
-            # Risk check
-            risk_allowed = await can_place_trade(strategy_id, today, notional)
-            if not risk_allowed:
-                reason = "Risk limit exceeded."
-                proposal_ctx = intent_start(
-                    "order_proposal",
-                    "Would place order, but blocked by risk limits.",
-                    payload={
-                        "strategy_name": config.STRATEGY_NAME,
-                        "strategy_id": strategy_id,
-                        "symbol": symbol,
-                        "side": action,
-                        "size": decision.get("size", 0),
-                        "notional": notional,
-                        "reason": reason,
-                        "risk_allowed": False,
-                        "would_execute": False,
-                    },
-                )
-                intent_end(proposal_ctx, "success")
-
-                await log_decision(strategy_id, symbol, action, reason, decision["signal_payload"], False)
-                print(f"  Decision: {action}, but trade blocked. Reason: {reason}")
-                continue
-            
-        print(f"  Decision: {action}. Reason: {decision['reason']}")
-
-        if execute:
-            # Never execute if the global kill switch is active.
-            try:
-                require_live_mode(operation="paper trade execution")
-            except Exception as e:
-                safety_halted_total.inc(1.0)
-                print(f"  Safety halt: refusing execution due to kill switch: {e}")
-                await log_decision(
-                    strategy_id,
-                    symbol,
-                    action,
-                    f"Safety halt: {e}",
-                    decision["signal_payload"],
-                    False,
-                )
-                try:
-                    log_json(
-                        intent_type="safety_halt",
-                        severity="WARNING",
-                        reason_codes=["kill_switch_enabled"],
-                        symbol=symbol,
-                        action=action,
-                        strategy=config.STRATEGY_NAME,
-                        error=str(e),
-                    )
-                except Exception:
-                    pass
-                continue
-
-            print(f"  Executing {action} order for 1 {symbol}...")
-            # Call the existing paper trade script
-            process = subprocess.run(
-                [
-                    "python",
-                    "backend/streams/manual_paper_trade.py",
-                    symbol,
-                    action,
-                    str(decision.get("size", 1)),
-                ],
-                capture_output=True,
-                text=True,
-            )
-            print(f"   manual_paper_trade.py stdout: {process.stdout}")
-            print(f"   manual_paper_trade.py stderr: {process.stderr}")
-
-        if execute:
-            # Intentionally non-executing: strategy-engine emits proposals only.
-            print("  Execution is disabled in strategy-engine; proposal emitted only.")
-            await log_decision(
-                strategy_id,
-                symbol,
-                action,
-                "Execution disabled; proposal emitted only.",
-                decision["signal_payload"],
-                False,
-            )
-        else:
-            print("  No execution (effective_mode is non-execute or --execute not set).")
-            await log_decision(
-                strategy_id,
-                symbol,
-                action,
-                "Dry run mode.",
-                decision["signal_payload"],
-                False,
-            )
-
-    intent_end(cycle_ctx, "success")
+        # Proposal emitted only (no execution in this service).
+        await log_decision(
+            strategy_id,
+            symbol,
+            action,
+            decision.get("reason") or "",
+            decision.get("signal_payload") or {},
+            False,
+        )
+        print(f"  Decision: {action}. Reason: {decision.get('reason')}")
 
 
 if __name__ == "__main__":

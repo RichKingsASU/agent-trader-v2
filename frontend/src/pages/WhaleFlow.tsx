@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { WhaleFlowTracker } from "@/components/WhaleFlowTracker";
 import { DashboardHeader } from "@/components/DashboardHeader";
 
@@ -14,9 +14,15 @@ import { DashboardHeader } from "@/components/DashboardHeader";
  * - Integration with GEX regime signals
  */
 export default function WhaleFlow() {
+  const [currentSymbol, setCurrentSymbol] = useState("SPY");
+
   return (
     <div className="min-h-screen bg-background">
-      <DashboardHeader />
+      <DashboardHeader
+        currentSymbol={currentSymbol}
+        onSymbolChange={setCurrentSymbol}
+        environment="production"
+      />
       
       <main className="container mx-auto py-8 px-4">
         <div className="mb-6">
