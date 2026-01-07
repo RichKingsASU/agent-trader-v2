@@ -83,7 +83,8 @@ def _human_age(created):
         return ""
     now = _dt.datetime.now(_dt.timezone.utc)
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=_dt.timezone.utc)
+        # Avoid ad-hoc tzinfo assignment; assume naive is UTC.
+        ts = _dt.datetime.fromisoformat(ts.isoformat() + "+00:00")
     delta = now - ts
     secs = max(0, int(delta.total_seconds()))
     if secs < 60:
@@ -168,7 +169,8 @@ def _human_age(created):
         return ""
     now = _dt.datetime.now(_dt.timezone.utc)
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=_dt.timezone.utc)
+        # Avoid ad-hoc tzinfo assignment; assume naive is UTC.
+        ts = _dt.datetime.fromisoformat(ts.isoformat() + "+00:00")
     delta = now - ts
     secs = max(0, int(delta.total_seconds()))
     mins = secs // 60

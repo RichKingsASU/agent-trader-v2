@@ -5,12 +5,13 @@ metadata:
   namespace: trading-floor
   labels:
     app: marketdata-mcp-server
-    git_sha: a2466ec
-    app.kubernetes.io/name: agenttrader
+    agenttrader.dev/repo_id: agent-trader-v2
     app.kubernetes.io/part-of: agent-trader-v2
-    app.kubernetes.io/component: mcp
-    app.kubernetes.io/instance: marketdata-mcp-server
-    version: v2
+    app.kubernetes.io/version: 54afffe
+    git_sha: 54afffe
+  annotations:
+    agenttrader.dev/git_sha: "__GIT_SHA__"
+    agenttrader.dev/build_id: "__BUILD_ID__"
 spec:
   replicas: 1
   selector:
@@ -20,14 +21,16 @@ spec:
     metadata:
       labels:
         app: marketdata-mcp-server
-        git_sha: a2466ec
-        app.kubernetes.io/name: agenttrader
+        agenttrader.dev/repo_id: agent-trader-v2
         app.kubernetes.io/part-of: agent-trader-v2
-        app.kubernetes.io/component: mcp
-        app.kubernetes.io/instance: marketdata-mcp-server
-        version: v2
+        app.kubernetes.io/version: 54afffe
+        git_sha: 54afffe
+      annotations:
+        agenttrader.dev/git_sha: "__GIT_SHA__"
+        agenttrader.dev/build_id: "__BUILD_ID__"
     spec:
-      serviceAccountName: trading-floor-sa
+      # Workload Identity (KSA->GSA) is wired via k8s/serviceaccounts/marketdata-mcp-server-ksa.yaml
+      serviceAccountName: marketdata-mcp-server-ksa
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -38,34 +41,44 @@ spec:
         - containerPort: 8080
           name: http
         env:
-          - name: MARKETDATA_MAX_AGE_SECONDS
-            value: "60"
+          - name: REPO_ID
+            value: "agent-trader-v2"
+          - name: AGENT_NAME
+            value: "marketdata-mcp-server"
+          - name: AGENT_ROLE
+            value: "marketdata"
+          - name: AGENT_MODE
+            value: "OFF"
+          - name: GIT_SHA
+            valueFrom:
+              configMapKeyRef:
+                name: agenttrader-kill-switch
+                key: EXECUTION_HALTED
+          - name: EXECUTION_HALTED_FILE
+            value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
           - name: APCA_API_KEY_ID
             valueFrom:
-              secretKeyRef:
-                name: trader-secrets
-                key: APCA_API_KEY_ID
-          - name: FIREBASE_KEY
-            valueFrom:
-              secretKeyRef:
-                name: trader-secrets
-                key: FIREBASE_KEY
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 5
-          periodSeconds: 5
-          timeoutSeconds: 2
-          failureThreshold: 3
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          timeoutSeconds: 2
-          failureThreshold: 6
+              configMapKeyRef:
+                name: agenttrader-kill-switch
+                key: EXECUTION_HALTED
+          - name: EXECUTION_HALTED_FILE
+            value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
+          # Secrets: do NOT inject plaintext or Secret refs in manifests.
+          # Future wiring uses Secret Manager + CSI mounts under /var/run/secrets/agenttrader (see k8s/secrets/).
+          - name: DRY_RUN
+            value: "1"
+          - name: ALPACA_API_KEY
+            value: ""
+          - name: ALPACA_SECRET_KEY
+            value: ""
+          - name: ALPACA_API_KEY_FILE
+            value: /var/run/secrets/agenttrader/marketdata/alpaca_api_key
+          - name: ALPACA_SECRET_KEY_FILE
+            value: /var/run/secrets/agenttrader/marketdata/alpaca_secret_key
+        volumeMounts:
+          - name: kill-switch
+            mountPath: /etc/agenttrader/kill-switch
+            readOnly: true
         resources:
           requests:
             cpu:                250m
@@ -86,11 +99,9 @@ metadata:
   name: marketdata-mcp-server
   namespace: trading-floor
   labels:
-    app.kubernetes.io/name: agenttrader
+    app: marketdata-mcp-server
+    agenttrader.dev/repo_id: agent-trader-v2
     app.kubernetes.io/part-of: agent-trader-v2
-    app.kubernetes.io/component: mcp
-    app.kubernetes.io/instance: marketdata-mcp-server
-    version: v2
 spec:
   selector:
     app: marketdata-mcp-server

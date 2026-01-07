@@ -4,9 +4,16 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable
-from zoneinfo import ZoneInfo
 
-from backend.common.timeutils import UTC, ensure_aware_utc
+from backend.time.nyse_time import (
+    UTC,
+    ceil_to_timeframe,
+    ensure_aware_utc,
+    floor_to_timeframe,
+    market_open_dt,
+    next_open,
+    to_nyse,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,34 +94,21 @@ def parse_timeframe(value: str) -> Timeframe:
         else:
             raise ValueError(f"Invalid timeframe unit: {value!r}")
 
-    text = normalize_timeframe_text(unit, step)
-    tf = Timeframe(unit=unit, step=step, text=text)
-    validate_timeframe(tf)
-    return tf
+New code should prefer `backend.marketdata.candles.timeframe`.
+"""
 
+from __future__ import annotations
 
-def normalize_timeframe_text(unit: str, step: int) -> str:
-    unit = unit.lower()
-    if unit == "mo":
-        return f"{step}mo"
-    return f"{step}{unit}"
+from datetime import datetime
 
-
-def validate_timeframe(tf: Timeframe) -> None:
-    allowed: dict[str, set[int]] = {
-        "s": {1, 5, 10, 15, 30},
-        "m": {1, 2, 3, 4, 5, 10, 15, 20, 30, 45},
-        "h": {1, 2, 3, 4},
-        "d": {1},
-        "w": {1},
-        "mo": {1},
-    }
-    if tf.unit not in allowed or tf.step not in allowed[tf.unit]:
-        raise ValueError(f"Unsupported timeframe: {tf.text}")
-
-
-def parse_timeframes(values: Iterable[str]) -> list[Timeframe]:
-    return [parse_timeframe(v) for v in values]
+from backend.marketdata.candles.timeframe import (  # noqa: F401
+    SUPPORTED_TIMEFRAMES,
+    Timeframe,
+    bar_range_utc,
+    floor_time,
+    parse_timeframe,
+    parse_timeframes,
+)
 
 
 def bucket_range_utc(
@@ -135,47 +129,33 @@ def bucket_range_utc(
     ts_utc = ensure_aware_utc(ts_utc)
 
     if tf.unit in {"s", "m", "h"}:
-        sec = tf.seconds
-        epoch = int(ts_utc.timestamp())
-        start_epoch = epoch - (epoch % sec)
-        start = datetime.fromtimestamp(start_epoch, tz=UTC)
-        end = start + timedelta(seconds=sec)
+        start = floor_to_timeframe(ts_utc, tf.text, tz="UTC").astimezone(UTC)
+        end = start + timedelta(seconds=tf.seconds)
         return start, end
-
-    tz = ZoneInfo(tz_market)
-    ts_local = ts_utc.astimezone(tz)
 
     if tf.unit == "d":
         if session_daily:
-            # NY RTH session start boundary (09:30); key by session "date".
-            # If before 09:30 local, treat it as previous session day.
-            session_start = ts_local.replace(hour=9, minute=30, second=0, microsecond=0)
-            if ts_local < session_start:
-                prev = ts_local - timedelta(days=1)
-                session_start = prev.replace(hour=9, minute=30, second=0, microsecond=0)
-            start_local = session_start
-            end_local = (start_local + timedelta(days=1)).replace(
-                hour=9, minute=30, second=0, microsecond=0
-            )
+            # NY RTH session start boundary (09:30). Uses the canonical NYSE session helpers.
+            # If `exchange_calendars` is available + enabled, this also respects holidays.
+            ts_ny = to_nyse(ts_utc)
+            open_today = market_open_dt(ts_ny.date())
+            session_date = ts_ny.date() if ts_ny >= open_today else (ts_ny.date() - timedelta(days=1))
+            start_local = market_open_dt(session_date)
+            end_local = next_open(start_local + timedelta(seconds=1))
         else:
-            start_local = ts_local.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_local = start_local + timedelta(days=1)
+            start_local = floor_to_timeframe(ts_utc, tf.text, tz=tz_market)
+            end_local = ceil_to_timeframe(ts_utc, tf.text, tz=tz_market)
         return start_local.astimezone(UTC), end_local.astimezone(UTC)
 
     if tf.unit == "w":
-        # Week starts Monday 00:00 local time.
-        start_of_day = ts_local.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_local = start_of_day - timedelta(days=start_of_day.weekday())
-        end_local = start_local + timedelta(days=7)
+        start_local = floor_to_timeframe(ts_utc, tf.text, tz=tz_market)
+        end_local = ceil_to_timeframe(ts_utc, tf.text, tz=tz_market)
         return start_local.astimezone(UTC), end_local.astimezone(UTC)
 
     if tf.unit == "mo":
-        start_local = ts_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        if start_local.month == 12:
-            next_local = start_local.replace(year=start_local.year + 1, month=1)
-        else:
-            next_local = start_local.replace(month=start_local.month + 1)
-        return start_local.astimezone(UTC), next_local.astimezone(UTC)
+        start_local = floor_to_timeframe(ts_utc, tf.text, tz=tz_market)
+        end_local = ceil_to_timeframe(ts_utc, tf.text, tz=tz_market)
+        return start_local.astimezone(UTC), end_local.astimezone(UTC)
 
     raise ValueError(f"Unhandled timeframe: {tf.text}")
 
