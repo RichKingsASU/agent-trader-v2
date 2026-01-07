@@ -4,6 +4,7 @@ from backend.execution.engine import (
     RiskConfig,
     RiskManager,
 )
+from backend.common.agent_mode import AgentModeError
 
 
 class _LedgerStub:
@@ -133,5 +134,61 @@ def test_max_position_size_rejects(monkeypatch):
     )
     assert result.status == "rejected"
     assert result.risk.reason == "max_position_size_exceeded"
+    assert broker.place_calls == 0
+
+
+def test_agent_mode_must_be_live_to_place_orders(monkeypatch):
+    monkeypatch.delenv("EXEC_KILL_SWITCH", raising=False)
+    monkeypatch.setenv("AGENT_MODE", "DISABLED")
+
+    broker = _BrokerStub()
+    risk = RiskManager(
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True),
+        ledger=_LedgerStub(trades_today=0),
+        positions=_PositionsStub(qty=0),
+    )
+    engine = ExecutionEngine(broker=broker, risk=risk, dry_run=False)
+
+    try:
+        engine.execute_intent(
+            intent=OrderIntent(
+                strategy_id="s1",
+                broker_account_id="acct1",
+                symbol="SPY",
+                side="buy",
+                qty=1,
+            )
+        )
+        assert False, "expected AgentModeError"
+    except AgentModeError:
+        pass
+    assert broker.place_calls == 0
+
+
+def test_agent_mode_halted_refuses_trading(monkeypatch):
+    monkeypatch.delenv("EXEC_KILL_SWITCH", raising=False)
+    monkeypatch.setenv("AGENT_MODE", "HALTED")
+
+    broker = _BrokerStub()
+    risk = RiskManager(
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True),
+        ledger=_LedgerStub(trades_today=0),
+        positions=_PositionsStub(qty=0),
+    )
+    engine = ExecutionEngine(broker=broker, risk=risk, dry_run=False)
+
+    try:
+        engine.execute_intent(
+            intent=OrderIntent(
+                strategy_id="s1",
+                broker_account_id="acct1",
+                symbol="SPY",
+                side="buy",
+                qty=1,
+            )
+        )
+        assert False, "expected AgentModeError"
+    except AgentModeError:
+        pass
     assert broker.place_calls == 0
 

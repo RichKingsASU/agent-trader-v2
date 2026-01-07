@@ -2,16 +2,22 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps for Postgres drivers used by backend/requirements.txt
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app
+
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
 
 # Install python deps first for better layer caching
 COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r backend/requirements.txt
+RUN python -m pip install --no-cache-dir -r /app/backend/requirements.txt
 
 # Copy the repo after deps are installed
 COPY . /app
+
+RUN chown -R appuser:appuser /app
+USER 10001
 
 # Cloud Run Jobs can override args; keep python as entrypoint.
 ENTRYPOINT ["python"]

@@ -991,6 +991,9 @@ class ExecutionEngine:
                 pass
             return ExecutionResult(status="dry_run", risk=risk, routing=routing_decision, message="dry_run_enabled")
 
+        # Authority boundary: only LIVE mode may place broker orders.
+        require_live_mode(action="place_order")
+
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None
         logger.info(

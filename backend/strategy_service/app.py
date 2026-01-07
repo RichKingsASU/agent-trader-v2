@@ -4,6 +4,11 @@ from .routers import strategies, broker_accounts, paper_orders, trades
 
 app = FastAPI(title="AgentTrader Strategy Service")
 
+# Used by Kubernetes readiness/liveness probes.
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
