@@ -11,15 +11,8 @@
 set -euo pipefail
 
 # --- Repo Root (run from any working directory) ---
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [[ -z "${REPO_ROOT}" ]]; then
-    if [[ -d "/workspace" ]]; then
-        REPO_ROOT="/workspace"
-    else
-        # Fallback for environments without git + /workspace (best-effort).
-        REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-    fi
-fi
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo /workspace)"
+cd "$ROOT"
 
 # --- Configuration ---
 FAIL_FLAG=0
@@ -62,8 +55,8 @@ check_for_latest_tag() {
     print_header "Checking for ':latest' image tags"
 
     local -a search_paths=()
-    [[ -d "${REPO_ROOT}/k8s" ]] && search_paths+=("${REPO_ROOT}/k8s")
-    [[ -d "${REPO_ROOT}/infra" ]] && search_paths+=("${REPO_ROOT}/infra")
+    [[ -d "k8s" ]] && search_paths+=("k8s")
+    [[ -d "infra" ]] && search_paths+=("infra")
 
     local found=0
     if [[ ${#search_paths[@]} -gt 0 ]]; then
@@ -74,8 +67,7 @@ check_for_latest_tag() {
                 found=1
                 local line_no="${match%%:*}"
                 local line_text="${match#*:}"
-                local rel_file="${file#${REPO_ROOT}/}"
-                print_failure "${rule_name}" "${rel_file}" "${line_no}" "${remediation_hint}" "${line_text}"
+                print_failure "${rule_name}" "${file}" "${line_no}" "${remediation_hint}" "${line_text}"
             done < <(grep -n "image:.*:latest" "${file}" 2>/dev/null || true)
         done < <(grep -r -l "image:.*:latest" "${search_paths[@]}" 2>/dev/null || true)
     fi
@@ -100,10 +92,9 @@ check_for_execute_mode() {
             found=1
             local line_no="${match%%:*}"
             local line_text="${match#*:}"
-            local rel_file="${file#${REPO_ROOT}/}"
-            print_failure "${rule_name}" "${rel_file}" "${line_no}" "${remediation_hint}" "${line_text}"
+            print_failure "${rule_name}" "${file}" "${line_no}" "${remediation_hint}" "${line_text}"
         done < <(grep -n -i "AGENT_MODE.*EXECUTE" "${file}" 2>/dev/null || true)
-    done < <(grep -r -i -l "AGENT_MODE.*EXECUTE" "${REPO_ROOT}" --exclude="ci_safety_guard.sh" 2>/dev/null || true)
+    done < <(grep -r -i -l "AGENT_MODE.*EXECUTE" "." --exclude-dir=".git" --exclude="ci_safety_guard.sh" 2>/dev/null || true)
 
     if [[ "${found}" -eq 0 ]]; then
         print_success "No instances of 'AGENT_MODE=EXECUTE' found."
@@ -118,7 +109,7 @@ check_for_scaled_executors() {
 
     local found_scaled=0
     # Find files that look like executor manifests, then check replicas
-    if [[ -d "${REPO_ROOT}/k8s" ]]; then
+    if [[ -d "k8s" ]]; then
         while IFS= read -r -d '' file; do
             # This grep pattern finds "replicas:" followed by any number (not zero)
             if grep -q "replicas: *[1-9]" "${file}" 2>/dev/null; then
@@ -127,11 +118,10 @@ check_for_scaled_executors() {
                     found_scaled=1
                     local line_no="${match%%:*}"
                     local line_text="${match#*:}"
-                    local rel_file="${file#${REPO_ROOT}/}"
-                    print_failure "${rule_name}" "${rel_file}" "${line_no}" "${remediation_hint}" "${line_text}"
+                    print_failure "${rule_name}" "${file}" "${line_no}" "${remediation_hint}" "${line_text}"
                 done < <(grep -n "replicas: *[1-9]" "${file}" 2>/dev/null || true)
             fi
-        done < <(find "${REPO_ROOT}/k8s" -type f \( -name "*-executor.yaml" -o -name "*-trader.yaml" \) -print0 2>/dev/null || true)
+        done < <(find "k8s" -type f \( -name "*-executor.yaml" -o -name "*-trader.yaml" \) -print0 2>/dev/null || true)
     fi
 
     if [[ "${found_scaled}" -eq 0 ]]; then
@@ -141,7 +131,7 @@ check_for_scaled_executors() {
 
 # --- Main Execution ---
 echo "Running AgentTrader v2 CI Safety Guard..."
-echo "Repo root: ${REPO_ROOT}"
+echo "Repo root: ${ROOT}"
 echo ""
 
 check_for_latest_tag
