@@ -33,9 +33,16 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-          readinessProbe:
+          startupProbe:
             httpGet:
               path: /healthz
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -43,7 +50,7 @@ spec:
             failureThreshold: 6
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: http
             initialDelaySeconds: 10
             periodSeconds: 20
@@ -53,6 +60,8 @@ spec:
             # Always keep execution disabled in this service.
             - name: AGENT_MODE
               value: "DISABLED"
+            - name: SERVICE_NAME
+              value: "strategy-runtime"
             - name: EXECUTION_HALTED
               valueFrom:
                 configMapKeyRef:
@@ -60,6 +69,10 @@ spec:
                   key: EXECUTION_HALTED
             - name: EXECUTION_HALTED_FILE
               value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
           volumeMounts:
             - name: kill-switch
               mountPath: /etc/agenttrader/kill-switch
