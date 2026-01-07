@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from backend.common.agent_boot import configure_startup_logging
-from backend.observability.build_fingerprint import get_build_fingerprint
+from backend.observability.correlation import install_fastapi_correlation_middleware
+from backend.observability.logger import log_event
 
 from backend.common.marketdata_heartbeat import snapshot
 from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
@@ -18,6 +19,7 @@ from backend.safety.config import load_kill_switch, load_stale_threshold_seconds
 from backend.safety.safety_state import evaluate_safety_state, is_safe_to_run_strategies
 
 app = FastAPI()
+install_fastapi_correlation_middleware(app)
 
 def _identity() -> dict[str, Any]:
     return {
@@ -73,16 +75,7 @@ async def startup_event():
         agent_name="marketdata-mcp-server",
         intent="Serve marketdata MCP endpoints and run the Alpaca streamer background task.",
     )
-    try:
-        fp = get_build_fingerprint()
-        print(
-            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
-            flush=True,
-        )
-    except Exception:
-        # Never block startup for observability.
-        pass
-    print("Starting Alpaca streamer...")
+    log_event("marketdata_streamer_starting")
     asyncio.create_task(alpaca_streamer_main())
 
 @app.get("/")
