@@ -419,6 +419,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Agent Mission Control", version="0.1.0", lifespan=lifespan)
+install_fastapi_request_id_middleware(app, service="mission-control")
 
 
 @app.get("/healthz")

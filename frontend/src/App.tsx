@@ -29,6 +29,7 @@ import OpsOverview from "./pages/ops/OpsOverview";
 import OptionsExplorer from "./pages/ops/OptionsExplorer";
 import NewsViewer from "./pages/ops/NewsViewer";
 import JobHealth from "./pages/ops/JobHealth";
+import OpsDebug from "./pages/ops/OpsDebug";
 import MissionControl from "./pages/MissionControl";
 
 const queryClient = new QueryClient();
@@ -64,6 +65,7 @@ const App = () => (
                     <Route path="options" element={<OptionsExplorer />} />
                     <Route path="news" element={<NewsViewer />} />
                     <Route path="jobs" element={<JobHealth />} />
+                    <Route path="debug" element={<OpsDebug />} />
                   </Route>
                   <Route path="/backtesting" element={<Backtesting />} />
                   

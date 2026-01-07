@@ -24,6 +24,7 @@ from backend.common.agent_state_machine import (
 from backend.common.agent_mode import AgentModeError
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
+from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware
 from backend.execution.engine import (
     AlpacaBroker,
     DryRunBroker,
@@ -39,7 +40,6 @@ from backend.common.app_heartbeat_writer import install_app_heartbeat
 from backend.common.vertex_ai import init_vertex_ai_or_log
 from backend.execution.marketdata_health import check_market_ingest_heartbeat
 from backend.observability.build_fingerprint import get_build_fingerprint
-from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 from backend.safety.startup_validation import (
     validate_agent_mode_or_exit,
@@ -48,6 +48,8 @@ from backend.safety.startup_validation import (
 )
 from backend.observability.ops_json_logger import OpsLogger
 from backend.common.ops_metrics import REGISTRY
+
+init_structured_logging(service="execution-engine")
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +108,7 @@ def _build_engine_from_env() -> tuple[ExecutionEngine, RiskManager]:
 
 
 app = FastAPI(title="AgentTrader Execution Engine")
-install_fastapi_correlation_middleware(app)
+install_fastapi_request_id_middleware(app, service="execution-engine")
 install_app_heartbeat(app, service_name="execution-engine")
 
 @app.on_event("startup")
@@ -442,11 +444,4 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
 
     return resp
 
-
-def _configure_logging() -> None:
-    level = os.getenv("LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-
-
-_configure_logging()
 

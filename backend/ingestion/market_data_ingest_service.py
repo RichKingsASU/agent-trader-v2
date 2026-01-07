@@ -18,7 +18,7 @@ from fastapi.responses import Response
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
-from backend.observability.correlation import install_fastapi_correlation_middleware
+from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.observability.ops_json_logger import OpsLogger
 from backend.common.kill_switch import get_kill_switch_state
@@ -33,7 +33,8 @@ from backend.ingestion.market_data_ingest import (
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AgentTrader Market Ingestion Service")
-install_fastapi_correlation_middleware(app)
+init_structured_logging(service="market-ingest")
+install_fastapi_request_id_middleware(app, service="market-ingest")
 
 
 @app.get("/health")
@@ -97,9 +98,6 @@ async def _startup() -> None:
     Cloud Run requires a listening HTTP server; ingestion runs as a background task
     while this FastAPI app provides health checks.
     """
-    level = os.getenv("LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-
     enforce_agent_mode_guard()
 
     configure_startup_logging(

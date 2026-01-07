@@ -10,6 +10,10 @@ from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_r
 _log_runtime_fingerprint(service="strategy-engine")
 del _log_runtime_fingerprint
 
+from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware
+
+init_structured_logging(service="strategy-engine")
+
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
 
 enforce_agent_mode_guard()
@@ -27,7 +31,6 @@ from fastapi import FastAPI, Response
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.app_heartbeat_writer import install_app_heartbeat
-from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.observability.ops_json_logger import OpsLogger
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.ops_metrics import REGISTRY
@@ -36,7 +39,7 @@ from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops
 from .driver import run_strategy
 
 app = FastAPI(title="AgentTrader Strategy Engine")
-install_fastapi_correlation_middleware(app)
+install_fastapi_request_id_middleware(app, service="strategy-engine")
 install_app_heartbeat(app, service_name="strategy-engine")
 
 _PROCESS_START_MONOTONIC = time.monotonic()
