@@ -1,69 +1,30 @@
-timeout: 3600s
-
-  # b) Safety guard
-  - name: 'gcr.io/cloud-builders/bash'
-    id: 'PHASE 1: preflight'
-    entrypoint: 'bash'
+# This CI pipeline enforces institutional safety guarantees.
+steps:
+  - name: gcr.io/cloud-builders/gcloud
+    id: preflight
+    entrypoint: bash
     args:
       - -ceu
       - |
         set -euo pipefail
-        echo "===== PHASE 1: preflight ====="
-        echo "BUILD_ID=${BUILD_ID}"
-        echo "PROJECT_ID=${PROJECT_ID}"
-        echo "SHORT_SHA=${SHORT_SHA}"
-        echo "COMMIT_SHA=${COMMIT_SHA}"
-        echo "TAG=${_TAG}"
+        pwd
+        ls -la
+        ls -la /workspace
+        ls -la /workspace/scripts || true
+        echo "BRANCH=$BRANCH_NAME COMMIT=$COMMIT_SHA" || true
 
-  - name: 'gcr.io/cloud-builders/bash'
-    id: 'PHASE 2: safety guard'
-    waitFor: ['PHASE 1: preflight']
-    entrypoint: 'bash'
+  - name: gcr.io/cloud-builders/gcloud
+    id: Safety Guard
+    entrypoint: bash
     args:
-      - -ceu
+      - '-c'
       - |
         set -euo pipefail
-        echo "===== PHASE 2: safety guard ====="
-
-        # Diagnostics for unexpected tool/runtime issues.
-        diag_grep_error() {
-          local check_name="$1"
-          local files_count="$2"
-          echo "----- Debug: ${check_name} (grep error) -----" >&2
-          echo "PWD: $(pwd)" >&2
-          echo "WORKSPACE_ROOT: ${WORKSPACE_ROOT:-<unset>}" >&2
-          echo "Files scanned: ${files_count}" >&2
-          echo "Listing PWD:" >&2
-          ls -la >&2 || true
-          echo "----- End Debug -----" >&2
-        }
-
-        # Run grep against an explicit file list, interpreting exit codes robustly:
-        # - 0 => policy violation (FAIL with exit 1) and print offending lines
-        # - 1 => PASS (no matches)
-        # - 2 => grep/runtime error (FAIL with exit 1) and print diagnostics
-        #
-        # Usage:
-        #   run_grep_check "<check name>" "<fail message>" "<grep regex>" <file1> <file2> ...
-        run_grep_check() {
-          local check_name="$1"
-          local fail_message="$2"
-          local grep_pattern="$3"
-          shift 3
-          local -a files=( "$@" )
-
-  # Safety guard MUST pass before any docker build/push steps run.
-  - name: 'gcr.io/cloud-builders/gcloud'
-    id: 'CI Safety Guard'
-    entrypoint: 'bash'
-    args:
-      - -c
-      - |
-        set -e
-        cd /workspace
-        chmod +x /workspace/.cloudbuild/ci_safety_guard.sh
-        bash /workspace/.cloudbuild/ci_safety_guard.sh
-        echo "CI SAFETY GUARD PASSED"
+        test -f /workspace/scripts/ci_safety_guard.sh
+        ls -la /workspace/scripts/ci_safety_guard.sh
+        chmod +x /workspace/scripts/ci_safety_guard.sh
+        /workspace/scripts/ci_safety_guard.sh
+        echo "✅ SAFETY GUARD PASS"
 
         # ----------------------------
         # Rule 3: Execution agents must not be scaled
