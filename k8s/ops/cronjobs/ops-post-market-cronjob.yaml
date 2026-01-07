@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ops-post-market-script
+  namespace: trading-floor
+data:
+  ops_post_market.sh: |
+    #!/bin/sh
+    set -eu
+
+    # In-cluster post-market snapshot (read-only).
+    # This is a scaffold: it prints status to stdout for log capture.
+    #
+    # Safety:
+    # - Does NOT patch resources
+    # - Does NOT change kill-switch or AGENT_MODE
+
+    NS="${TRADING_FLOOR_NAMESPACE:-trading-floor}"
+    SEL="${TRADING_FLOOR_LABEL_SELECTOR:-app.kubernetes.io/part-of=agent-trader-v2}"
+    TS="$(date -u +%Y%m%dT%H%M%SZ)"
+
+    echo "agenttrader_v2_ops_snapshot: post_market (in-cluster)"
+    echo "generated_utc=${TS}"
+    echo "namespace=${NS}"
+    echo "label_selector=${SEL}"
+    echo
+
+    echo "== Workloads =="
+    kubectl -n "${NS}" get deploy,statefulset,job,svc -l "${SEL}" -o wide || true
+    echo
+
+    echo "== Pods =="
+    kubectl -n "${NS}" get pods -l "${SEL}" -o wide || true
+    echo
+
+    echo "== Kill-switch ConfigMap (read-only) =="
+    kubectl -n "${NS}" get configmap agenttrader-kill-switch -o yaml || true
+    echo
+
+    echo "== Recent events (sorted) =="
+    kubectl -n "${NS}" get events --sort-by=.lastTimestamp || true
+    echo
+
+    echo "Done."
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ops-post-market
+  namespace: trading-floor
+  labels:
+    app.kubernetes.io/name: agenttrader
+    app.kubernetes.io/part-of: agent-trader-v2
+    app.kubernetes.io/component: ops
+    app.kubernetes.io/instance: ops-post-market
+spec:
+  # Disabled by default (safety): set to false only after RBAC is reviewed.
+  suspend: true
+  # Post-market-ish default schedule (UTC). Adjust to your market + timezone.
+  schedule: "30 22 * * 1-5"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: agenttrader
+            app.kubernetes.io/part-of: agent-trader-v2
+            app.kubernetes.io/component: ops
+            app.kubernetes.io/instance: ops-post-market
+        spec:
+          restartPolicy: Never
+          # IMPORTANT: Use a dedicated read-only service account with least-privilege RBAC.
+          # serviceAccountName: mission-control-ksa
+          containers:
+            - name: ops-post-market
+              # Includes kubectl; suitable for read-only cluster snapshots.
+              image: bitnami/kubectl:latest
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  chmod +x /scripts/ops_post_market.sh && /scripts/ops_post_market.sh
+              env:
+                - name: TRADING_FLOOR_NAMESPACE
+                  value: trading-floor
+                - name: TRADING_FLOOR_LABEL_SELECTOR
+                  value: app.kubernetes.io/part-of=agent-trader-v2
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+          volumes:
+            - name: scripts
+              configMap:
+                name: ops-post-market-script
+                defaultMode: 0555
+
