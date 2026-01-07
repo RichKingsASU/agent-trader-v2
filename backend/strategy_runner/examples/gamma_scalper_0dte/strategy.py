@@ -30,7 +30,7 @@ import uuid
 from datetime import datetime, time
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
-from zoneinfo import ZoneInfo
+from backend.time.nyse_time import NYSE_TZ, parse_ts, to_nyse, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,6 @@ logger = logging.getLogger(__name__)
 HEDGING_THRESHOLD = Decimal("0.15")  # Base delta threshold for hedging
 HEDGING_THRESHOLD_NEGATIVE_GEX = Decimal("0.10")  # Tighter threshold when GEX is negative
 EXIT_TIME_ET = time(15, 45, 0)  # 3:45 PM ET - exit time to avoid MOC volatility
-NYSE_TZ = ZoneInfo("America/New_York")
 
 # Global state (persists across market events in the same run)
 _portfolio_positions: Dict[str, Dict[str, Any]] = {}
@@ -65,26 +64,16 @@ def _to_decimal(value: Any) -> Decimal:
 def _parse_timestamp(ts_str: str) -> datetime:
     """Parse ISO8601 timestamp string to datetime with timezone."""
     if not ts_str:
-        return datetime.now(tz=ZoneInfo("UTC"))
-    
-    ts = ts_str.strip()
-    if ts.endswith("Z") or ts.endswith("z"):
-        ts = ts[:-1] + "+00:00"
-    
+        return utc_now()
     try:
-        dt = datetime.fromisoformat(ts)
-    except ValueError:
-        return datetime.now(tz=ZoneInfo("UTC"))
-    
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-    
-    return dt
+        return parse_ts(ts_str)
+    except Exception:
+        return utc_now()
 
 
 def _is_market_close_time(current_time: datetime) -> bool:
     """Check if current time is at or past the exit time (3:45 PM ET)."""
-    et_time = current_time.astimezone(NYSE_TZ)
+    et_time = to_nyse(current_time)
     return et_time.time() >= EXIT_TIME_ET
 
 
@@ -163,7 +152,7 @@ def _fetch_market_regime_from_firestore() -> None:
             
             if gex_value is not None:
                 _last_gex_value = _to_decimal(gex_value)
-                _last_gex_update = datetime.now(tz=ZoneInfo("UTC"))
+                _last_gex_update = utc_now()
                 logger.info(f"Fetched GEX from Firestore: {_last_gex_value}")
             
             # Check for macro event status (added by macro_scraper)
@@ -195,7 +184,7 @@ def _fetch_market_regime_from_firestore() -> None:
                 _stop_loss_multiplier = Decimal("1.0")
                 _position_size_multiplier = Decimal("1.0")
             
-            _last_macro_check = datetime.now(tz=ZoneInfo("UTC"))
+            _last_macro_check = utc_now()
             
         else:
             # Document doesn't exist - use defaults
@@ -209,7 +198,7 @@ def _fetch_market_regime_from_firestore() -> None:
             env_gex = os.getenv("GEX_VALUE")
             if env_gex:
                 _last_gex_value = _to_decimal(env_gex)
-                _last_gex_update = datetime.now(tz=ZoneInfo("UTC"))
+                _last_gex_update = utc_now()
         
     except Exception as e:
         logger.warning(f"Failed to fetch market regime from Firestore: {e}")
@@ -218,7 +207,7 @@ def _fetch_market_regime_from_firestore() -> None:
         env_gex = os.getenv("GEX_VALUE")
         if env_gex:
             _last_gex_value = _to_decimal(env_gex)
-            _last_gex_update = datetime.now(tz=ZoneInfo("UTC"))
+            _last_gex_update = utc_now()
 
 
 def _fetch_gex_from_firestore() -> Optional[Decimal]:
@@ -252,7 +241,7 @@ def _get_hedging_threshold() -> Decimal:
     
     # Fetch latest market regime data (includes GEX and macro events)
     # Only fetch if we haven't checked recently (cache for 60 seconds)
-    if _last_macro_check is None or (datetime.now(tz=ZoneInfo("UTC")) - _last_macro_check).total_seconds() > 60:
+    if _last_macro_check is None or (utc_now() - _last_macro_check).total_seconds() > 60:
         _fetch_market_regime_from_firestore()
     
     base_threshold = HEDGING_THRESHOLD
