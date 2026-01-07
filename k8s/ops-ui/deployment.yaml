@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agenttrader-ops-ui
+  namespace: trading-floor
+  labels:
+    app: agenttrader-ops-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agenttrader-ops-ui
+  template:
+    metadata:
+      labels:
+        app: agenttrader-ops-ui
+    spec:
+      containers:
+        - name: ops-ui
+          # Build with: docker build -f frontend/ops-ui/Dockerfile -t <your-registry>/agenttrader-ops-ui:tag .
+          image: ghcr.io/richkingsasu/agenttrader-ops-ui:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          env:
+            - name: VITE_MISSION_CONTROL_BASE_URL
+              value: "http://agenttrader-mission-control"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+
