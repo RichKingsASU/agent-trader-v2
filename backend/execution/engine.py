@@ -11,6 +11,7 @@ from typing import Any, Optional, Protocol, runtime_checkable
 import requests
 
 from backend.common.env import get_env
+from backend.common.agent_mode import require_live_mode
 from backend.streams.alpaca_env import load_alpaca_env
 
 logger = logging.getLogger(__name__)
@@ -827,6 +828,9 @@ class ExecutionEngine:
         if self._dry_run:
             logger.info("exec.dry_run_accept %s", json.dumps(_to_jsonable(audit_ctx)))
             return ExecutionResult(status="dry_run", risk=risk, routing=routing_decision, message="dry_run_enabled")
+
+        # Authority boundary: only LIVE mode may place broker orders.
+        require_live_mode(action="place_order")
 
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None

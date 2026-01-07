@@ -33,6 +33,12 @@ spec:
           ports:
             - name: http1
               containerPort: 8080
+          env:
+            # Authority guard (default fail-closed). To enable live trading, set:
+            # - EXEC_DRY_RUN=0
+            # - AGENT_MODE=LIVE
+            - name: AGENT_MODE
+              value: "DISABLED"
           resources:
             limits:
               cpu: "1"

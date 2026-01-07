@@ -1,16 +1,26 @@
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app \
+    PORT=8080
 
+# Create an unprivileged user for runtime.
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
+
+# Install Python deps first to maximize layer caching.
+COPY backend/strategy_service/requirements.txt /app/backend/strategy_service/requirements.txt
+RUN python -m pip install --no-cache-dir -r /app/backend/strategy_service/requirements.txt
+
+# Copy the repo after dependencies.
 COPY . /app
 
-ENV PYTHONPATH="/app"
-
-RUN pip install --upgrade pip
-RUN pip install --no-cache-dir -r /app/backend/strategy_service/requirements.txt
+# Ensure the unprivileged user can read the app.
+RUN chown -R appuser:appuser /app
+USER 10001
 
 EXPOSE 8080
 

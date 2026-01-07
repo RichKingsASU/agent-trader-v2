@@ -6,18 +6,9 @@ import os
 
 from backend.common.agent_boot import configure_startup_logging
 
-from agenttrader.backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
+from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
 
 app = FastAPI()
-
-# API routers (non-streaming endpoints)
-try:
-    from agenttrader.backend.routers.trades import router as trades_router
-
-    app.include_router(trades_router)
-except Exception as e:  # pragma: no cover
-    # Keep streamer service booting even if DB/router deps are unavailable.
-    print(f"[backend.app] trades router disabled: {e}")
 
 @app.on_event("startup")
 async def startup_event():

@@ -1,7 +1,7 @@
 # Cloud Build configuration for Congressional Disclosure Ingestion service
 
 steps:
-  # Build the Docker image
+  # Build the Docker image (deployment is handled via Kubernetes in us-east4).
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'

@@ -2,11 +2,18 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app \
+    PORT=8080
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Create an unprivileged user for runtime.
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
+
+# Install deps first for better caching.
+COPY requirements.txt /app/requirements.txt
+RUN python -m pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . .
 

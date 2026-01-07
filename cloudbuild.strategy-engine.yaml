@@ -1,5 +1,16 @@
 steps:
 - name: gcr.io/cloud-builders/docker
-  args: ["build","-f","backend/strategy_service/Dockerfile","-t","us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-engine:d9a5f5d","."]
+  args:
+    [
+      "build",
+      "-f",
+      "infra/Dockerfile.strategy_engine",
+      "-t",
+      "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-engine:${SHORT_SHA}",
+      "-t",
+      "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-engine:latest",
+      ".",
+    ]
 images:
-- "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-engine:d9a5f5d"
+- "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-engine:${SHORT_SHA}"
+- "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-engine:latest"
