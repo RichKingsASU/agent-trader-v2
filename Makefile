@@ -20,7 +20,7 @@ MISSION_CONTROL_URL ?= http://agenttrader-mission-control
 
 PY ?= python3
 
-.PHONY: help fmt lint test build frontend-build deploy guard report readiness status git-status logs scale port-forward clean dev
+.PHONY: help fmt lint smoke-check test build frontend-build deploy guard report readiness status git-status logs scale port-forward clean dev
 
 help: ## Show available targets and usage
 	@echo "AgentTrader v2 — Trading Floor Makefile"
@@ -72,8 +72,9 @@ fmt: ## Best-effort formatting (python + yaml)
 		echo "INFO: yamlfmt not found (optional)"; \
 	fi
 
-lint: ## Best-effort lint checks
+lint: ## Best-effort lint checks (includes import smoke check)
 	@echo "== lint (best-effort) =="
+	@make smoke-check
 	@if command -v ruff >/dev/null 2>&1; then \
 		echo "[python] ruff check ."; ruff check .; \
 	else \
@@ -89,6 +90,11 @@ lint: ## Best-effort lint checks
 	else \
 		echo "INFO: yamllint not found (optional)"; \
 	fi
+
+smoke-check: ## Run Python import smoke tests
+	@echo "== smoke-check =="
+	@if [ ! -x ./scripts/smoke_check_imports.py ]; then echo "ERROR: missing or non-executable ./scripts/smoke_check_imports.py"; exit 1; fi
+	@./scripts/smoke_check_imports.py
 
 test: ## Run python tests if present
 	@echo "== test =="

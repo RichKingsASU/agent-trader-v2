@@ -4,7 +4,4 @@
 # run tests/compile checks and the Firebase Python functions.
 -r backend/requirements.txt
 -r functions/requirements.txt
-
-# Test runner (repo uses pytest in /tests)
-pytest>=8.3.0
-
+-r base_requirements.txt
