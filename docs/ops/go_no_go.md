@@ -1,33 +1,24 @@
-# Go / No-Go (Production Change Gate)
+# Go / No-Go (Trading Floor Posture) — Stub
 
-This is the human approval gate for **any** production change and **any** controlled unlock described in `ops/PRODUCTION_LOCK.md`.
+This is a **read-only posture checklist** for AgentTrader v2. It does **not** enable trading execution.
 
-## Required inputs (attach or link)
+## Go criteria (observe-only)
 
-- Readiness report (timestamp + git sha)
-- Audit pack index (artifact listing)
-- Deployment plan (what changes, where, rollback)
+- `EXECUTION_HALTED=1` (kill-switch engaged) is confirmed in the runtime environment.
+- Marketdata heartbeat is healthy (`/healthz` returns 200 with `ok=true` and acceptable age).
+- `audit_artifacts/deploy_report.md` shows core services healthy (no crash loops, no ImagePullBackOff).
+- Strategy runtime is stable (no repeated stale-marketdata refusals).
 
-## Go criteria (all must be true)
+## No-Go triggers
 
-- Execution remains **DISABLED** unless the change is an approved controlled unlock
-- Kill-switch default remains **SAFE/HALTED** unless explicitly unlocked
-- No manifests set `AGENT_MODE=EXECUTE`
-- Health contracts satisfied (see `docs/MARKETDATA_HEALTH_CONTRACT.md`)
+- Any ambiguity about kill-switch state.
+- Marketdata stale/unreachable.
+- CrashLoopBackOff or persistent image pull failures on critical workloads.
+- Evidence of unintended execution enablement.
 
-## Sign-off template
+## Evidence to attach
 
-- Requestor:
-- Change/Unlock summary:
-- Environments impacted:
-- Evidence links:
-  - readiness:
-  - audit index:
-- Approvers:
-  - Security:
-  - Ops/SRE:
-  - Product/Owner:
-- Decision:
-  - GO / NO-GO
-- Notes / constraints:
+- Output of `./scripts/ops_pre_market.sh`
+- `audit_artifacts/deploy_report.md`
+- Any relevant pod logs/events snapshot from `audit_artifacts/ops_runs/`
 

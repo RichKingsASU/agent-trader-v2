@@ -1,6 +1,5 @@
-import os
 import logging
-from typing import Any
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

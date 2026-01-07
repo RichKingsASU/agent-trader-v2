@@ -1,0 +1,46 @@
+agents:
+  # Marketdata freshness gate (critical)
+  - agent_name: marketdata-mcp-server
+    service_dns: http://marketdata-mcp-server.trading-floor.svc.cluster.local
+    kind: marketdata
+    expected_endpoints:
+      - /ops/status
+      - /healthz
+      - /heartbeat
+    criticality: critical
+
+  # Strategy agents (important)
+  - agent_name: gamma-strategy
+    service_dns: http://gamma-strategy.trading-floor.svc.cluster.local
+    kind: strategy
+    expected_endpoints:
+      - /ops/status
+      - /healthz
+    criticality: important
+
+  - agent_name: whale-strategy
+    service_dns: http://whale-strategy.trading-floor.svc.cluster.local
+    kind: strategy
+    expected_endpoints:
+      - /ops/status
+      - /healthz
+    criticality: important
+
+  # Execution engine (optional here; may run on Cloud Run in some deployments)
+  - agent_name: execution-engine
+    service_dns: http://execution-engine.trading-floor.svc.cluster.local
+    kind: execution
+    expected_endpoints:
+      - /ops/status
+      - /healthz
+    criticality: optional
+
+  # Market ingest (optional; may run outside cluster)
+  - agent_name: market-ingest
+    service_dns: http://market-ingest.trading-floor.svc.cluster.local
+    kind: ingest
+    expected_endpoints:
+      - /ops/status
+      - /healthz
+    criticality: optional
+

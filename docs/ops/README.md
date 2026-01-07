@@ -1,21 +1,26 @@
-# Ops Documentation Index
+# Ops (AgentTrader v2)
 
-This folder contains **operational** documentation for running AgentTrader safely.
+This folder contains the operational documentation for running AgentTrader v2 safely in autonomous **observe-only** mode.
 
-## Production Lock (v2)
+## Index
 
-- **Lock artifact**: `ops/PRODUCTION_LOCK.md`
-- **Validation script**: `scripts/validate_production_lock.sh`
-- **Tag helper**: `scripts/tag_production_lock.sh`
-- **Controlled unlock procedure**: documented in `ops/PRODUCTION_LOCK.md`
+- **Agent mesh plan (single source of truth)**: `docs/ops/agent_mesh.md`
+- **Reporting / readiness**: `docs/ops/reporting.md`
+- **Runbooks**: `docs/ops/runbooks/`
+- **Go/No-Go checklist (stub)**: `docs/ops/go_no_go.md`
+- **Deploy guardrails (stub)**: `docs/ops/deploy_guardrails.md`
+- **Disaster recovery plan (stub)**: `docs/ops/dr_plan.md`
 
-## Required ops documents (validated by lock checks)
+## Quick commands (read-only)
 
-- `docs/ops/go_no_go.md`
-- `docs/ops/agent_mesh.md`
-- `docs/ops/audit_pack.md`
+- Pre-market snapshot:
+  - `./scripts/ops_pre_market.sh`
+- Post-market snapshot:
+  - `./scripts/ops_post_market.sh`
 
-## Reporting
+## Safety reminders
 
-- `docs/ops/reporting.md`
+- Kill-switch defaults to **HALTED** in k8s: `k8s/05-kill-switch-configmap.yaml`
+- Marketdata freshness must gate strategies/execution: `docs/MARKETDATA_HEALTH_CONTRACT.md`
+- Execution remains **disabled** by default (do not enable in automation).
 
