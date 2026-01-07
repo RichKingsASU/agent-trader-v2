@@ -12,8 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
 
-COPY backend/execution_agent/requirements.txt /app/backend/execution_agent/requirements.txt
-RUN python -m pip install --no-cache-dir -r /app/backend/execution_agent/requirements.txt
+COPY backend/execution_agent/requirements.lock /app/backend/execution_agent/requirements.lock
+RUN python -m pip install --no-cache-dir -r /app/backend/execution_agent/requirements.lock
 
 COPY . /app
 

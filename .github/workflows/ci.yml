@@ -55,14 +55,23 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            backend/requirements.lock
+            backend/strategy_service/requirements.lock
+            backend/risk_service/requirements.lock
+            backend/mission_control/requirements.lock
+            backend/execution_agent/requirements.lock
+            backend/strategy_engine/requirements.lock
 
-      - name: Install backend dependencies
+      - name: Dependency lockfile is up to date
+        run: make lock-check
+
+      - name: Install backend dependencies (locked)
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install --upgrade "pip==24.3.1"
+          python -m pip install -r backend/requirements.lock
 
       - name: Deployment report script smoke test (no cluster required)
         shell: bash

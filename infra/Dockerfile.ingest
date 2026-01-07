@@ -20,8 +20,8 @@ ENV GIT_SHA=$GIT_SHA \
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
 
 # Install python deps first for better layer caching
-COPY backend/requirements.txt /app/backend/requirements.txt
-RUN python -m pip install --no-cache-dir -r /app/backend/requirements.txt
+COPY backend/requirements.lock /app/backend/requirements.lock
+RUN python -m pip install --no-cache-dir -r /app/backend/requirements.lock
 
 # Copy the repo after deps are installed
 COPY . /app
