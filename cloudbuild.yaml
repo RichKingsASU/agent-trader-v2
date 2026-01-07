@@ -1,8 +1,38 @@
 # This CI pipeline enforces institutional safety guarantees.
 steps:
+  # NOTE ON ORDER (determinism + debuggability):
+  # - Checkout first so every later step can log the same source state.
+  # - Safety guard next to fail fast on forbidden config / dangerous settings.
+  # - Import smoke check next to fail fast on broken Python entrypoints *before*
+  #   spending time building images.
+  # - Docker builds are serialized (explicit waitFor chain) to avoid hidden
+  #   parallelism and to make failures reproducible and logs easier to read.
+  # - Docker pushes are last so nothing is published unless all gates pass.
+
+  # a) Checkout
+  - name: 'gcr.io/cloud-builders/git'
+    id: 'Checkout'
+    entrypoint: 'bash'
+    args:
+      - -ceu
+      - |
+        echo "--- Checkout / source context ---"
+        echo "PWD=$$(pwd)"
+        echo "Workspace contents:"
+        ls -la
+        if [ -d .git ]; then
+          echo "GIT_SHA=$$(git rev-parse HEAD)"
+          echo "GIT_STATUS_PORCELAIN:"
+          git status --porcelain || true
+        else
+          echo "INFO: .git directory not present (source may be provided as an archive)."
+        fi
+
+  # b) Safety guard
   - name: 'gcr.io/cloud-builders/bash'
     id: 'Safety Guard'
-    entrypoint: 'bash' # RISK: Assumes the container image has `bash` in PATH; if `name: bash` pulls a minimal image, this can be "exec: bash: not found".
+    waitFor: ['Checkout']
+    entrypoint: 'bash'
     args:
       - '-c'
       - |
@@ -73,9 +103,10 @@ steps:
 
         echo "CI SAFETY GUARD PASSED — proceeding to build"
 
-  # Build and push marketdata-mcp-server
+  # Build marketdata-mcp-server
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Build marketdata-mcp-server'
+    waitFor: ['Import smoke check']
     args: [
       'build',
       '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}',
@@ -85,6 +116,7 @@ steps:
 
   - name: 'gcr.io/cloud-builders/bash'
     id: 'Import gate marketdata-mcp-server'
+    waitFor: ['Build marketdata-mcp-server']
     entrypoint: 'bash'
     args:
       - "-c"
@@ -94,9 +126,10 @@ steps:
         chmod +x ./scripts/ci_import_gate.sh
         ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.app
 
-  # Build and push strategy-engine
+  # Build strategy-engine
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Build strategy-engine'
+    waitFor: ['Import gate marketdata-mcp-server']
     args: [
       'build',
       '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}',
@@ -106,6 +139,7 @@ steps:
 
   - name: 'gcr.io/cloud-builders/bash'
     id: 'Import gate strategy-engine'
+    waitFor: ['Build strategy-engine']
     entrypoint: 'bash'
     args:
       - "-c"
@@ -115,9 +149,10 @@ steps:
         chmod +x ./scripts/ci_import_gate.sh
         ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_engine.service
 
-  # Build and push strategy-runtime (used by gamma and whale strategies)
+  # Build strategy-runtime (used by gamma and whale strategies)
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Build strategy-runtime'
+    waitFor: ['Import gate strategy-engine']
     args: [
       'build',
       '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}',
@@ -127,11 +162,36 @@ steps:
 
   - name: 'gcr.io/cloud-builders/bash'
     id: 'Import gate strategy-runtime'
+    waitFor: ['Build strategy-runtime']
     entrypoint: 'bash'
     args:
       - "-c"
       - |
         set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
-        chmod +x ./scripts/ci_import_gate.sh
-        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
+        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
+
+  # e) Docker push(es) (serialized; publish only after all gates pass).
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Push marketdata-mcp-server'
+    waitFor: ['Import gate strategy-runtime']
+    args: [
+      'push',
+      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
+    ]
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Push strategy-engine'
+    waitFor: ['Push marketdata-mcp-server']
+    args: [
+      'push',
+      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
+    ]
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Push strategy-runtime'
+    waitFor: ['Push strategy-engine']
+    args: [
+      'push',
+      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
+    ]
