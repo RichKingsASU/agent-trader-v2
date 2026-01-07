@@ -4,7 +4,7 @@ steps:
     id: preflight
     entrypoint: bash
     args:
-      - '-c'
+      - -ceu
       - |
         set -euo pipefail
         pwd
@@ -37,9 +37,11 @@ steps:
     waitFor: ['Safety Guard']
     entrypoint: 'bash'
     args:
-      - -c
+      - -ceu
       - |
-        set -euo pipefail
+        echo "================================================================"
+        echo "PHASE 3: import smoke"
+        echo "================================================================"
         echo "--- Import smoke check (source) ---"
         python -V
         python -m pip --version || python -m ensurepip
@@ -51,11 +53,37 @@ steps:
           --module backend.strategy_engine.service \
           --module backend.strategy_service.app
 
-  # ------------------------------------------------------------
-  # PHASE 2: BUILD STRATEGY ENGINE
-  # ------------------------------------------------------------
-  - id: Build strategy-engine
-    name: gcr.io/cloud-builders/docker
+  # d) Docker build(s) (serialized; each build is immediately gated).
+  #
+  # NOTE: The "import gate" runs inside the built image (docker run) to validate
+  # runtime imports using the image's own dependency set.
+
+  - name: 'gcr.io/cloud-builders/bash'
+    id: 'PHASE 4: docker build'
+    waitFor: ['Import smoke check']
+    entrypoint: 'bash'
+    args:
+      - -ceu
+      - |
+        echo "================================================================"
+        echo "PHASE 4: docker build"
+        echo "================================================================"
+
+  # Build marketdata-mcp-server
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Build marketdata-mcp-server'
+    waitFor: ['PHASE 4: docker build']
+    args: [
+      'build',
+      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}',
+      '-f', '/workspace/backend/Dockerfile.marketdata-mcp-server',
+      '/workspace'
+    ]
+
+  - name: 'gcr.io/cloud-builders/bash'
+    id: 'Import gate marketdata-mcp-server'
+    waitFor: ['Build marketdata-mcp-server']
+    entrypoint: 'bash'
     args:
       - build
       - -t
@@ -76,18 +104,39 @@ steps:
   - id: Build marketdata-mcp-server
     name: gcr.io/cloud-builders/docker
     args:
-      - build
-      - -t
-      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}
-      - -f
-      - infra/Dockerfile.marketdata_mcp_server
-      - .
+      - "-c"
+      - |
+        set -euo pipefail
+        IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
+        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
 
-  - id: Push marketdata-mcp-server
-    name: gcr.io/cloud-builders/docker
+  # e) Docker push(es) (serialized; publish only after all gates pass).
+  - name: 'gcr.io/cloud-builders/bash'
+    id: 'PHASE 5: docker push'
+    waitFor: ['Import gate strategy-runtime']
+    entrypoint: 'bash'
     args:
-      - push
-      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}
+      - -ceu
+      - |
+        echo "================================================================"
+        echo "PHASE 5: docker push"
+        echo "================================================================"
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Push marketdata-mcp-server'
+    waitFor: ['PHASE 5: docker push']
+    args: [
+      'push',
+      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
+    ]
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Push strategy-engine'
+    waitFor: ['Push marketdata-mcp-server']
+    args: [
+      'push',
+      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
+    ]
 
 images:
   - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
