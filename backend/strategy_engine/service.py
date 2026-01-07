@@ -39,6 +39,8 @@ app = FastAPI(title="AgentTrader Strategy Engine")
 install_fastapi_correlation_middleware(app)
 install_app_heartbeat(app, service_name="strategy-engine")
 
+_PROCESS_START_MONOTONIC = time.monotonic()
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -106,6 +108,50 @@ def _fetch_json(url: str, *, timeout_s: float) -> dict[str, Any]:
         out = {"_raw": body[:2000]}
     return out if isinstance(out, dict) else {"payload": out}
 
+def _iso_utc(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _build_sha() -> str:
+    return str(os.getenv("GIT_SHA") or os.getenv("GITHUB_SHA") or os.getenv("COMMIT_SHA") or "unknown")
+
+
+def _agent_mode() -> str:
+    # Note: enforce_agent_mode_guard() already guarantees this is set in prod.
+    return str(os.getenv("AGENT_MODE") or "unknown").strip() or "unknown"
+
+
+def _extract_data_freshness_seconds(payload: dict[str, Any]) -> float | None:
+    """
+    Extract marketdata freshness seconds from best-effort payloads.
+
+    Supported shapes (best-effort):
+    - {"heartbeat": {"age_seconds": <float>}}
+    - {"last_tick_epoch_seconds": <int>}
+    """
+    hb = payload.get("heartbeat")
+    if isinstance(hb, dict):
+        age = hb.get("age_seconds")
+        try:
+            if age is None:
+                return None
+            return max(0.0, float(age))
+        except Exception:
+            return None
+
+    last_tick = payload.get("last_tick_epoch_seconds")
+    try:
+        if last_tick is None:
+            return None
+        age_s = time.time() - float(int(last_tick))
+        return max(0.0, float(age_s))
+    except Exception:
+        return None
+
 
 async def _current_state() -> tuple[str, dict[str, Any]]:
     """
@@ -146,6 +192,8 @@ async def _startup() -> None:
     app.state.shutting_down = False
     app.state.ready = False
     app.state.ready_logged = False
+    app.state.last_heartbeat_utc = datetime.now(timezone.utc)
+    app.state.marketdata_freshness_seconds = None
     app.state.loop_heartbeat_monotonic = time.monotonic()
 
     # OBSERVE-mode heartbeat (local-only; no DB/network/broker interaction).
@@ -174,6 +222,7 @@ async def _startup() -> None:
         last_ops_log = 0.0
         while not getattr(app.state, "shutting_down", False):
             app.state.loop_heartbeat_monotonic = time.monotonic()
+            app.state.last_heartbeat_utc = datetime.now(timezone.utc)
             now = time.monotonic()
             if (now - last_ops_log) >= float(os.getenv("OPS_HEARTBEAT_LOG_INTERVAL_S") or "60"):
                 last_ops_log = now
@@ -182,6 +231,26 @@ async def _startup() -> None:
                 except Exception:
                     pass
             await asyncio.sleep(1.0)
+
+    async def _poll_marketdata_freshness() -> None:
+        """
+        Best-effort marketdata freshness poller for /ops/status.
+
+        Constraints:
+        - read-only; never enables execution
+        - short timeouts; failures yield null freshness
+        """
+        interval_s = float(os.getenv("OPS_STATUS_MARKETDATA_POLL_SECONDS") or "15")
+        interval_s = max(5.0, min(interval_s, 120.0))
+        timeout_s = _env_float("OPS_STATUS_MARKETDATA_TIMEOUT_SECONDS", 0.5)
+        while not getattr(app.state, "shutting_down", False):
+            try:
+                url = _marketdata_heartbeat_url()
+                payload = await asyncio.to_thread(_fetch_json, url, timeout_s=timeout_s)
+                app.state.marketdata_freshness_seconds = _extract_data_freshness_seconds(payload)
+            except Exception:
+                app.state.marketdata_freshness_seconds = None
+            await asyncio.sleep(interval_s)
 
     async def _initialize_readiness() -> None:
         """
@@ -194,6 +263,12 @@ async def _startup() -> None:
         while not getattr(app.state, "shutting_down", False):
             try:
                 status, _payload = await _current_state()
+                try:
+                    app.state.marketdata_freshness_seconds = _extract_data_freshness_seconds(
+                        _payload.get("marketdata") if isinstance(_payload.get("marketdata"), dict) else _payload
+                    )
+                except Exception:
+                    pass
                 if status == "ok":
                     if not bool(getattr(app.state, "ready", False)):
                         app.state.ready = True
@@ -210,6 +285,7 @@ async def _startup() -> None:
             await asyncio.sleep(2.0)
 
     app.state.loop_task = asyncio.create_task(_loop_heartbeat())
+    app.state.marketdata_poll_task = asyncio.create_task(_poll_marketdata_freshness())
     app.state.init_task = asyncio.create_task(_initialize_readiness())
 
     # Background cycle loop (evaluation only; never enables execution).
@@ -253,8 +329,9 @@ async def _shutdown() -> None:
     loop_task: asyncio.Task | None = getattr(app.state, "loop_task", None)
     init_task: asyncio.Task | None = getattr(app.state, "init_task", None)
     observe_task: asyncio.Task | None = getattr(app.state, "observe_task", None)
+    marketdata_poll_task: asyncio.Task | None = getattr(app.state, "marketdata_poll_task", None)
 
-    for t in (cycle_task, loop_task, init_task, observe_task):
+    for t in (cycle_task, loop_task, init_task, observe_task, marketdata_poll_task):
         if t is None:
             continue
         try:
@@ -262,7 +339,7 @@ async def _shutdown() -> None:
         except Exception:
             pass
 
-    tasks = [t for t in (cycle_task, loop_task, init_task, observe_task) if t is not None]
+    tasks = [t for t in (cycle_task, loop_task, init_task, observe_task, marketdata_poll_task) if t is not None]
     if not tasks:
         return
     try:

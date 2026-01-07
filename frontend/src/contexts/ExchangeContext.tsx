@@ -4,6 +4,16 @@ import { getFirestore, onSnapshot, getDoc } from 'firebase/firestore';
 import { useAuth } from '@/contexts/AuthContext';
 import { tenantCollection, tenantDoc } from '@/lib/tenancy/firestore';
 
+function logEvent(
+  level: "info" | "warn" | "error",
+  domain: string,
+  action: string,
+  message: string,
+  meta?: Record<string, unknown>,
+) {
+  const fn = level === "warn" ? console.warn : level === "error" ? console.error : console.info;
+  fn(`[${domain}:${action}] ${message}`, meta ?? {});
+}
 
 export type ExchangeType = 'broker' | 'data-provider' | 'options-exchange';
 export type ExchangeStatus = 'active' | 'inactive' | 'degraded' | 'maintenance';

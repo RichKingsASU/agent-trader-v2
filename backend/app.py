@@ -25,6 +25,8 @@ from backend.utils.session import get_market_session
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 from backend.common.kill_switch import get_kill_switch_state
 
+_PROCESS_START_MONOTONIC = time.monotonic()
+
 app = FastAPI()
 install_fastapi_correlation_middleware(app)
 install_http_correlation(app, service="marketdata-mcp-server")
@@ -43,6 +45,23 @@ def _identity() -> dict[str, Any]:
         "environment": os.getenv("ENVIRONMENT") or os.getenv("ENV") or None,
     }
 
+
+def _iso_utc(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _build_sha() -> str:
+    return str(os.getenv("GIT_SHA") or os.getenv("GITHUB_SHA") or os.getenv("COMMIT_SHA") or "unknown")
+
+
+def _agent_mode() -> str:
+    return str(os.getenv("AGENT_MODE") or "unknown").strip() or "unknown"
+
+
 @app.on_event("startup")
 async def startup_event() -> None:
     enforce_agent_mode_guard()
@@ -58,12 +77,14 @@ async def startup_event() -> None:
     app.state.ready = False
     app.state.ready_logged = False
     app.state.started_at_utc = datetime.now(timezone.utc)
+    app.state.last_heartbeat_utc = datetime.now(timezone.utc)
     app.state.loop_heartbeat_monotonic = time.monotonic()
 
     async def _loop_heartbeat() -> None:
         last_ops_log = 0.0
         while not getattr(app.state, "shutting_down", False):
             app.state.loop_heartbeat_monotonic = time.monotonic()
+            app.state.last_heartbeat_utc = datetime.now(timezone.utc)
             now = time.monotonic()
             # Rate-limit ops heartbeat logs (avoid spam).
             if (now - last_ops_log) >= float(os.getenv("OPS_HEARTBEAT_LOG_INTERVAL_S") or "60"):
@@ -269,6 +290,35 @@ async def ops_status() -> dict[str, Any]:
         endpoints=EndpointsBlock(healthz="/healthz", heartbeat="/heartbeat", metrics="/metrics"),
     )
     return st.model_dump()
+
+
+@app.get("/ops/status")
+async def ops_status() -> dict[str, Any]:
+    """
+    Read-only operational status contract for Ops UI.
+
+    Must not enable execution or mutate external state.
+    """
+    last_tick = get_last_marketdata_ts()
+    now_utc = datetime.now(timezone.utc)
+    data_freshness_s: float | None
+    if last_tick is None:
+        data_freshness_s = None
+    else:
+        if last_tick.tzinfo is None:
+            last_tick = last_tick.replace(tzinfo=timezone.utc)
+        data_freshness_s = max(0.0, (now_utc - last_tick.astimezone(timezone.utc)).total_seconds())
+
+    # Prefer last observed tick as the heartbeat when available; else fall back to loop heartbeat.
+    last_hb_dt: datetime | None = last_tick or getattr(app.state, "last_heartbeat_utc", None)
+
+    return {
+        "uptime": max(0.0, time.monotonic() - _PROCESS_START_MONOTONIC),
+        "last_heartbeat": _iso_utc(last_hb_dt),
+        "data_freshness_seconds": data_freshness_s,
+        "build_sha": _build_sha(),
+        "agent_mode": _agent_mode(),
+    }
 
 
 def main() -> None:

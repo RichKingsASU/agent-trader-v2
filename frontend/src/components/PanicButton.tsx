@@ -23,7 +23,13 @@ interface EmergencyLiquidateResponse {
   orders_canceled: number;
 }
 
-export function PanicButton() {
+export function PanicButton({
+  variant = "full",
+  className,
+}: {
+  variant?: "full" | "compact";
+  className?: string;
+}) {
   const [isExecuting, setIsExecuting] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const { toast } = useToast();
@@ -32,6 +38,9 @@ export function PanicButton() {
     setIsExecuting(true);
 
     try {
+      if (!functions) {
+        throw new Error("Emergency liquidation is not available (Firebase Functions not configured).");
+      }
       // Call the Firebase Cloud Function
       const emergencyLiquidate = httpsCallable<void, EmergencyLiquidateResponse>(
         functions,
@@ -71,11 +80,15 @@ export function PanicButton() {
       <AlertDialogTrigger asChild>
         <Button
           variant="destructive"
-          size="lg"
-          className="bg-red-600 hover:bg-red-700 text-white font-bold shadow-lg border-2 border-red-800 animate-pulse"
+          size={variant === "compact" ? "sm" : "lg"}
+          className={[
+            "bg-red-600 hover:bg-red-700 text-white font-bold shadow-lg border-2 border-red-800",
+            variant === "compact" ? "animate-none" : "animate-pulse",
+            className ?? "",
+          ].join(" ")}
         >
-          <AlertTriangle className="mr-2 h-5 w-5" />
-          🚨 NUCLEAR PANIC
+          <AlertTriangle className={variant === "compact" ? "mr-2 h-4 w-4" : "mr-2 h-5 w-5"} />
+          {variant === "compact" ? "PANIC" : "🚨 NUCLEAR PANIC"}
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent className="border-red-500 border-2">
