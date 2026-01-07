@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from .config import load_config
 from .firestore_writer import FirestoreWriter
@@ -8,6 +9,7 @@ from .streams.news_stream_client import NewsStreamClient
 from .streams.account_updates_client import AccountUpdatesClient
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.observability.build_fingerprint import get_build_fingerprint
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -17,6 +19,14 @@ async def main():
         agent_name="stream-bridge",
         intent="Bridge upstream streams into Firestore (price, options flow, news, account updates).",
     )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
     logger.info("Starting Stream Bridge service...")
     cfg = load_config()
     writer = await FirestoreWriter.create_from_env()

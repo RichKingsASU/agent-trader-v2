@@ -16,6 +16,7 @@ from backend.common.agent_state_machine import (
     read_agent_mode,
     trading_allowed,
 )
+from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.execution.engine import (
     AlpacaBroker,
     DryRunBroker,
@@ -91,6 +92,14 @@ def _startup() -> None:
         agent_name="execution-engine",
         intent="Serve the execution API; validate config and execute broker order intents.",
     )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
     # Best-effort: validate Vertex AI model config without crashing the service.
     try:
         init_vertex_ai_or_log()
@@ -109,7 +118,13 @@ def _startup() -> None:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "service": "execution-engine"}
+    return {"status": "ok", "service": "execution-engine", **get_build_fingerprint()}
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, Any]:
+    # Alias for institutional conventions.
+    return health()
 
 
 @app.get("/state")
