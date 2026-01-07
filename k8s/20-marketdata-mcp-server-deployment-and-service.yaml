@@ -6,6 +6,11 @@ metadata:
   labels:
     app: marketdata-mcp-server
     git_sha: a2466ec
+    app.kubernetes.io/name: agenttrader
+    app.kubernetes.io/part-of: agent-trader-v2
+    app.kubernetes.io/component: mcp
+    app.kubernetes.io/instance: marketdata-mcp-server
+    version: v2
 spec:
   replicas: 1
   selector:
@@ -16,6 +21,11 @@ spec:
       labels:
         app: marketdata-mcp-server
         git_sha: a2466ec
+        app.kubernetes.io/name: agenttrader
+        app.kubernetes.io/part-of: agent-trader-v2
+        app.kubernetes.io/component: mcp
+        app.kubernetes.io/instance: marketdata-mcp-server
+        version: v2
     spec:
       serviceAccountName: trading-floor-sa
       securityContext:
@@ -75,6 +85,12 @@ kind: Service
 metadata:
   name: marketdata-mcp-server
   namespace: trading-floor
+  labels:
+    app.kubernetes.io/name: agenttrader
+    app.kubernetes.io/part-of: agent-trader-v2
+    app.kubernetes.io/component: mcp
+    app.kubernetes.io/instance: marketdata-mcp-server
+    version: v2
 spec:
   selector:
     app: marketdata-mcp-server
