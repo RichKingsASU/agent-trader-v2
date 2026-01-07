@@ -1,36 +1,33 @@
 steps:
-- name: 'gcr.io/cloud-builders/bash'
-  id: 'Safety Guard'
-  entrypoint: 'bash'
-  args:
-    - "-c"
-    - |
-      set -euo pipefail
-      chmod +x ./scripts/ci_safety_guard.sh
-      ./scripts/ci_safety_guard.sh
-- name: gcr.io/cloud-builders/docker
-  id: 'Build strategy-gamma'
-  waitFor: ['Safety Guard']
-  args:
-    [
-      "build",
-      "-f",
-      "backend/strategy_service/Dockerfile",
-      "-t",
-      "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-gamma:${SHORT_SHA}",
-      ".",
-    ]
-
-- name: 'gcr.io/cloud-builders/bash'
-  id: 'Import gate strategy-gamma'
-  waitFor: ['Build strategy-gamma']
-  entrypoint: 'bash'
-  args:
-    - "-c"
-    - |
-      set -euo pipefail
-      IMAGE_REF="us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-gamma:${SHORT_SHA}"
-      chmod +x ./scripts/ci_import_gate.sh
-      ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
+  - name: 'gcr.io/cloud-builders/bash'
+    id: 'Safety Guard'
+    entrypoint: 'bash'
+    args:
+      - "-c"
+      - |
+        set -euo pipefail
+        chmod +x ./scripts/ci_safety_guard.sh
+        ./scripts/ci_safety_guard.sh
+  - name: gcr.io/cloud-builders/docker
+    id: 'Build strategy-gamma'
+    waitFor: ['Safety Guard']
+    args:
+      - build
+      - -f
+      - backend/strategy_service/Dockerfile
+      - -t
+      - us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-gamma:${SHORT_SHA}
+      - .
+  - name: 'gcr.io/cloud-builders/bash'
+    id: 'Import gate strategy-gamma'
+    waitFor: ['Build strategy-gamma']
+    entrypoint: 'bash'
+    args:
+      - "-c"
+      - |
+        set -euo pipefail
+        IMAGE_REF="us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-gamma:${SHORT_SHA}"
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
 images:
-- "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-gamma:${SHORT_SHA}"
+  - us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-gamma:${SHORT_SHA}

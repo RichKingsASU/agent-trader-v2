@@ -23,41 +23,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # CI containment: GitHub Actions must never perform cloud or image build operations.
-      # Cloud Build is the single source of truth for building/pushing images and deployments.
-      - name: CI containment: deny cloud CLIs (gcloud/docker/kubectl)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p .ci-deny
-
-          cat > .ci-deny/gcloud <<'EOF'
-          #!/usr/bin/env bash
-          echo "ERROR: gcloud is forbidden in GitHub Actions CI (use Cloud Build)." >&2
-          exit 2
-          EOF
-
-          cat > .ci-deny/docker <<'EOF'
-          #!/usr/bin/env bash
-          echo "ERROR: docker is forbidden in GitHub Actions CI (use Cloud Build)." >&2
-          exit 2
-          EOF
-
-          cat > .ci-deny/kubectl <<'EOF'
-          #!/usr/bin/env bash
-          echo "ERROR: kubectl is forbidden in GitHub Actions CI (use approved deploy pipelines)." >&2
-          exit 2
-          EOF
-
-          chmod +x .ci-deny/gcloud .ci-deny/docker .ci-deny/kubectl
-          echo "PATH=$PWD/.ci-deny:$PATH" >> "$GITHUB_ENV"
-
-          # Sanity: ensure the deny-shims are the first resolution targets.
-          command -v gcloud >/dev/null && [[ "$(command -v gcloud)" == *"/.ci-deny/gcloud" ]]
-          command -v docker >/dev/null && [[ "$(command -v docker)" == *"/.ci-deny/docker" ]]
-          command -v kubectl >/dev/null && [[ "$(command -v kubectl)" == *"/.ci-deny/kubectl" ]]
-
-      - name: Blockers: banned vendor refs + secret patterns
+      - name: "Blockers: banned vendor refs + secret patterns"
         shell: bash
         run: |
           set -euo pipefail

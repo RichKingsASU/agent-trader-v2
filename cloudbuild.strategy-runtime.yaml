@@ -12,14 +12,12 @@ steps:
     id: 'Build strategy-runtime'
     waitFor: ['Safety Guard']
     args:
-      [
-        "build",
-        "-f",
-        "backend/strategy_service/Dockerfile",
-        "-t",
-        "${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}",
-        ".",
-      ]
+      - build
+      - -f
+      - backend/strategy_service/Dockerfile
+      - -t
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}
+      - .
 
   - name: 'gcr.io/cloud-builders/bash'
     id: 'Import gate strategy-runtime'
@@ -33,4 +31,4 @@ steps:
         chmod +x ./scripts/ci_import_gate.sh
         ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
 images:
-- "${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}"
+  - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}

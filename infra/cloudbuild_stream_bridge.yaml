@@ -1,33 +1,33 @@
 steps:
-- name: gcr.io/cloud-builders/bash
-  id: 'Safety Guard'
-  entrypoint: bash
-  args:
-    - "-c"
-    - |
-      set -euo pipefail
-      chmod +x ./scripts/ci_safety_guard.sh
-      ./scripts/ci_safety_guard.sh
-- name: gcr.io/cloud-builders/bash
-  waitFor: ['Safety Guard']
-  entrypoint: bash
-  args:
-    - "-c"
-    - |
-      set -euo pipefail
-      BUILD_TIME_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      GIT_SHA="${COMMIT_SHA:-$SHORT_SHA}"
-      IMAGE_REF="gcr.io/$PROJECT_ID/agenttrader-stream-bridge:$SHORT_SHA"
-      docker build \
-        -f infra/Dockerfile.stream_bridge \
-        --build-arg GIT_SHA="${GIT_SHA}" \
-        --build-arg BUILD_ID="${BUILD_ID}" \
-        --build-arg BUILD_TIME_UTC="${BUILD_TIME_UTC}" \
-        --build-arg IMAGE_REF="${IMAGE_REF}" \
-        -t "${IMAGE_REF}" \
-        .
+  - name: gcr.io/cloud-builders/bash
+    id: 'Safety Guard'
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        set -euo pipefail
+        chmod +x ./scripts/ci_safety_guard.sh
+        ./scripts/ci_safety_guard.sh
+  - name: gcr.io/cloud-builders/bash
+    waitFor: ['Safety Guard']
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        set -euo pipefail
+        BUILD_TIME_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        GIT_SHA="${COMMIT_SHA:-$SHORT_SHA}"
+        IMAGE_REF="gcr.io/$PROJECT_ID/agenttrader-stream-bridge:$SHORT_SHA"
+        docker build \
+          -f infra/Dockerfile.stream_bridge \
+          --build-arg GIT_SHA="${GIT_SHA}" \
+          --build-arg BUILD_ID="${BUILD_ID}" \
+          --build-arg BUILD_TIME_UTC="${BUILD_TIME_UTC}" \
+          --build-arg IMAGE_REF="${IMAGE_REF}" \
+          -t "${IMAGE_REF}" \
+          .
 
-      chmod +x ./scripts/ci_import_gate.sh
-      ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.streams_bridge.main
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.streams_bridge.main
 images:
-- 'gcr.io/$PROJECT_ID/agenttrader-stream-bridge:$SHORT_SHA'
+  - 'gcr.io/$PROJECT_ID/agenttrader-stream-bridge:$SHORT_SHA'
