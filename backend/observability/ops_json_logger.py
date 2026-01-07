@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, MutableMapping, Optional
 
+from backend.observability.correlation import get_or_create_correlation_id
+
 
 def _utc_ts() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -67,14 +69,44 @@ def _default_service() -> str:
     return _env_any("SERVICE_NAME", "SERVICE", "OTEL_SERVICE_NAME", "K_SERVICE", "AGENT_NAME", default="unknown", max_len=128)
 
 
+def _default_env() -> str:
+    return _env_any("ENVIRONMENT", "ENV", "APP_ENV", "DEPLOY_ENV", default="unknown", max_len=64)
+
+
+def _default_sha() -> str:
+    return _env_any(
+        "GIT_SHA",
+        "GITHUB_SHA",
+        "COMMIT_SHA",
+        "SHORT_SHA",
+        "BUILD_SHA",
+        "SOURCE_VERSION",
+        default="unknown",
+        max_len=64,
+    )
+
+
+def _default_version() -> str:
+    return _env_any("AGENT_VERSION", "APP_VERSION", "VERSION", "IMAGE_TAG", "K_REVISION", default="unknown", max_len=128)
+
+
 def _base_fields(*, service: str | None, severity: str) -> dict[str, Any]:
+    cid = get_or_create_correlation_id()
+    sha = _default_sha()
     return {
         "timestamp": _utc_ts(),
         "severity": _normalize_severity(severity),
         "service": _clean_text(service or _default_service(), max_len=128) or "unknown",
-        "git_sha": _env_any("GIT_SHA", "GITHUB_SHA", "COMMIT_SHA", "SHORT_SHA", "BUILD_SHA", "SOURCE_VERSION", default="unknown", max_len=64),
+        # Required stable identity fields
+        "env": _default_env(),
+        "version": _default_version(),
+        "sha": sha,
+        "git_sha": sha,  # back-compat
         "image_tag": _env_any("IMAGE_TAG", "IMAGE_REF", "K_REVISION", default="unknown", max_len=256),
         "agent_mode": _env_any("AGENT_MODE", "MODE", "RUN_MODE", default="unknown", max_len=32),
+        # Request/correlation
+        "request_id": cid,
+        "correlation_id": cid,
     }
 
 
@@ -88,7 +120,9 @@ def _write_json(obj: Mapping[str, Any]) -> None:
 
 def log(service: str | None, event: str, *, severity: str = "INFO", **fields: Any) -> None:
     payload: dict[str, Any] = _base_fields(service=service, severity=severity)
-    payload["event"] = _clean_text(event, max_len=128)
+    ev = _clean_text(event, max_len=128)
+    payload["event_type"] = ev
+    payload["event"] = ev  # back-compat
     if fields:
         payload.update(fields)
     _write_json(payload)

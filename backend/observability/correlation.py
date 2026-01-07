@@ -51,7 +51,7 @@ def get_or_create_correlation_id(
     """
     Get correlation id from:
     - explicit correlation_id
-    - headers: X-Correlation-Id (preferred), X-Request-Id (fallback)
+    - headers: X-Request-Id (preferred), X-Correlation-Id (fallback)
     - existing contextvar
     - else generate a new uuid4
     """
@@ -61,7 +61,7 @@ def get_or_create_correlation_id(
         return cleaned
 
     if headers:
-        raw = _header_get(headers, "X-Correlation-Id") or _header_get(headers, "X-Request-Id")
+        raw = _header_get(headers, "X-Request-Id") or _header_get(headers, "X-Correlation-Id")
         cleaned = _clean_id(raw)
         if cleaned:
             _CORRELATION_ID.set(cleaned)
@@ -94,9 +94,9 @@ def install_fastapi_correlation_middleware(app: Any) -> None:
     """
     Install correlation ID middleware on a FastAPI app (best-effort).
 
-    - Reads X-Correlation-Id (preferred) / X-Request-Id (fallback)
+    - Reads X-Request-Id (preferred) / X-Correlation-Id (fallback)
     - Binds correlation_id in a contextvar for the request lifetime
-    - Echoes X-Correlation-Id on the response for easier tracing
+    - Echoes X-Request-Id (+ X-Correlation-Id back-compat) on the response for easier tracing
     """
     try:
         # Avoid importing fastapi types at module import time.
@@ -110,6 +110,7 @@ def install_fastapi_correlation_middleware(app: Any) -> None:
         with bind_correlation_id(headers=headers) as cid:
             resp = await call_next(request)
             try:
+                resp.headers["X-Request-Id"] = cid
                 resp.headers["X-Correlation-Id"] = cid
             except Exception:
                 pass
