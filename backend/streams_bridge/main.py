@@ -1,3 +1,8 @@
+from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+
+_log_runtime_fingerprint(service="stream-bridge")
+del _log_runtime_fingerprint
+
 import asyncio
 import json
 import logging
