@@ -3,9 +3,9 @@ from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_r
 _log_runtime_fingerprint(service="strategy-service")
 del _log_runtime_fingerprint
 
-from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware
 
-_log_runtime_fingerprint(service="strategy-service")
+init_structured_logging(service="strategy-service")
 
 import asyncio
 import logging
@@ -17,19 +17,18 @@ from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce
 
 _enforce_agent_mode_guard()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import strategies, broker_accounts, paper_orders, trades, strategy_configs
 
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.app_heartbeat_writer import install_app_heartbeat
-from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.observability.ops_json_logger import OpsLogger
 from backend.strategies.registry.loader import load_all_configs
 
 app = FastAPI(title="AgentTrader Strategy Service")
-install_fastapi_correlation_middleware(app)
+install_fastapi_request_id_middleware(app, service="strategy-service")
 install_app_heartbeat(app, service_name="strategy-service")
 
 logger = logging.getLogger(__name__)
@@ -55,7 +54,7 @@ app.include_router(strategy_configs.router)
 
 @app.on_event("startup")
 async def _startup() -> None:
-    enforce_agent_mode_guard()
+    _enforce_agent_mode_guard()
     # Identity/intent log (single JSON line).
     configure_startup_logging(
         agent_name="strategy-service",

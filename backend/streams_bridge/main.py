@@ -2,6 +2,10 @@ from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_r
 
 _log_runtime_fingerprint(service="stream-bridge")
 
+from backend.common.logging import init_structured_logging
+
+init_structured_logging(service="stream-bridge")
+
 import asyncio
 import json
 import logging
@@ -19,7 +23,6 @@ from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.observability.ops_json_logger import OpsLogger
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 async def main():

@@ -47,6 +47,27 @@ def _env_any(*names: str, default: str = "unknown") -> str:
     return default
 
 
+def _default_env() -> str:
+    return _env_any("ENVIRONMENT", "ENV", "APP_ENV", "DEPLOY_ENV", default="unknown")
+
+
+def _default_version(ident: dict[str, Any]) -> str:
+    # Prefer explicit version; fall back to identity or container tag.
+    return _env_any(
+        "AGENT_VERSION",
+        "APP_VERSION",
+        "VERSION",
+        default=str(ident.get("agent_version") or ident.get("git_sha") or "unknown"),
+    )
+
+
+def _default_sha(ident: dict[str, Any]) -> str:
+    sha = str(ident.get("git_sha") or "").strip()
+    if sha:
+        return _clean_text(sha, max_len=64)
+    return _env_any("GIT_SHA", "GITHUB_SHA", "COMMIT_SHA", "SHORT_SHA", "BUILD_SHA", "SOURCE_VERSION", default="unknown")
+
+
 def _default_service(ident: dict[str, Any]) -> str:
     # Prefer explicit overrides; fall back to Cloud Run; then agent name; then unknown.
     return _env_any(
@@ -61,6 +82,7 @@ def _default_service(ident: dict[str, Any]) -> str:
 def _base_fields(*, level: str) -> dict[str, Any]:
     ident = get_agent_identity()
     lvl = level.upper()
+    sha = _default_sha(ident)
     # Normalize to required keys where possible.
     base: dict[str, Any] = {
         "timestamp": _utc_ts(),
@@ -68,14 +90,18 @@ def _base_fields(*, level: str) -> dict[str, Any]:
         # Cloud Logging recognizes "severity" for structured logs.
         "severity": lvl,
         "service": _default_service(ident),
+        "env": _default_env(),
+        "version": _default_version(ident),
+        "sha": sha,
         "image_tag": _env_any("IMAGE_TAG", "IMAGE_REF", "K_REVISION", default="unknown"),
         "repo_id": ident.get("repo_id"),
         "agent_name": ident.get("agent_name"),
         "agent_role": ident.get("agent_role"),
         "agent_mode": ident.get("agent_mode"),
-        "git_sha": ident.get("git_sha"),
+        "git_sha": sha,  # back-compat
     }
     cid = get_or_create_correlation_id()
+    base["request_id"] = cid
     base["correlation_id"] = cid
     # No separate trace context in this repo yet; keep replay-friendly by mirroring.
     base["trace_id"] = cid
@@ -84,7 +110,9 @@ def _base_fields(*, level: str) -> dict[str, Any]:
 
 def log_event(event_name: str, *, level: str = "INFO", **fields: Any) -> None:
     payload: dict[str, Any] = _base_fields(level=level.upper())
-    payload["event_name"] = _clean_text(event_name, max_len=128)
+    ev = _clean_text(event_name, max_len=128)
+    payload["event_type"] = ev
+    payload["event_name"] = ev  # back-compat
     if fields:
         payload.update(fields)
     _write_json(payload)
@@ -107,6 +135,7 @@ def intent_start(intent_type: str, summary: str, payload: Optional[dict[str, Any
     log: dict[str, Any] = _base_fields(level="INFO")
     log.update(
         {
+            "event_type": "intent.start",
             "intent_id": intent_id,
             "intent_type": intent_type_c,
             "intent_summary": summary_c,
@@ -145,6 +174,7 @@ def intent_end(intent_ctx: dict[str, Any], outcome: str, *, error: Any = None) -
     log["intent_payload"] = redact_dict(intent_ctx.get("intent_payload") or {})
     log["outcome"] = out
     log["duration_ms"] = duration_ms
+    log["event_type"] = "intent.end"
 
     if out == "failure" and error is not None:
         msg = _clean_text(getattr(error, "message", None) or getattr(error, "detail", None) or error, max_len=2000)

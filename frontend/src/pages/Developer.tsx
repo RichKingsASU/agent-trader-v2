@@ -12,6 +12,9 @@ import { StreamMetricsChart } from '@/components/developer/StreamMetricsChart';
 
 import { SystemControls } from '@/components/developer/SystemControls';
 import { StreamManager } from '@/components/developer/StreamManager';
+import { AlpacaStreamManager } from '@/components/developer/AlpacaStreamManager';
+import { DataFreshnessGrid } from '@/components/developer/DataFreshnessGrid';
+import { EventLogConsole } from '@/components/developer/EventLogConsole';
 import LiveQuotesWidget from '@/components/test/LiveQuotesWidget';
 
 const DeveloperHeader = () => {
@@ -109,16 +112,20 @@ const DeveloperContent = () => {
         <TabsContent value="streams" className="space-y-6">
           <div className="grid md:grid-cols-2 gap-4">
             <StreamManager />
+            <AlpacaStreamManager />
           </div>
+          <DataFreshnessGrid />
           <DataStreamPanel />
         </TabsContent>
 
         <TabsContent value="debug" className="space-y-6">
-          
+          <EventLogConsole />
         </TabsContent>
 
         <TabsContent value="history" className="space-y-6">
-          
+          <div className="text-sm text-muted-foreground">
+            Log history requires a configured persistence sink. Use the Debug Console to enable persistence and export logs.
+          </div>
         </TabsContent>
 
         <TabsContent value="controls" className="space-y-6">

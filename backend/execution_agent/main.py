@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.logging import default_env_name, default_sha, default_version, init_structured_logging
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.execution_agent.gating import enforce_startup_gate_or_exit
@@ -83,7 +84,26 @@ def build_safety_snapshot(*, now: datetime | None = None) -> SafetySnapshot:
 
 
 def _json_log(event: dict[str, Any]) -> None:
-    print(json.dumps(event, separators=(",", ":"), ensure_ascii=False), flush=True)
+    # Keep legacy ndjson events, but ensure the core structured fields exist.
+    payload = dict(event or {})
+    payload.setdefault("service", "execution-agent")
+    payload.setdefault("env", default_env_name())
+    payload.setdefault("version", default_version())
+    payload.setdefault("sha", default_sha())
+    payload.setdefault("severity", str(payload.get("severity") or payload.get("level") or "INFO").upper())
+    payload.setdefault("event_type", str(payload.get("intent_type") or payload.get("event_type") or "log"))
+    # No HTTP context here; keep request_id/correlation_id stable within the process if present.
+    try:
+        from backend.observability.correlation import get_or_create_correlation_id  # noqa: WPS433
+
+        cid = get_or_create_correlation_id()
+        payload.setdefault("request_id", cid)
+        payload.setdefault("correlation_id", cid)
+    except Exception:
+        payload.setdefault("request_id", None)
+        payload.setdefault("correlation_id", None)
+
+    print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
 
 
 def _decision_output_path(*, base_dir: Path, now: datetime) -> Path:
@@ -173,7 +193,7 @@ def iter_ndjson_follow(*, path: Path, start_at_end: bool, poll_interval_s: float
 
 
 def main() -> None:
-    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
+    init_structured_logging(service="execution-agent")
 
     # Runtime safety guard: refuse EXECUTE (and require explicit mode).
     enforce_agent_mode_guard()
