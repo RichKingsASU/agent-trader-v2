@@ -1,12 +1,13 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import { cn } from '@/lib/utils';
-import { LayoutDashboard, FileSearch, Newspaper, HeartPulse } from 'lucide-react';
+import { LayoutDashboard, FileSearch, Newspaper, HeartPulse, Terminal } from 'lucide-react';
 
 const navItems = [
   { to: '/ops', label: 'Overview', icon: LayoutDashboard, end: true },
   { to: '/ops/options', label: 'Options Snapshots', icon: FileSearch },
   { to: '/ops/news', label: 'News Events', icon: Newspaper },
   { to: '/ops/jobs', label: 'Job Health', icon: HeartPulse },
+  { to: '/ops/debug', label: 'Debug', icon: Terminal },
 ];
 
 export default function OpsLayout() {
