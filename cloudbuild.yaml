@@ -96,36 +96,28 @@ timeout: 3600s
           fi
         fi
 
-        # ----------------------------
-        # Rule 2: No AGENT_MODE=EXECUTE
-        # ----------------------------
-        echo "--- Rule: forbid AGENT_MODE=EXECUTE ---"
-        FILES=$(find . -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" \) ! -name "cloudbuild.yaml" || true)
-        if [ -z "$FILES" ]; then
-          echo "No relevant files found (PASS)"
-        else
-          if echo "$FILES" | xargs -r grep -nE "AGENT_MODE\s*[:=]\s*EXECUTE"; then
-            echo "❌ FAILED: AGENT_MODE=EXECUTE is forbidden in committed code."
-            exit 1
-          else
-            echo "✅ PASSED: No AGENT_MODE=EXECUTE found."
-          fi
-        fi
+  # b) Safety guard
+  - name: 'gcr.io/cloud-builders/bash'
+    id: 'CI Layout Validate'
+    waitFor: ['Checkout']
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        bash ./scripts/validate_ci_layout.sh
 
-        # ----------------------------
-        # Rule 3: Execution agents must not be scaled
-        # ----------------------------
-        echo "--- Rule: execution agents replicas must be 0 ---"
-        if [ -d "./k8s/execution" ]; then
-          if grep -R "replicas:[[:space:]]*[1-9]" ./k8s/execution; then
-            echo "❌ FAILED: Execution agents must have replicas: 0."
-            exit 1
-          else
-            echo "✅ PASSED: Execution agents not scaled."
-          fi
-        else
-          echo "No execution manifests present (PASS)"
-        fi
+  - name: 'gcr.io/cloud-builders/bash'
+    id: 'Safety Guard'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        echo "--- Safety Guard preflight ---"
+        chmod +x ./scripts/ci_safety_guard.sh
+        ./scripts/ci_safety_guard.sh
+    waitFor: ['CI Layout Validate']
 
   # c) Import smoke check (source-based; fail fast before image builds).
   #
