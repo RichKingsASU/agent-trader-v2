@@ -5,7 +5,8 @@ metadata:
   namespace: trading-floor
 data:
   # Global kill switch:
-  # - "0" (default): execution allowed (subject to other risk rules)
+  # - "0": execution allowed (subject to other risk rules)
   # - "1": execution halted (all execution agents refuse trading)
-  EXECUTION_HALTED: "0"
+  # Default (safety-first): "1"
+  EXECUTION_HALTED: "1"
 

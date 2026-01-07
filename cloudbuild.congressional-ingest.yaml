@@ -7,10 +7,7 @@ steps:
       "infra/Dockerfile.congressional_ingest",
       "-t",
       "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/congressional-ingest:${SHORT_SHA}",
-      "-t",
-      "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/congressional-ingest:latest",
       ".",
     ]
 images:
 - "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/congressional-ingest:${SHORT_SHA}"
-- "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/congressional-ingest:latest"

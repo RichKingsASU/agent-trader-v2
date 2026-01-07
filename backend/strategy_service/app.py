@@ -1,21 +1,18 @@
 import logging
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import strategies, broker_accounts, paper_orders, trades
 
+from backend.common.agent_boot import configure_startup_logging
 from backend.common.kill_switch import get_kill_switch_state
+from backend.common.http_correlation import install_http_correlation
 
 app = FastAPI(title="AgentTrader Strategy Service")
 logger = logging.getLogger(__name__)
 
-# Startup identity/intent log (single JSON line).
-@app.on_event("startup")
-def _startup() -> None:
-    configure_startup_logging(
-        agent_name="strategy-service",
-        intent="Serve strategy management APIs (strategies, broker accounts, paper orders, trades).",
-    )
+install_http_correlation(app, service="strategy-service")
 
 # Enable CORS for frontend
 app.add_middleware(
@@ -33,10 +30,38 @@ app.include_router(trades.router)
 
 @app.on_event("startup")
 def _startup() -> None:
+    # Startup identity/intent log (single JSON line).
+    configure_startup_logging(
+        agent_name="strategy-service",
+        intent="Serve strategy management APIs (strategies, broker accounts, paper orders, trades).",
+    )
     enabled, source = get_kill_switch_state()
     if enabled:
         # Non-execution service: keep serving, but make it visible in logs.
         logger.warning("kill_switch_active enabled=true source=%s", source)
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok", "service": "strategy-service"}
+
+
+@app.get("/healthz")
+def healthz() -> dict:
+    # readiness: if process is serving, it's "ready" (this service is non-execution).
+    return {"ok": True, "service": "strategy-service"}
+
+
+@app.get("/ops/status")
+def ops_status() -> dict:
+    enabled, source = get_kill_switch_state()
+    return {
+        "service": "strategy-service",
+        "git_sha": (os.getenv("GIT_SHA") or os.getenv("COMMIT_SHA") or "unknown"),
+        "build_id": (os.getenv("BUILD_ID") or "unknown"),
+        "agent_mode": (os.getenv("AGENT_MODE") or "DISABLED"),
+        "kill_switch_enabled": bool(enabled),
+        "kill_switch_source": source,
+    }
 
 # Include institutional analytics router
 try:
