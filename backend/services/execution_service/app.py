@@ -24,7 +24,7 @@ from backend.execution.engine import (
     OrderIntent,
     RiskManager,
 )
-from backend.execution.marketdata_health import check_market_ingest_heartbeat
+from backend.common.agent_boot import configure_startup_logging
 from backend.common.vertex_ai import init_vertex_ai_or_log
 
 logger = logging.getLogger(__name__)
@@ -87,6 +87,10 @@ app = FastAPI(title="AgentTrader Execution Engine")
 
 @app.on_event("startup")
 def _startup() -> None:
+    configure_startup_logging(
+        agent_name="execution-engine",
+        intent="Serve the execution API; validate config and execute broker order intents.",
+    )
     # Best-effort: validate Vertex AI model config without crashing the service.
     try:
         init_vertex_ai_or_log()

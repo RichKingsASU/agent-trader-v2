@@ -13,6 +13,7 @@ spec:
     metadata:
       labels:
         strategy: whale
+        git_sha: a2466ec
     spec:
       priorityClassName: high-priority
       serviceAccountName: trading-floor-sa
@@ -26,5 +27,11 @@ spec:
         - containerPort: 8080
           name: http
         env:
-        - name: AGENT_MODE
-          value: "DISABLED"
+          - name: GIT_SHA
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['git_sha']
+          - name: WORKLOAD
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['strategy']

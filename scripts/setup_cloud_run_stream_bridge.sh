@@ -7,7 +7,9 @@ set -euo pipefail
 # --- Configuration ---
 PROJECT_ID=$(gcloud config get-value project)
 REGION="us-central1"
-IMAGE_TAG="gcr.io/${PROJECT_ID}/agenttrader-stream-bridge"
+# Never deploy untagged images (defaults to :latest).
+GIT_SHA="${GIT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+IMAGE_TAG="gcr.io/${PROJECT_ID}/agenttrader-stream-bridge:${GIT_SHA}"
 
 # --- IAM Roles Required ---
 # The user running these commands needs the following roles:
@@ -37,6 +39,7 @@ echo "Deploying the Cloud Run Service: agenttrader-stream-bridge"
 #   --image "${IMAGE_TAG}" \
 #   --region "${REGION}" \
 #   --platform=managed \
+#   --set-env-vars="GIT_SHA=${GIT_SHA}" \
 #   --set-env-vars="DATABASE_URL=${DATABASE_URL}" \
 #   --set-env-vars="PRICE_STREAM_URL=${PRICE_STREAM_URL}" \
 #   --set-env-vars="OPTIONS_FLOW_URL=${OPTIONS_FLOW_URL}" \

@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from nats.aio.client import Client as NATS
 
+from backend.common.agent_boot import configure_startup_logging
 from backend.common.nats.subjects import market_subject
 from backend.common.schemas.codec import encode_message
 from backend.common.schemas.models import MarketEventV1
@@ -440,6 +441,11 @@ async def main():
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         stream=sys.stdout,
+    )
+
+    configure_startup_logging(
+        agent_name="congressional-ingest",
+        intent="Ingest congressional trades and publish market events to NATS.",
     )
     
     tenant_id = os.getenv("TENANT_ID", "local")

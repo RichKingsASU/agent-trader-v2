@@ -17,7 +17,8 @@ defaults() {
   export PROJECT_ID="${PROJECT_ID:-}"
   export REGION="${REGION:-us-central1}"
   export AR_REPO="${AR_REPO:-agenttrader}"
-  export IMAGE_TAG="${IMAGE_TAG:-$(date +%Y%m%d-%H%M%S)}"
+  # Prefer an explicit git sha if provided by CI.
+  export IMAGE_TAG="${IMAGE_TAG:-${GIT_SHA:-$(date +%Y%m%d-%H%M%S)}}"
 }
 
 artifact_repo_ensure() {

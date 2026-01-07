@@ -23,6 +23,8 @@ IMAGE="$(image_ref "${PROJECT_ID}" "${REGION}" "${AR_REPO}" "${IMAGE_NAME}" "${I
 docker build -f "${DOCKERFILE}" -t "${IMAGE}" "${ROOT_DIR}"
 docker push "${IMAGE}"
 
+EFFECTIVE_GIT_SHA="${GIT_SHA:-${IMAGE_TAG}}"
+
 DEPLOY_ARGS=(
   run jobs deploy "${JOB_NAME}"
   --project "${PROJECT_ID}"
@@ -35,6 +37,7 @@ DEPLOY_ARGS=(
   --command python
   --args "-m,backend.streams.alpaca_backfill_bars"
 )
+DEPLOY_ARGS+=(--set-env-vars "GIT_SHA=${EFFECTIVE_GIT_SHA}")
 
 if [[ -n "${ENV_VARS_FILE}" ]]; then
   DEPLOY_ARGS+=(--env-vars-file "${ENV_VARS_FILE}")
