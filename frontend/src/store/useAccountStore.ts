@@ -3,7 +3,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 const WARM_CACHE_KEY = "alpaca-account-cache";
 
-type ListenerStatus = "idle" | "connecting" | "connected" | "error";
+export type ListenerStatus = "idle" | "connecting" | "connected" | "error";
 
 export interface AccountState {
   equity: number;
@@ -21,12 +21,14 @@ export interface AccountState {
   setListenerState: (next: { status: ListenerStatus; error?: string | null }) => void;
   setAccount: (data: unknown, updatedAtMs?: number | null) => void;
 
-  startAccountListener: (tenantId: string) => void;
+  /**
+   * Pre-Firebase stabilization:
+   * - We keep the API surface for a future real-time listener
+   * - In local mode this is a no-op (no external SaaS dependency required)
+   */
+  startAccountListener: (_tenantId: string) => void;
   stopAccountListener: () => void;
 }
-
-let unsubscribeAccount: Unsubscribe | null = null;
-let listeningTenantId: string | null = null;
 
 function coerceNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -61,17 +63,14 @@ function coerceDateMs(value: unknown): number | null {
         return null;
       }
     }
-    if (typeof asObj.seconds === "number") {
-      const ms = asObj.seconds * 1000;
-      return Number.isFinite(ms) ? ms : null;
-    }
+    if (typeof asObj.seconds === "number") return asObj.seconds * 1000;
   }
   return null;
 }
 
 function pickNumber(raw: Record<string, unknown>, ...keys: string[]): number | null {
   for (const k of keys) {
-    const v = parseAlpacaNumber(raw[k]);
+    const v = coerceNumber(raw[k]);
     if (v !== null) return v;
   }
   return null;
@@ -85,17 +84,18 @@ function safeReadWarmCache(): Pick<AccountState, "equity" | "buying_power" | "ca
   try {
     const raw = window.localStorage.getItem(WARM_CACHE_KEY);
     if (!raw) return { equity: 0, buying_power: 0, cash: 0, updated_at_ms: null, hasWarmCache: false };
+    const parsed = JSON.parse(raw) as Record<string, unknown> | null;
+    if (!parsed || typeof parsed !== "object") {
+      return { equity: 0, buying_power: 0, cash: 0, updated_at_ms: null, hasWarmCache: false };
+    }
 
-        if (!isZeroish) {
-          lastGood[field] = parsed;
-          lastGoodAt[field] = now;
-          return parsed;
-        }
-
-    const equity = parseAlpacaNumber(state.equity) ?? 0;
-    const buying_power = parseAlpacaNumber(state.buying_power) ?? 0;
-    const cash = parseAlpacaNumber(state.cash) ?? 0;
-    const updated_at_ms = coerceDateMs(state.updated_at_ms ?? state.updated_at ?? state.updatedAt ?? state.syncedAt) ?? null;
+    const equity = pickNumber(parsed, "equity") ?? 0;
+    const buying_power = pickNumber(parsed, "buying_power", "buyingPower") ?? 0;
+    const cash = pickNumber(parsed, "cash", "cash_balance", "cashBalance", "settled_cash", "settledCash") ?? 0;
+    const updated_at_ms =
+      coerceDateMs(
+        parsed.updated_at_ms ?? parsed.syncedAt ?? parsed.updated_at ?? parsed.updatedAt ?? parsed.updated_at_iso ?? parsed.updatedAtIso,
+      ) ?? null;
 
     return { equity, buying_power, cash, updated_at_ms, hasWarmCache: true };
   } catch {
@@ -103,12 +103,12 @@ function safeReadWarmCache(): Pick<AccountState, "equity" | "buying_power" | "ca
   }
 }
 
+export const useAccountStore = create<AccountState>()(
+  persist(
+    (set) => {
+      const boot = safeReadWarmCache();
+
       const stop = () => {
-        if (unsubscribeAccount) {
-          unsubscribeAccount();
-          unsubscribeAccount = null;
-        }
-        listeningTenantId = null;
         set({ listenerStatus: "idle", listenerError: null });
       };
 
@@ -131,19 +131,13 @@ function safeReadWarmCache(): Pick<AccountState, "equity" | "buying_power" | "ca
           }),
 
         setAccount: (data: unknown, updatedAtMs?: number | null) => {
-          const raw = (data && typeof data === "object" ? (data as Record<string, unknown>) : {}) as Record<
-            string,
-            unknown
-          >;
-
-          // Do NOT overwrite a cached value with null/undefined.
+          const raw = (data && typeof data === "object" ? (data as Record<string, unknown>) : {}) as Record<string, unknown>;
           set((prev) => ({
             equity: pickNumber(raw, "equity") ?? prev.equity,
             buying_power: pickNumber(raw, "buying_power", "buyingPower") ?? prev.buying_power,
-            // Back-compat: some docs store settled_cash/cash_balance/etc.
-            cash:
-              pickNumber(raw, "cash", "cash_balance", "cashBalance", "settled_cash", "settledCash") ?? prev.cash,
+            cash: pickNumber(raw, "cash", "cash_balance", "cashBalance", "settled_cash", "settledCash") ?? prev.cash,
             updated_at_ms:
+              (typeof updatedAtMs === "number" && Number.isFinite(updatedAtMs) ? updatedAtMs : null) ??
               coerceDateMs(
                 raw.updated_at_ms ??
                   raw.syncedAt ??
@@ -158,51 +152,25 @@ function safeReadWarmCache(): Pick<AccountState, "equity" | "buying_power" | "ca
                       (raw.raw as Record<string, unknown>).updated_at_iso ??
                       (raw.raw as Record<string, unknown>).updatedAtIso
                     : undefined),
-              ) ?? prev.updated_at_ms,
+              ) ??
+              prev.updated_at_ms,
           }));
         },
 
-        startAccountListener: (tenantId: string) => {
-          if (!tenantId || typeof tenantId !== "string") return;
-          if (unsubscribeAccount && listeningTenantId === tenantId) return;
-
-          stop();
-          listeningTenantId = tenantId;
-          set({ listenerStatus: "connecting", listenerError: null });
-
-          // Global snapshot produced by backend ingest:
-          // listen to `alpacaAccounts/snapshot` (non-tenant-scoped).
-          const ref = doc(db, "alpacaAccounts", "snapshot");
-          unsubscribeAccount = onSnapshot(
-            ref,
-            (snap) => {
-              if (snap.exists()) {
-                get().setAccount(snap.data(), coerceDateMs(snap.updateTime) ?? null);
-              }
-              set({ listenerStatus: "connected", listenerError: null });
-            },
-            (err) => {
-              console.error("Account snapshot listener error:", err);
-              set({
-                listenerStatus: "error",
-                listenerError: typeof (err as any)?.message === "string" ? (err as any).message : "Listener error",
-              });
-            },
-          );
+        startAccountListener: () => {
+          // No-op in local mode (kept for future Firebase wiring).
+          set({ listenerStatus: "idle", listenerError: null });
         },
-
         stopAccountListener: () => stop(),
       };
     },
     {
       name: WARM_CACHE_KEY,
-      version: 2,
+      version: 1,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : undefined)),
       partialize: (s) => ({ equity: s.equity, buying_power: s.buying_power, cash: s.cash, updated_at_ms: s.updated_at_ms }),
       onRehydrateStorage: () => (state, err) => {
-        if (err) {
-          console.error("Failed to rehydrate alpaca account cache:", err);
-        }
+        if (err) console.error("Failed to rehydrate alpaca account cache:", err);
         state?.setHasHydrated(true);
       },
     },

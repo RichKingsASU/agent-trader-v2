@@ -24,9 +24,6 @@ import Analytics from "./pages/Analytics";
 import WhaleFlow from "./pages/WhaleFlow";
 import BacktestDashboard from "./pages/BacktestDashboard";
 
-import LovableDashboardPage from "./pages/lovable/DashboardPage";
-import LovableDeveloperPage from "./pages/lovable/DeveloperPage";
-
 import OpsLayout from "./pages/ops/OpsLayout";
 import OpsOverview from "./pages/ops/OpsOverview";
 import OptionsExplorer from "./pages/ops/OptionsExplorer";
@@ -62,8 +59,6 @@ const App = () => (
                   <Route path="/developer" element={<Developer />} />
                   <Route path="/mission-control" element={<MissionControl />} />
                   <Route path="/backtest" element={<BacktestDashboard />} />
-                  <Route path="/lovable/dashboard" element={<LovableDashboardPage />} />
-                  <Route path="/lovable/developer" element={<LovableDeveloperPage />} />
                   <Route path="/ops" element={<OpsLayout />}>
                     <Route index element={<OpsOverview />} />
                     <Route path="options" element={<OptionsExplorer />} />

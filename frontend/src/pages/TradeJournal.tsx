@@ -1,4 +1,4 @@
-import { TradeJournal } from "@/components/JournalEntry";
+import { TradingJournal } from "@/components/JournalEntry";
 
 /**
  * Trade Journal Page
@@ -16,7 +16,7 @@ import { TradeJournal } from "@/components/JournalEntry";
 export default function TradeJournalPage() {
   return (
     <div className="container mx-auto p-6 max-w-7xl">
-      <TradeJournal />
+      <TradingJournal />
     </div>
   );
 }

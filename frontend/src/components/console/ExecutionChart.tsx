@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { createChart, IChartApi, ISeriesApi, CandlestickData, Time, CandlestickSeries, LineSeries } from "lightweight-charts";
+import { createChart, type IChartApi, type ISeriesApi, type CandlestickData, type Time } from "lightweight-charts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -76,7 +76,7 @@ export const ExecutionChart = ({ symbol, levelsData, currentPrice, vwap, atr, lo
     chartRef.current = chart;
 
     // Add candlestick series
-    const candleSeries = chart.addSeries(CandlestickSeries, {
+    const candleSeries = chart.addCandlestickSeries({
       upColor: "hsl(142, 76%, 36%)",
       downColor: "hsl(0, 72%, 51%)",
       borderUpColor: "hsl(142, 76%, 36%)",
@@ -92,7 +92,7 @@ export const ExecutionChart = ({ symbol, levelsData, currentPrice, vwap, atr, lo
 
     // Add VWAP line
     if (vwap) {
-      const vwapSeries = chart.addSeries(LineSeries, {
+      const vwapSeries = chart.addLineSeries({
         color: "hsl(213, 94%, 58%)",
         lineWidth: 2,
         title: "VWAP",

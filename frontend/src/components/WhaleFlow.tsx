@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -7,7 +7,27 @@ import { Loader2, AlertCircle, TrendingUp, TrendingDown, Waves, Sparkles } from 
 import { useWhaleFlow } from "@/hooks/useWhaleFlow";
 
 export const WhaleFlow: React.FC = () => {
-  const { activities, loading, error, dominantFlow } = useWhaleFlow();
+  const { trades, systemStatus, loading, error } = useWhaleFlow();
+
+  const activities = useMemo(() => {
+    return trades.map((t) => ({
+      id: t.id,
+      ticker: t.symbol,
+      type: (t.is_golden_sweep ? "Sweep" : "Block") as "Sweep" | "Block",
+      sentiment:
+        (t.sentiment === "bullish" ? "Bullish" : t.sentiment === "bearish" ? "Bearish" : "Neutral") as
+          | "Bullish"
+          | "Bearish"
+          | "Neutral",
+      premium: String(t.premium ?? 0),
+      strike: t.strike,
+      expiry: t.expiry,
+      optionType: (t.option_type === "call" ? "Call" : "Put") as "Call" | "Put",
+      timestamp: t.timestamp,
+    }));
+  }, [trades]);
+
+  const dominantFlow = systemStatus?.volatility_bias ? `Volatility bias: ${systemStatus.volatility_bias}` : "";
 
   const formatPremium = (premium: string) => {
     const num = parseFloat(premium);
@@ -79,6 +99,7 @@ export const WhaleFlow: React.FC = () => {
         return date.toLocaleDateString();
       }
       
+      if (timestamp instanceof Date) return timestamp.toLocaleTimeString();
       return new Date(timestamp).toLocaleTimeString();
     } catch {
       return "N/A";
