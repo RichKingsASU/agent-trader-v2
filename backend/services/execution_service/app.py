@@ -16,7 +16,7 @@ from backend.common.agent_state_machine import (
     read_agent_mode,
     trading_allowed,
 )
-from backend.observability.build_fingerprint import get_build_fingerprint
+from backend.common.agent_mode import AgentModeError
 from backend.execution.engine import (
     AlpacaBroker,
     DryRunBroker,
@@ -27,7 +27,8 @@ from backend.execution.engine import (
 )
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.vertex_ai import init_vertex_ai_or_log
-from backend.observability.correlation import install_fastapi_correlation_middleware
+from backend.execution.marketdata_health import check_market_ingest_heartbeat
+from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,42 @@ def readyz() -> dict[str, Any]:
 @app.get("/ops/status")
 def ops_status() -> dict[str, Any]:
     return {"status": "ok", "service": "execution-engine"}
+
+
+@app.get("/ops/status")
+def ops_status() -> dict[str, Any]:
+    kill, _source = get_kill_switch_state()
+    tenant_id = str(os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip() or None
+    stale_s = _int_env("MARKETDATA_STALE_THRESHOLD_S", 120)
+    hb = check_market_ingest_heartbeat(tenant_id=tenant_id, stale_threshold_seconds=stale_s)
+
+    # Execution can be intentionally disabled / scaled to 0.
+    execution_enabled = _bool_env("EXECUTION_ENABLED", True)
+    execution_replicas = None
+    try:
+        execution_replicas = int(os.getenv("EXECUTION_REPLICAS") or "") if os.getenv("EXECUTION_REPLICAS") else None
+    except Exception:
+        execution_replicas = None
+
+    st = build_ops_status(
+        service_name="execution-agent",
+        service_kind="execution",
+        agent_identity=AgentIdentity(
+            agent_name=str(os.getenv("AGENT_NAME") or "execution-agent"),
+            agent_role=str(os.getenv("AGENT_ROLE") or "execution"),
+            agent_mode=str(os.getenv("AGENT_MODE") or read_agent_mode()),
+        ),
+        git_sha=os.getenv("GIT_SHA") or os.getenv("K_REVISION") or None,
+        build_id=os.getenv("BUILD_ID") or None,
+        kill_switch=bool(kill),
+        heartbeat_ttl_seconds=_int_env("OPS_HEARTBEAT_TTL_S", 60),
+        marketdata_last_tick_utc=hb.last_heartbeat_at,
+        marketdata_stale_threshold_seconds=stale_s,
+        execution_enabled=bool(execution_enabled),
+        execution_replicas=execution_replicas,
+        endpoints=EndpointsBlock(healthz="/health", heartbeat=None, metrics=None),
+    )
+    return st.model_dump()
 
 
 @app.get("/state")

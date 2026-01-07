@@ -6,8 +6,8 @@ import os
 import json
 
 from backend.common.agent_boot import configure_startup_logging
-from backend.observability.correlation import install_fastapi_correlation_middleware
-from backend.observability.logger import log_event
+from backend.common.kill_switch import get_kill_switch_state
+from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 
 from backend.common.marketdata_heartbeat import snapshot
 from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
