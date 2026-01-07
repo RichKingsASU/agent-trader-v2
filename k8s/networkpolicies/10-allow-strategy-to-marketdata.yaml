@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-strategy-to-marketdata
+  namespace: trading-floor
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: marketdata-mcp-server
+      app.kubernetes.io/part-of: agenttrader-v2
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: agenttrader-v2
+              app.kubernetes.io/component: strategy-engine
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: agenttrader-v2
+              app.kubernetes.io/component: strategy-runtime
+      ports:
+        - protocol: TCP
+          port: 8080
+

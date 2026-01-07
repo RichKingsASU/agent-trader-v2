@@ -27,6 +27,20 @@ async def read_root():
 async def health_check():
     return {"status": "healthy", "service_id": "agenttrader-prod-streamer"}
 
+@app.get("/healthz")
+async def healthz():
+    # Alias for Kubernetes probes.
+    return await health_check()
+
+@app.get("/readyz")
+async def readyz():
+    # Readiness is the same as health for this service (no external deps required).
+    return {"status": "ok"}
+
+@app.get("/ops/status")
+async def ops_status():
+    return {"status": "ok", "service": "marketdata-mcp-server"}
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     uvicorn.run(app, host="0.0.0.0", port=port)

@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import strategies, broker_accounts, paper_orders, trades
 
+from backend.common.agent_boot import configure_startup_logging
 from backend.common.kill_switch import get_kill_switch_state
 
 app = FastAPI(title="AgentTrader Strategy Service")
@@ -16,6 +17,25 @@ def _startup() -> None:
         agent_name="strategy-service",
         intent="Serve strategy management APIs (strategies, broker accounts, paper orders, trades).",
     )
+
+    enabled, source = get_kill_switch_state()
+    if enabled:
+        # Non-execution service: keep serving, but make it visible in logs.
+        logger.warning("kill_switch_active enabled=true source=%s", source)
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz() -> dict[str, str]:
+    return {"status": "ok"}
+
+@app.get("/ops/status")
+def ops_status() -> dict[str, str]:
+    return {"status": "ok", "service": "strategy-service"}
 
 # Enable CORS for frontend
 app.add_middleware(
@@ -30,13 +50,6 @@ app.include_router(strategies.router)
 app.include_router(broker_accounts.router)
 app.include_router(paper_orders.router)
 app.include_router(trades.router)
-
-@app.on_event("startup")
-def _startup() -> None:
-    enabled, source = get_kill_switch_state()
-    if enabled:
-        # Non-execution service: keep serving, but make it visible in logs.
-        logger.warning("kill_switch_active enabled=true source=%s", source)
 
 # Include institutional analytics router
 try:

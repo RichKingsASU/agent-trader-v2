@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: execution-engine
+  namespace: trading-floor
+  labels:
+    app: execution-engine
+    app.kubernetes.io/name: execution-engine
+    app.kubernetes.io/component: execution-agent
+    app.kubernetes.io/part-of: agenttrader-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: execution-engine
+  template:
+    metadata:
+      labels:
+        app: execution-engine
+        app.kubernetes.io/name: execution-engine
+        app.kubernetes.io/component: execution-agent
+        app.kubernetes.io/part-of: agenttrader-v2
+    spec:
+      priorityClassName: high-priority
+      serviceAccountName: trading-floor-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: execution-engine
+          image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/execution-engine:54afffe
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          env:
+            # Absolute safety defaults: never allow broker routing from K8s by default.
+            - name: AGENT_MODE
+              value: "DISABLED"
+            - name: EXEC_DRY_RUN
+              value: "1"
+            - name: EXECUTION_HALTED
+              valueFrom:
+                configMapKeyRef:
+                  name: agenttrader-kill-switch
+                  key: EXECUTION_HALTED
+            - name: EXECUTION_HALTED_FILE
+              value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
+          volumeMounts:
+            - name: kill-switch
+              mountPath: /etc/agenttrader/kill-switch
+              readOnly: true
+      volumes:
+        - name: kill-switch
+          configMap:
+            name: agenttrader-kill-switch
+            items:
+              - key: EXECUTION_HALTED
+                path: EXECUTION_HALTED
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agenttrader-execution-agent
+  namespace: trading-floor
+  labels:
+    app.kubernetes.io/name: agenttrader-execution-agent
+    app.kubernetes.io/component: execution-agent
+    app.kubernetes.io/part-of: agenttrader-v2
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/part-of: agenttrader-v2
+    app.kubernetes.io/component: execution-agent
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: http
+
