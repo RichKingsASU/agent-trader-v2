@@ -77,20 +77,10 @@ steps:
           echo "✅ PASSED: No execution agents found with replicas > 0."
         fi
 
-  - name: 'python:3.11'
+  - name: 'python:3.11-slim'
     id: 'Smoke check Python imports (pre-docker)'
     entrypoint: 'bash'
-    args:
-      - -ceu
-      - |
-        echo "--- Smoke check: import critical Python modules (no secrets) ---"
-        python --version
-        python -m pip install --upgrade pip
-        python -m pip install -r backend/requirements.txt
-        python scripts/smoke_check_imports.py || {
-          echo "❌ Import smoke check failed (see errors above)." >&2
-          exit 1
-        }
+    args: ["-c", "python scripts/smoke_check_imports.py"]
 
   # Build and push marketdata-mcp-server
   - name: 'gcr.io/cloud-builders/docker'
