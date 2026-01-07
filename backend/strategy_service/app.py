@@ -10,7 +10,7 @@ from backend.common.kill_switch import get_kill_switch_state
 from backend.common.http_correlation import install_http_correlation
 
 app = FastAPI(title="AgentTrader Strategy Service")
-logger = logging.getLogger(__name__)
+install_fastapi_correlation_middleware(app)
 
 install_http_correlation(app, service="strategy-service")
 

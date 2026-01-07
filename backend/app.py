@@ -13,6 +13,7 @@ from backend.common.marketdata_heartbeat import snapshot
 from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
 
 app = FastAPI()
+install_fastapi_correlation_middleware(app)
 
 @app.on_event("startup")
 async def startup_event():

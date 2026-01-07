@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, Iterable, Mapping, Tuple
 
 from .models import LedgerTrade
 from .pnl import aggregate_pnl, compute_fifo_pnl, compute_pnl_fifo
+from backend.time.nyse_time import to_utc
 
 
 def _as_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    return to_utc(dt)
 
 
 @dataclass(frozen=True, slots=True)

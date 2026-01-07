@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Iterable, Mapping, Optional, Tuple
+
+from backend.time.nyse_time import UTC, to_utc
 
 
 def _as_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        # Treat naive datetimes as UTC to avoid ambiguous math.
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    return to_utc(dt)
 
 
 def month_period_utc(*, year: int, month: int) -> Tuple[datetime, datetime]:
@@ -18,11 +17,11 @@ def month_period_utc(*, year: int, month: int) -> Tuple[datetime, datetime]:
     """
     if month < 1 or month > 12:
         raise ValueError("month must be 1..12")
-    start = datetime(year, month, 1, 0, 0, 0, tzinfo=timezone.utc)
+    start = datetime(year, month, 1, 0, 0, 0, tzinfo=UTC)
     if month == 12:
-        end = datetime(year + 1, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        end = datetime(year + 1, 1, 1, 0, 0, 0, tzinfo=UTC)
     else:
-        end = datetime(year, month + 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        end = datetime(year, month + 1, 1, 0, 0, 0, tzinfo=UTC)
     return start, end
 
 
