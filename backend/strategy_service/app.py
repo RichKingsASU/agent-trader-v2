@@ -12,7 +12,7 @@ from backend.execution.marketdata_health import check_market_ingest_heartbeat
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 
 app = FastAPI(title="AgentTrader Strategy Service")
-logger = logging.getLogger(__name__)
+install_fastapi_correlation_middleware(app)
 
 # Startup identity/intent log (single JSON line).
 @app.on_event("startup")
