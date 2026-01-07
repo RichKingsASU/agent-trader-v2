@@ -3,13 +3,21 @@ options:
     - WORKSPACE_ROOT=/workspace
 
 steps:
-  - name: 'bash'
+  - name: 'bash' # RISK: In Cloud Build, `name` is a *container image*, not a shell.
+                 # RISK: `bash` likely resolves to Docker Hub `bash:latest` (implicit `:latest`), which can fail early due to:
+                 # - Docker Hub rate limits / unauthenticated pull restrictions
+                 # - org policies restricting external registries
+                 # - image not existing / tag drift (un-pinned)
+                 # This is the #1 likely reason the build fails before any docker build/push (IMAGES: -).
     id: 'Safety Guard'
-    entrypoint: 'bash'
+    entrypoint: 'bash' # RISK: Assumes the container image has `bash` in PATH; if `name: bash` pulls a minimal image, this can be "exec: bash: not found".
     args:
       - '-c'
       - |
         set -e
+        # NOTE: Working directory assumption: Cloud Build defaults to `/workspace` (repo root). All relative paths below assume that.
+        # RISK: If `dir:` is introduced later or a different builder changes CWD, `find .` and `./k8s/...` will scan the wrong tree.
+
         echo "--- Checking for ':latest' image tags ---"
         LATEST_MATCH="$(find . -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -nH "image:.*:latest" 2>/dev/null | head -n 1 || true)"
         if [ -n "$$LATEST_MATCH" ]; then
@@ -26,6 +34,10 @@ steps:
         AGENT_MODE_EXECUTE_FOUND=0
         find "${WORKSPACE_ROOT}" -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | while read FILE_VAR;
         do
+          # RISK: The `while ...; do ... done` is fed by a pipeline, so in bash it runs in a subshell.
+          #       Any changes to `AGENT_MODE_EXECUTE_FOUND` inside the loop will *not* propagate to the parent shell,
+          #       making the post-loop `if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]` check ineffective.
+          #       (This is more of a safety-gap than an early-failure cause, but it can hide real violations.)
           if [ -f "$$FILE_VAR" ]; then
             while read LINE_VAR;
             do
