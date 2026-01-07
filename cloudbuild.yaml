@@ -14,8 +14,9 @@ steps:
     id: 'Checkout'
     entrypoint: 'bash'
     args:
-      - -ceu
+      - -c
       - |
+        set -euo pipefail
         echo "--- Checkout / source context ---"
         echo "PWD=$$(pwd)"
         echo "Workspace contents:"
@@ -31,146 +32,25 @@ steps:
   # b) Safety guard
   - name: 'gcr.io/cloud-builders/bash'
     id: 'CI Layout Validate'
+    waitFor: ['Checkout']
     entrypoint: 'bash'
     args:
-      - -ceu
+      - -c
       - |
+        set -euo pipefail
         bash ./scripts/validate_ci_layout.sh
 
-  - name: 'bash'
+  - name: 'gcr.io/cloud-builders/bash'
     id: 'Safety Guard'
-    waitFor: ['Checkout']
     entrypoint: 'bash'
     args:
       - '-c'
       - |
         set -euo pipefail
-
         echo "--- Safety Guard preflight ---"
-        echo "PWD: $(pwd)"
-
-        # Diagnostics for unexpected tool/runtime issues.
-        diag_grep_error() {
-          local check_name="$1"
-          local files_count="$2"
-          echo "----- Debug: ${check_name} (grep error) -----" >&2
-          echo "PWD: $(pwd)" >&2
-          echo "WORKSPACE_ROOT: ${WORKSPACE_ROOT:-<unset>}" >&2
-          echo "Files scanned: ${files_count}" >&2
-          echo "Listing PWD:" >&2
-          ls -la >&2 || true
-          echo "----- End Debug -----" >&2
-        }
-
-        # Run grep against an explicit file list, interpreting exit codes robustly:
-        # - 0 => policy violation (FAIL with exit 1) and print offending lines
-        # - 1 => PASS (no matches)
-        # - 2 => grep/runtime error (FAIL with exit 1) and print diagnostics
-        #
-        # Usage:
-        #   run_grep_check "<check name>" "<fail message>" "<grep regex>" <file1> <file2> ...
-        run_grep_check() {
-          local check_name="$1"
-          local fail_message="$2"
-          local grep_pattern="$3"
-          shift 3
-          local -a files=( "$@" )
-
-          echo "--- ${check_name} ---"
-          echo "Files scanned: ${#files[@]}"
-          if ((${#files[@]} == 0)); then
-            echo "✅ PASSED: No files to scan."
-            return 0
-          fi
-
-          set +e
-          local matches
-          matches="$(grep -nH "${grep_pattern}" -- "${files[@]}" 2>&1)"
-          local rc=$?
-          set -e
-
-          if [[ ${rc} -eq 0 ]]; then
-            echo "❌ FAILED: ${fail_message}"
-            echo "${matches}"
-            exit 1
-          elif [[ ${rc} -eq 1 ]]; then
-            echo "✅ PASSED: No matches found."
-            return 0
-          else
-            echo "❌ FAILED: grep error while running '${check_name}'." >&2
-            echo "${matches}" >&2
-            diag_grep_error "${check_name}" "${#files[@]}"
-            exit 1
-          fi
-        }
-
-        # 1) ':latest' image tags in yaml/yml excluding cloudbuild
-        mapfile -d '' -t LATEST_TAG_FILES < <(
-          find "${WORKSPACE_ROOT:-/workspace}" -type f \
-            \( -name "*.yaml" -o -name "*.yml" \) \
-            -not -path "*cloudbuild*" \
-            -print0
-        )
-        run_grep_check \
-          "Checking for ':latest' image tags" \
-          "Use of ':latest' image tag is forbidden." \
-          "image:.*:latest" \
-          "${LATEST_TAG_FILES[@]}"
-
-        # 2) AGENT_MODE=EXECUTE in yaml/yml/py/sh/Dockerfile excluding cloudbuild
-        mapfile -d '' -t AGENT_MODE_FILES < <(
-          find "${WORKSPACE_ROOT:-/workspace}" -type f \
-            \( -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" \) \
-            -not -path "*cloudbuild*" \
-            -print0
-        )
-
-        echo "--- Checking for 'AGENT_MODE=EXECUTE' ---"
-        echo "Files scanned: ${#AGENT_MODE_FILES[@]}"
-        if ((${#AGENT_MODE_FILES[@]} == 0)); then
-          echo "✅ PASSED: No files to scan."
-        else
-          set +e
-          AGENT_MODE_MATCHES="$(
-            grep -nH -e "AGENT_MODE=EXECUTE" -e "AGENT_MODE: EXECUTE" -- "${AGENT_MODE_FILES[@]}" 2>&1 \
-              | grep -v "ALLOWED_AGENT_MODES"
-          )"
-          GREP_RC=$?
-          set -e
-
-          # Note: In a pipeline, the last command's status is what we capture here; treat "no matches after filtering"
-          # as PASS, and any non-1/non-0 as an error needing diagnostics.
-          if [[ ${GREP_RC} -eq 0 ]]; then
-            echo "❌ FAILED: AGENT_MODE must not be set to EXECUTE in committed code."
-            echo "${AGENT_MODE_MATCHES}"
-            exit 1
-          elif [[ ${GREP_RC} -eq 1 ]]; then
-            echo "✅ PASSED: No instances of 'AGENT_MODE=EXECUTE' found."
-          else
-            echo "❌ FAILED: grep error while running 'AGENT_MODE=EXECUTE' check." >&2
-            echo "${AGENT_MODE_MATCHES}" >&2
-            diag_grep_error "Checking for 'AGENT_MODE=EXECUTE'" "${#AGENT_MODE_FILES[@]}"
-            exit 1
-          fi
-        fi
-
-        # 3) replicas > 0 in ./k8s/execution (and if directory doesn't exist, PASS)
-        EXECUTION_DIR="${WORKSPACE_ROOT:-/workspace}/k8s/execution"
-        echo "--- Checking for scaled execution agents (replicas > 0) ---"
-        if [[ ! -d "${EXECUTION_DIR}" ]]; then
-          echo "Files scanned: 0"
-          echo "✅ PASSED: ${EXECUTION_DIR} does not exist."
-        else
-          mapfile -d '' -t EXECUTION_YAMLS < <(
-            find "${EXECUTION_DIR}" -type f \( -name "*.yaml" -o -name "*.yml" \) -print0
-          )
-          run_grep_check \
-            "Checking for scaled execution agents (replicas > 0)" \
-            "Execution agent replicas must be 0 in committed code." \
-            "replicas:[[:space:]]*[1-9]" \
-            "${EXECUTION_YAMLS[@]}"
-        fi
-        echo "✅ PASSED: No execution agents found with replicas > 0."
+        chmod +x ./scripts/ci_safety_guard.sh
+        ./scripts/ci_safety_guard.sh
+    waitFor: ['CI Layout Validate']
 
   # c) Import smoke check (source-based; fail fast before image builds).
   #
@@ -181,8 +61,9 @@ steps:
     waitFor: ['Safety Guard']
     entrypoint: 'bash'
     args:
-      - -ceu
+      - -c
       - |
+        set -euo pipefail
         echo "--- Import smoke check (source) ---"
         python -V
         python -m pip --version || python -m ensurepip
