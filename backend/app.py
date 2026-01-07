@@ -18,6 +18,7 @@ from backend.common.http_correlation import install_http_correlation
 from backend.common.ops_metrics import REGISTRY, agent_start_total, errors_total, mark_activity, update_marketdata_heartbeat_metrics
 from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
 from backend.observability.correlation import install_fastapi_correlation_middleware
+from backend.observability.ops_json_logger import OpsLogger
 
 app = FastAPI()
 install_fastapi_correlation_middleware(app)
@@ -42,6 +43,7 @@ async def startup_event() -> None:
         agent_name="marketdata-mcp-server",
         intent="Serve marketdata MCP endpoints and run the Alpaca streamer background task.",
     )
+    app.state.ops_logger = OpsLogger("marketdata-mcp-server")
     agent_start_total.inc(labels={"component": "marketdata-mcp-server"})
     # Mark activity at startup so heartbeat_age_seconds starts at ~0.
     mark_activity("marketdata")
@@ -51,8 +53,17 @@ async def startup_event() -> None:
     app.state.loop_heartbeat_monotonic = time.monotonic()
 
     async def _loop_heartbeat() -> None:
+        last_ops_log = 0.0
         while not getattr(app.state, "shutting_down", False):
             app.state.loop_heartbeat_monotonic = time.monotonic()
+            now = time.monotonic()
+            # Rate-limit ops heartbeat logs (avoid spam).
+            if (now - last_ops_log) >= float(os.getenv("OPS_HEARTBEAT_LOG_INTERVAL_S") or "60"):
+                last_ops_log = now
+                try:
+                    app.state.ops_logger.heartbeat(kind="loop")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
             await asyncio.sleep(1.0)
 
     app.state.loop_task = asyncio.create_task(_loop_heartbeat())
@@ -60,7 +71,10 @@ async def startup_event() -> None:
     # Readiness tracking: only become ready once the streamer has configured subscriptions.
     app.state.streamer_ready_event = asyncio.Event()
 
-    print("Starting Alpaca streamer...", flush=True)
+    try:
+        app.state.ops_logger.event("starting_streamer", severity="INFO")  # type: ignore[attr-defined]
+    except Exception:
+        pass
     stream_task: asyncio.Task = asyncio.create_task(alpaca_streamer_main(app.state.streamer_ready_event))
     app.state.stream_task = stream_task
 
@@ -83,14 +97,17 @@ async def startup_event() -> None:
     app.state.ready = True
     if not bool(getattr(app.state, "ready_logged", False)):
         app.state.ready_logged = True
-        print("SERVICE_READY: marketdata-mcp-server", flush=True)
+        try:
+            app.state.ops_logger.readiness(ready=True)  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     app.state.shutting_down = True
     try:
-        print(f"SHUTDOWN_INITIATED: {_service_name()}", flush=True)
+        app.state.ops_logger.shutdown(phase="initiated")  # type: ignore[attr-defined]
     except Exception:
         pass
 

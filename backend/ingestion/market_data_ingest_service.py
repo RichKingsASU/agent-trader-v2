@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from backend.common.agent_boot import configure_startup_logging
 from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.observability.build_fingerprint import get_build_fingerprint
+from backend.observability.ops_json_logger import OpsLogger
 from backend.ingestion.market_data_ingest import (
     MarketDataIngestor,
     load_config_from_env,
@@ -92,6 +93,7 @@ async def _startup() -> None:
         agent_name="market-ingest-service",
         intent="Run market quote ingestion in background while serving health checks (Cloud Run service).",
     )
+    app.state.ops_logger = OpsLogger("market-ingest")
     try:
         fp = get_build_fingerprint()
         print(
@@ -109,8 +111,16 @@ async def _startup() -> None:
     app.state.loop_heartbeat_monotonic = time.monotonic()
 
     async def _loop_heartbeat() -> None:
+        last_ops_log = 0.0
         while not getattr(app.state, "shutting_down", False):
             app.state.loop_heartbeat_monotonic = time.monotonic()
+            now = time.monotonic()
+            if (now - last_ops_log) >= float(os.getenv("OPS_HEARTBEAT_LOG_INTERVAL_S") or "60"):
+                last_ops_log = now
+                try:
+                    app.state.ops_logger.heartbeat(kind="loop")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
             await asyncio.sleep(1.0)
 
     app.state.loop_task = asyncio.create_task(_loop_heartbeat())
@@ -129,14 +139,17 @@ async def _startup() -> None:
     app.state.ingest_task = asyncio.create_task(_run())
     await asyncio.sleep(0)
     app.state.ready = True
-    print("SERVICE_READY: market-ingest", flush=True)
+    try:
+        app.state.ops_logger.readiness(ready=True)  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     app.state.shutting_down = True
     try:
-        print("SHUTDOWN_INITIATED: market-ingest", flush=True)
+        app.state.ops_logger.shutdown(phase="initiated")  # type: ignore[attr-defined]
     except Exception:
         pass
     ingestor: MarketDataIngestor | None = getattr(app.state, "ingestor", None)

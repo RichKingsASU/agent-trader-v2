@@ -31,14 +31,21 @@ def log_json(event_type: str, **fields: Any) -> None:
     """
     Cloud Run-friendly structured logs: JSON lines to stdout.
     """
+    from backend.observability.ops_json_logger import log as _ops_log  # noqa: WPS433
+
     # Convention:
     # - log_ts: when this log line was emitted
     # - ts: event timestamp (if applicable); otherwise equals log_ts
     log_ts = _ts()
-    # "severity" is recognized by Google Cloud Logging.
-    payload = {"event_type": event_type, "severity": fields.pop("severity", "INFO"), "log_ts": log_ts, **fields}
-    payload.setdefault("ts", log_ts)
-    print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+    ts = fields.pop("ts", log_ts)
+    severity = fields.pop("severity", "INFO")
+
+    # Prefer explicit service override; fall back to common env vars; else default.
+    service = str(fields.pop("service", "") or os.getenv("SERVICE_NAME") or os.getenv("K_SERVICE") or "market-data-ingest")
+
+    payload = {"event_type": event_type, "log_ts": log_ts, "ts": ts, **fields}
+    # Emit with required base fields (service/git_sha/image_tag/agent_mode/severity).
+    _ops_log(service, event_type, severity=str(severity), **payload)
 
 
 @dataclass
@@ -404,6 +411,14 @@ class MarketDataIngestor:
                             attempt=backoff.attempt,
                             severity="WARNING",
                         )
+                        log_json(
+                            "reconnect_attempt",
+                            status="scheduled",
+                            sleep_s=sleep_s,
+                            attempt=backoff.attempt,
+                            reason="alpaca_disconnect",
+                            severity="WARNING",
+                        )
                         try:
                             await asyncio.wait_for(self._stop.wait(), timeout=sleep_s)
                         except asyncio.TimeoutError:
@@ -421,6 +436,15 @@ class MarketDataIngestor:
                         sleep_s=sleep_s,
                         attempt=backoff.attempt,
                         severity="ERROR",
+                    )
+                    log_json(
+                        "reconnect_attempt",
+                        status="scheduled",
+                        sleep_s=sleep_s,
+                        attempt=backoff.attempt,
+                        reason="alpaca_disconnect_error",
+                        error=str(e),
+                        severity="WARNING",
                     )
                     try:
                         await asyncio.wait_for(self._stop.wait(), timeout=sleep_s)
@@ -548,7 +572,9 @@ async def _amain() -> int:
         if not shutdown_logged:
             shutdown_logged = True
             try:
-                print("SHUTDOWN_INITIATED: market-data-ingest", flush=True)
+                from backend.observability.ops_json_logger import OpsLogger  # noqa: WPS433
+
+                OpsLogger("market-data-ingest").shutdown(phase="initiated")
             except Exception:
                 pass
         log_json("signal", status="received", signum=signum)

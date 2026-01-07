@@ -20,6 +20,7 @@ from .routers import strategies, broker_accounts, paper_orders, trades, strategy
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.agent_boot import configure_startup_logging
 from backend.observability.correlation import install_fastapi_correlation_middleware
+from backend.observability.ops_json_logger import OpsLogger
 from backend.strategies.registry.loader import load_all_configs
 
 app = FastAPI(title="AgentTrader Strategy Service")
@@ -54,6 +55,7 @@ async def _startup() -> None:
         intent="Serve strategy management APIs + read-only strategy config registry endpoints.",
     )
 
+    app.state.ops_logger = OpsLogger(_service_name())
     # Load registry at startup so we fail-fast on invalid/duplicate configs.
     app.state.strategy_config_registry = load_all_configs()
 
@@ -61,8 +63,16 @@ async def _startup() -> None:
     app.state.loop_heartbeat_monotonic = time.monotonic()
 
     async def _loop_heartbeat() -> None:
+        last_ops_log = 0.0
         while not getattr(app.state, "shutting_down", False):
             app.state.loop_heartbeat_monotonic = time.monotonic()
+            now = time.monotonic()
+            if (now - last_ops_log) >= float(os.getenv("OPS_HEARTBEAT_LOG_INTERVAL_S") or "60"):
+                last_ops_log = now
+                try:
+                    app.state.ops_logger.heartbeat(kind="loop")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
             await asyncio.sleep(1.0)
 
     app.state.loop_task = asyncio.create_task(_loop_heartbeat())
@@ -74,14 +84,17 @@ async def _startup() -> None:
 
     # Readiness becomes true after registry load + loop heartbeat started.
     app.state.ready = True
-    print(f"SERVICE_READY: {_service_name()}", flush=True)
+    try:
+        app.state.ops_logger.readiness(ready=True)  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     app.state.shutting_down = True
     try:
-        print(f"SHUTDOWN_INITIATED: {_service_name()}", flush=True)
+        app.state.ops_logger.shutdown(phase="initiated")  # type: ignore[attr-defined]
     except Exception:
         pass
     loop_task: asyncio.Task | None = getattr(app.state, "loop_task", None)

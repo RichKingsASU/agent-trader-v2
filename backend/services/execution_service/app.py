@@ -38,6 +38,7 @@ from backend.safety.startup_validation import (
     validate_flag_exact_false_or_exit,
     validate_required_env_or_exit,
 )
+from backend.observability.ops_json_logger import OpsLogger
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ def _startup() -> None:
         agent_name="execution-engine",
         intent="Serve the execution API; validate config and execute broker order intents.",
     )
+    app.state.ops_logger = OpsLogger("execution-engine")
     try:
         fp = get_build_fingerprint()
         print(
@@ -140,11 +142,15 @@ def _startup() -> None:
     app.state.engine = engine
     app.state.risk = risk
     app.state.agent_sm = AgentStateMachine(agent_id=str(os.getenv("EXEC_AGENT_ID") or "execution_engine"))
+    try:
+        app.state.ops_logger.readiness(ready=True)  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 @app.on_event("shutdown")
 def _shutdown() -> None:
     try:
-        print("SHUTDOWN_INITIATED: execution-engine", flush=True)
+        app.state.ops_logger.shutdown(phase="initiated")  # type: ignore[attr-defined]
     except Exception:
         pass
 

@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import FastAPI, Response
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.observability.ops_json_logger import OpsLogger
 
 from .driver import run_strategy
 
@@ -34,13 +35,23 @@ async def _startup() -> None:
         intent="Serve strategy-engine health endpoints and run strategy cycles with fail-closed safety gating.",
     )
 
+    app.state.ops_logger = OpsLogger("strategy-engine")
     app.state.shutting_down = False
     app.state.ready = False
+    app.state.ready_logged = False
     app.state.loop_heartbeat_monotonic = time.monotonic()
 
     async def _loop_heartbeat() -> None:
+        last_ops_log = 0.0
         while not getattr(app.state, "shutting_down", False):
             app.state.loop_heartbeat_monotonic = time.monotonic()
+            now = time.monotonic()
+            if (now - last_ops_log) >= float(os.getenv("OPS_HEARTBEAT_LOG_INTERVAL_S") or "60"):
+                last_ops_log = now
+                try:
+                    app.state.ops_logger.heartbeat(kind="loop")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
             await asyncio.sleep(1.0)
 
     async def _initialize_readiness() -> None:
@@ -57,7 +68,12 @@ async def _startup() -> None:
                 if status == "ok":
                     if not bool(getattr(app.state, "ready", False)):
                         app.state.ready = True
-                        print("SERVICE_READY: strategy-engine", flush=True)
+                    if not bool(getattr(app.state, "ready_logged", False)):
+                        app.state.ready_logged = True
+                        try:
+                            app.state.ops_logger.readiness(ready=True)  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
                     return
             except Exception:
                 # Keep retrying; readiness endpoint already reflects state.
@@ -87,14 +103,19 @@ async def _startup() -> None:
 
     # Readiness: startup completed and critical in-process loops scheduled.
     app.state.is_ready = True
-    print("SERVICE_READY: strategy-engine", flush=True)
+    if not bool(getattr(app.state, "ready_logged", False)):
+        app.state.ready_logged = True
+        try:
+            app.state.ops_logger.readiness(ready=True)  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     app.state.shutting_down = True
     try:
-        print("SHUTDOWN_INITIATED: strategy-engine", flush=True)
+        app.state.ops_logger.shutdown(phase="initiated")  # type: ignore[attr-defined]
     except Exception:
         pass
 

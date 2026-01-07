@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from backend.streams_bridge.config import Config
 from backend.streams_bridge.firestore_writer import FirestoreWriter
 from backend.streams_bridge.mapping import map_devconsole_options_flow
+from backend.observability.ops_json_logger import OpsLogger
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,7 @@ class OptionsFlowClient:
     def __init__(self, cfg: Config, writer: FirestoreWriter):
         self.cfg = cfg
         self.writer = writer
+        self._ops = OpsLogger("stream-bridge")
 
     async def run_forever(self):
         if not self.cfg.options_flow_url:
@@ -21,6 +23,7 @@ class OptionsFlowClient:
                 await asyncio.sleep(30)
             return
 
+        attempt = 0
         while True:
             try:
                 headers = {}
@@ -28,7 +31,12 @@ class OptionsFlowClient:
                     headers['Authorization'] = f'Bearer {self.cfg.options_flow_api_key}'
 
                 async with websockets.connect(self.cfg.options_flow_url, extra_headers=headers) as websocket:
+                    attempt = 0
                     logger.info("Connected to options flow stream.")
+                    try:
+                        self._ops.event("connected", stream="options_flow")
+                    except Exception:
+                        pass
                     while True:
                         message = await websocket.recv()
                         payload = json.loads(message)
@@ -38,4 +46,10 @@ class OptionsFlowClient:
                         await self.writer.insert_options_flow(events)
             except Exception as e:
                 logger.exception(f"OptionsFlowClient error: {e}")
-                await asyncio.sleep(5)
+                attempt += 1
+                sleep_s = 5.0
+                try:
+                    self._ops.reconnect_attempt(attempt=attempt, sleep_s=sleep_s, stream="options_flow", error=str(e))
+                except Exception:
+                    pass
+                await asyncio.sleep(sleep_s)
