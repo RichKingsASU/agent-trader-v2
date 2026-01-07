@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -12,8 +12,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
 
 # Install deps first for better caching.
-COPY requirements.txt /app/requirements.txt
-RUN python -m pip install --no-cache-dir -r /app/requirements.txt
+COPY backend/risk_service/requirements.lock /app/backend/risk_service/requirements.lock
+RUN python -m pip install --no-cache-dir -r /app/backend/risk_service/requirements.lock
 
 COPY . .
 

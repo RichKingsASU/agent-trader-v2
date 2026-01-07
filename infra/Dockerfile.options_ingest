@@ -21,7 +21,7 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
 
 COPY . /app
 
-RUN python -m pip install --no-cache-dir -r /app/backend/strategy_service/requirements.txt
+RUN python -m pip install --no-cache-dir -r /app/backend/strategy_service/requirements.lock
 
 RUN chown -R appuser:appuser /app
 USER 10001

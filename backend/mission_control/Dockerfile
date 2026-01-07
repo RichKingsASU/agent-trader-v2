@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -14,8 +14,8 @@ RUN useradd -u 10001 -m -s /usr/sbin/nologin appuser
 
 WORKDIR /app
 
-COPY backend/mission_control/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY backend/mission_control/requirements.lock /app/backend/mission_control/requirements.lock
+RUN python -m pip install --no-cache-dir -r /app/backend/mission_control/requirements.lock
 
 # Copy only what's needed: backend package + static agents config
 COPY backend /app/backend

@@ -22,8 +22,8 @@ ENV GIT_SHA=$GIT_SHA \
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
 
 # Leverage layer caching by copying requirements first.
-COPY backend/requirements.txt /app/backend/requirements.txt
-RUN python -m pip install --no-cache-dir -r /app/backend/requirements.txt
+COPY backend/requirements.lock /app/backend/requirements.lock
+RUN python -m pip install --no-cache-dir -r /app/backend/requirements.lock
 
 # Copy application code after deps.
 COPY . /app

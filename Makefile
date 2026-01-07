@@ -20,6 +20,60 @@ MISSION_CONTROL_URL ?= http://agenttrader-mission-control
 
 PY ?= python3
 
+.PHONY: lock lock-check
+
+# -----------------------------------------------------------------------------
+# Dependency locking (backend)
+#
+# We intentionally lock backend services separately from Firebase Functions:
+# they are deployed/built independently and may carry conflicting pins.
+# -----------------------------------------------------------------------------
+
+PIP_VERSION ?= 24.3.1
+PIP_TOOLS_VERSION ?= 7.4.1
+
+lock: ## Generate backend *.lock files from requirements.txt
+	@echo "== lock (backend) =="
+	@$(PY) -m pip install --upgrade --user "pip==$(PIP_VERSION)" "pip-tools==$(PIP_TOOLS_VERSION)"
+	@$(PY) -m piptools compile --quiet --no-strip-extras --output-file backend/requirements.lock backend/requirements.txt
+	@$(PY) -m piptools compile --quiet --no-strip-extras --output-file backend/strategy_service/requirements.lock backend/strategy_service/requirements.txt
+	@$(PY) -m piptools compile --quiet --no-strip-extras --output-file backend/risk_service/requirements.lock backend/risk_service/requirements.txt
+	@$(PY) -m piptools compile --quiet --no-strip-extras --output-file backend/mission_control/requirements.lock backend/mission_control/requirements.txt
+	@$(PY) -m piptools compile --quiet --no-strip-extras --output-file backend/execution_agent/requirements.lock backend/execution_agent/requirements.txt
+	@$(PY) -m piptools compile --quiet --no-strip-extras --output-file backend/strategy_engine/requirements.lock backend/strategy_engine/requirements.txt
+	@echo "OK: updated backend/*.lock files"
+
+lock-check: ## Fail if backend *.lock files are out of date
+	@echo "== lock-check (backend) =="
+	@$(PY) -m pip install --upgrade --user "pip==$(PIP_VERSION)" "pip-tools==$(PIP_TOOLS_VERSION)"
+	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+		set -eu; \
+		$(PY) -m piptools compile --quiet --no-strip-extras --output-file "$$tmp/backend.requirements.lock" backend/requirements.txt; \
+		sed '/^#    pip-compile /d' backend/requirements.lock > "$$tmp/backend.requirements.norm.lock"; \
+		sed '/^#    pip-compile /d' "$$tmp/backend.requirements.lock" > "$$tmp/backend.requirements.norm.tmp.lock"; \
+		diff -u "$$tmp/backend.requirements.norm.lock" "$$tmp/backend.requirements.norm.tmp.lock"; \
+		$(PY) -m piptools compile --quiet --no-strip-extras --output-file "$$tmp/strategy_service.requirements.lock" backend/strategy_service/requirements.txt; \
+		sed '/^#    pip-compile /d' backend/strategy_service/requirements.lock > "$$tmp/strategy_service.requirements.norm.lock"; \
+		sed '/^#    pip-compile /d' "$$tmp/strategy_service.requirements.lock" > "$$tmp/strategy_service.requirements.norm.tmp.lock"; \
+		diff -u "$$tmp/strategy_service.requirements.norm.lock" "$$tmp/strategy_service.requirements.norm.tmp.lock"; \
+		$(PY) -m piptools compile --quiet --no-strip-extras --output-file "$$tmp/risk_service.requirements.lock" backend/risk_service/requirements.txt; \
+		sed '/^#    pip-compile /d' backend/risk_service/requirements.lock > "$$tmp/risk_service.requirements.norm.lock"; \
+		sed '/^#    pip-compile /d' "$$tmp/risk_service.requirements.lock" > "$$tmp/risk_service.requirements.norm.tmp.lock"; \
+		diff -u "$$tmp/risk_service.requirements.norm.lock" "$$tmp/risk_service.requirements.norm.tmp.lock"; \
+		$(PY) -m piptools compile --quiet --no-strip-extras --output-file "$$tmp/mission_control.requirements.lock" backend/mission_control/requirements.txt; \
+		sed '/^#    pip-compile /d' backend/mission_control/requirements.lock > "$$tmp/mission_control.requirements.norm.lock"; \
+		sed '/^#    pip-compile /d' "$$tmp/mission_control.requirements.lock" > "$$tmp/mission_control.requirements.norm.tmp.lock"; \
+		diff -u "$$tmp/mission_control.requirements.norm.lock" "$$tmp/mission_control.requirements.norm.tmp.lock"; \
+		$(PY) -m piptools compile --quiet --no-strip-extras --output-file "$$tmp/execution_agent.requirements.lock" backend/execution_agent/requirements.txt; \
+		sed '/^#    pip-compile /d' backend/execution_agent/requirements.lock > "$$tmp/execution_agent.requirements.norm.lock"; \
+		sed '/^#    pip-compile /d' "$$tmp/execution_agent.requirements.lock" > "$$tmp/execution_agent.requirements.norm.tmp.lock"; \
+		diff -u "$$tmp/execution_agent.requirements.norm.lock" "$$tmp/execution_agent.requirements.norm.tmp.lock"; \
+		$(PY) -m piptools compile --quiet --no-strip-extras --output-file "$$tmp/strategy_engine.requirements.lock" backend/strategy_engine/requirements.txt; \
+		sed '/^#    pip-compile /d' backend/strategy_engine/requirements.lock > "$$tmp/strategy_engine.requirements.norm.lock"; \
+		sed '/^#    pip-compile /d' "$$tmp/strategy_engine.requirements.lock" > "$$tmp/strategy_engine.requirements.norm.tmp.lock"; \
+		diff -u "$$tmp/strategy_engine.requirements.norm.lock" "$$tmp/strategy_engine.requirements.norm.tmp.lock"; \
+		echo "OK: lock files are in sync"
+
 .PHONY: help fmt lint smoke-check test build frontend-build deploy guard report readiness status git-status logs scale port-forward clean dev
 
 help: ## Show available targets and usage
