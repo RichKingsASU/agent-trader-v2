@@ -3,6 +3,10 @@ kind: StatefulSet
 metadata:
   name: whale-strategy
   namespace: trading-floor
+  labels:
+    app.kubernetes.io/name: whale-strategy
+    app.kubernetes.io/part-of: agent-trader-v2
+    app.kubernetes.io/component: strategy
 spec:
   serviceName: "whale-strategy"
   replicas: 1
@@ -13,6 +17,9 @@ spec:
     metadata:
       labels:
         strategy: whale
+        app.kubernetes.io/name: whale-strategy
+        app.kubernetes.io/part-of: agent-trader-v2
+        app.kubernetes.io/component: strategy
         git_sha: a2466ec
     spec:
       priorityClassName: high-priority
@@ -27,6 +34,14 @@ spec:
         - containerPort: 8080
           name: http
         env:
+          - name: REPO_ID
+            value: RichKingsASU/agent-trader-v2
+          - name: AGENT_NAME
+            value: whale-strategy
+          - name: AGENT_ROLE
+            value: strategy
+          - name: AGENT_MODE
+            value: DISABLED
           - name: EXECUTION_HALTED
             valueFrom:
               configMapKeyRef:

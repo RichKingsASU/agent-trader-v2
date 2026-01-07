@@ -26,8 +26,12 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from google.cloud import firestore
-import vertexai
-from vertexai.generative_models import GenerativeModel
+try:
+    import vertexai  # type: ignore
+    from vertexai.generative_models import GenerativeModel  # type: ignore
+except Exception:  # pragma: no cover (optional dependency; tests patch these symbols)
+    vertexai = None
+    GenerativeModel = None
 
 logger = logging.getLogger(__name__)
 

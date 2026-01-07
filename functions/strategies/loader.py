@@ -576,3 +576,42 @@ def get_strategy_loader(db: Optional[Any] = None, tenant_id: str = "default", ui
         _global_loader = StrategyLoader(db=db, tenant_id=tenant_id, uid=uid)
     
     return _global_loader
+
+
+def load_strategies() -> Dict[str, Type]:
+    """
+    Backwards-compatible strategy discovery API.
+
+    Some modules (and tests) expect `strategies.loader.load_strategies()` to return a
+    mapping of `{strategy_name: StrategyClass}`.
+
+    This implementation is best-effort: it attempts to import strategy modules and
+    collect `BaseStrategy` subclasses, but will gracefully skip modules that fail to
+    import (missing optional dependencies, etc.).
+    """
+    try:
+        from strategies.base_strategy import BaseStrategy
+    except Exception:
+        return {}
+
+    strategies: Dict[str, Type] = {}
+    strategies_dir = Path(__file__).parent
+    excluded = {"__init__", "base", "base_strategy", "loader"}
+
+    for modinfo in pkgutil.iter_modules([str(strategies_dir)]):
+        module_name = modinfo.name
+        if module_name in excluded:
+            continue
+        try:
+            module = importlib.import_module(f"strategies.{module_name}")
+        except Exception:
+            continue
+
+        for name, obj in inspect.getmembers(module, inspect.isclass):
+            try:
+                if issubclass(obj, BaseStrategy) and obj is not BaseStrategy:
+                    strategies[name] = obj
+            except Exception:
+                continue
+
+    return strategies

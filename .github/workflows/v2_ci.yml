@@ -1,0 +1,117 @@
+name: v2-ci-institutional-gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  institutional-gate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies (CI minimal)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "pytest==8.3.4" "pytest-asyncio==0.24.0"
+          python -m pip install \
+            -r backend/requirements.txt \
+            -r backend/strategy_engine/requirements.txt \
+            -r backend/strategy_service/requirements.txt \
+            -r backend/risk_service/requirements.txt
+
+      - name: Python compile checks
+        run: python -m compileall backend/
+
+      - name: Pytest (if tests exist)
+        run: |
+          if [ -d "tests" ] && [ "$(find tests -maxdepth 1 -type f -name 'test_*.py' | wc -l)" -gt 0 ]; then
+            # Lightweight gate suite (fast + deterministic). Full suite can be run
+            # in a separate workflow/job once stabilized.
+            pytest -q \
+              tests/test_timeutils.py \
+              tests/test_agent_state_machine.py \
+              tests/test_risk_manager.py \
+              tests/test_watchdog.py
+          else
+            echo "No tests found; skipping pytest."
+          fi
+
+      - name: Safety lint (k8s manifests)
+        run: ./scripts/ci_safety_lint.sh
+
+      - name: Requirements pinning gate
+        run: python ./scripts/ci_requirements_pinning_check.py
+
+      - name: Build (dry) — validate Dockerfiles exist
+        run: |
+          test -f infra/Dockerfile.execution_engine
+          test -f infra/Dockerfile.strategy_engine
+          test -f infra/Dockerfile.ingest
+          test -f infra/Dockerfile.options_ingest
+          test -f infra/Dockerfile.stream_bridge
+          test -f infra/Dockerfile.congressional_ingest
+          echo "Dockerfile presence check OK."
+
+      - name: Build (optional) — Cloud Build submit (main + creds only)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+        run: |
+          if command -v gcloud >/dev/null 2>&1; then
+            if gcloud auth list --filter=status:ACTIVE --format="value(account)" | grep -q .; then
+              echo "gcloud is authenticated; Cloud Build submit can be enabled here if desired."
+              echo "Skipping by default (institutional gate is dry-run only)."
+            else
+              echo "gcloud installed but not authenticated; skipping Cloud Build submit."
+            fi
+          else
+            echo "gcloud not available; skipping Cloud Build submit."
+          fi
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.29.0"
+
+      - name: Kubernetes dry-run validation (server if possible, else client)
+        run: |
+          set -euo pipefail
+          if kubectl cluster-info >/dev/null 2>&1; then
+            echo "Cluster reachable; running server-side dry-run."
+            kubectl apply --server-side --dry-run=server -f k8s/
+          else
+            echo "Cluster not reachable; running client-side dry-run."
+            kubectl apply --dry-run=client -f k8s/
+          fi
+
+      - name: Generate deploy report artifact (best-effort)
+        if: always()
+        run: python ./scripts/report_v2_deploy.py
+
+      - name: Upload audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit_artifacts-${{ github.sha }}
+          path: |
+            audit_artifacts/deploy_report.md
+            audit_artifacts/deploy_report.json

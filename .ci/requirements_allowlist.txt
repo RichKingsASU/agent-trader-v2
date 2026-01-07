@@ -1,0 +1,33 @@
+# Temporary allowlist for requirements pinning gate.
+#
+# Policy target: all requirements should ultimately be pinned with '==' (or use
+# a direct reference with '@'). Until that migration is complete, this allowlist
+# permits specific packages/lines to remain unpinned without blocking CI.
+#
+# Entries can be either:
+# - a base package name (e.g. "requests")
+# - an exact requirement line (e.g. "pydantic>=2.0.0,<3.0.0")
+
+# backend/* services (currently unpinned)
+asyncpg
+fastapi
+firebase-admin
+google-cloud-firestore
+google-genai
+httpx
+nats-py
+pandas
+psycopg[binary]
+psycopg2-binary
+python-dotenv
+requests
+tenacity
+uvicorn
+uvicorn[standard]
+websockets
+pydantic
+
+# functions/requirements.txt (currently ranges)
+pydantic>=2.0.0,<3.0.0
+google-cloud-aiplatform>=1.132.0
+google-cloud-secret-manager>=2.26.0

@@ -5,6 +5,9 @@ metadata:
   namespace: trading-floor
   labels:
     app: marketdata-mcp-server
+    app.kubernetes.io/name: marketdata-mcp-server
+    app.kubernetes.io/part-of: agent-trader-v2
+    app.kubernetes.io/component: marketdata
     git_sha: a2466ec
 spec:
   replicas: 1
@@ -15,6 +18,9 @@ spec:
     metadata:
       labels:
         app: marketdata-mcp-server
+        app.kubernetes.io/name: marketdata-mcp-server
+        app.kubernetes.io/part-of: agent-trader-v2
+        app.kubernetes.io/component: marketdata
         git_sha: a2466ec
     spec:
       serviceAccountName: trading-floor-sa
@@ -28,6 +34,14 @@ spec:
         - containerPort: 8080
           name: http
         env:
+          - name: REPO_ID
+            value: RichKingsASU/agent-trader-v2
+          - name: AGENT_NAME
+            value: marketdata-mcp-server
+          - name: AGENT_ROLE
+            value: marketdata
+          - name: AGENT_MODE
+            value: DISABLED
           - name: EXECUTION_HALTED
             valueFrom:
               configMapKeyRef:
@@ -68,6 +82,10 @@ kind: Service
 metadata:
   name: marketdata-mcp-server
   namespace: trading-floor
+  labels:
+    app.kubernetes.io/name: marketdata-mcp-server
+    app.kubernetes.io/part-of: agent-trader-v2
+    app.kubernetes.io/component: marketdata
 spec:
   selector:
     app: marketdata-mcp-server
