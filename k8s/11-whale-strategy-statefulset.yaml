@@ -27,11 +27,21 @@ spec:
         - containerPort: 8080
           name: http
         env:
-          - name: GIT_SHA
+          - name: EXECUTION_HALTED
             valueFrom:
-              fieldRef:
-                fieldPath: metadata.labels['git_sha']
-          - name: WORKLOAD
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.labels['strategy']
+              configMapKeyRef:
+                name: agenttrader-kill-switch
+                key: EXECUTION_HALTED
+          - name: EXECUTION_HALTED_FILE
+            value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
+        volumeMounts:
+          - name: kill-switch
+            mountPath: /etc/agenttrader/kill-switch
+            readOnly: true
+      volumes:
+        - name: kill-switch
+          configMap:
+            name: agenttrader-kill-switch
+            items:
+              - key: EXECUTION_HALTED
+                path: EXECUTION_HALTED
