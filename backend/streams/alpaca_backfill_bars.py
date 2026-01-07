@@ -1,5 +1,6 @@
 
 import datetime as dt
+import json
 import logging
 import os
 
@@ -63,6 +64,14 @@ def main():
         agent_name="alpaca-bars-backfill",
         intent="Backfill historical 1-minute bars from Alpaca into Postgres.",
     )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
     logger.info("Alpaca backfill script started.")
 
     db_url = os.getenv("DATABASE_URL")

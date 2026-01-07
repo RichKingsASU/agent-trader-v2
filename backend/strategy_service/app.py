@@ -1,10 +1,13 @@
+import json
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import strategies, broker_accounts, paper_orders, trades
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.observability.correlation import install_fastapi_correlation_middleware
 
 app = FastAPI(title="AgentTrader Strategy Service")
+install_fastapi_correlation_middleware(app)
 
 # Startup identity/intent log (single JSON line).
 @app.on_event("startup")
@@ -13,6 +16,14 @@ def _startup() -> None:
         agent_name="strategy-service",
         intent="Serve strategy management APIs (strategies, broker accounts, paper orders, trades).",
     )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
 
 # Enable CORS for frontend
 app.add_middleware(
@@ -27,6 +38,16 @@ app.include_router(strategies.router)
 app.include_router(broker_accounts.router)
 app.include_router(paper_orders.router)
 app.include_router(trades.router)
+
+# Health endpoints (keep lightweight; no DB calls).
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok", "service": "strategy-service", **get_build_fingerprint()}
+
+
+@app.get("/healthz")
+def healthz() -> dict:
+    return health()
 
 # Include institutional analytics router
 try:

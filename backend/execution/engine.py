@@ -11,7 +11,7 @@ from typing import Any, Optional, Protocol, runtime_checkable
 import requests
 
 from backend.common.env import get_env
-from backend.common.agent_mode import require_live_mode
+from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.streams.alpaca_env import load_alpaca_env
 
 logger = logging.getLogger(__name__)
@@ -123,8 +123,6 @@ class RiskConfig:
 
     max_position_qty: float = 100.0
     max_daily_trades: int = 50
-    kill_switch_env_var: str = "EXEC_KILL_SWITCH"
-    kill_switch_firestore_doc: str = "ops/execution_kill_switch"
     fail_open: bool = False  # default fail-closed for safety
 
     @staticmethod
@@ -150,10 +148,6 @@ class RiskConfig:
         return RiskConfig(
             max_position_qty=_float("EXEC_MAX_POSITION_QTY", 100.0),
             max_daily_trades=_int("EXEC_MAX_DAILY_TRADES", 50),
-            kill_switch_env_var=str(os.getenv("EXEC_KILL_SWITCH_ENV", "EXEC_KILL_SWITCH")),
-            kill_switch_firestore_doc=str(
-                os.getenv("EXEC_KILL_SWITCH_DOC", "ops/execution_kill_switch")
-            ),
             fail_open=_bool("EXEC_RISK_FAIL_OPEN", False),
         )
 
@@ -619,13 +613,13 @@ class RiskManager:
         return self._kill_switch_enabled()
 
     def _kill_switch_enabled(self) -> bool:
-        env_name = self._config.kill_switch_env_var
-        if str(get_env(env_name, "0")).strip().lower() in {"1", "true", "yes", "on"}:
+        # Standard global kill switch (env + optional file mount).
+        if is_kill_switch_enabled():
             return True
 
-        # Optional Firestore-backed kill switch.
+        # Optional Firestore-backed kill switch (legacy; keep for back-compat).
         try:
-            path = self._config.kill_switch_firestore_doc.strip().strip("/")
+            path = str(os.getenv("EXECUTION_HALTED_DOC") or os.getenv("EXEC_KILL_SWITCH_DOC") or "").strip().strip("/")
             if not path:
                 return False
             parts = path.split("/")
@@ -775,12 +769,41 @@ class ExecutionEngine:
         )
         self._enable_smart_routing = enable_smart_routing
 
+        # Replay marker: engine constructed (startup-ish for this component).
+        try:
+            set_replay_context(agent_name=os.getenv("AGENT_NAME") or "execution-engine")
+            logger.info(
+                "%s",
+                dumps_replay_event(
+                    build_replay_event(
+                        event="startup",
+                        component="backend.execution.engine",
+                        data={
+                            "broker_name": self._broker_name,
+                            "dry_run": self._dry_run,
+                            "enable_smart_routing": self._enable_smart_routing,
+                            "router_provided": self._router is not None,
+                        },
+                    )
+                ),
+            )
+        except Exception:
+            pass
+
     @property
     def dry_run(self) -> bool:
         return self._dry_run
 
     def execute_intent(self, *, intent: OrderIntent) -> ExecutionResult:
         intent = intent.normalized()
+        trace_id = str(
+            intent.metadata.get("trace_id")
+            or intent.metadata.get("run_id")
+            or intent.client_intent_id
+            or ""
+        ).strip() or None
+        if trace_id:
+            set_replay_context(trace_id=trace_id)
         audit_ctx = {
             "client_intent_id": intent.client_intent_id,
             "strategy_id": intent.strategy_id,
@@ -795,6 +818,25 @@ class ExecutionEngine:
             "estimated_slippage": intent.estimated_slippage,
         }
         logger.info("exec.intent_received %s", json.dumps(_to_jsonable(audit_ctx)))
+        try:
+            logger.info(
+                "%s",
+                dumps_replay_event(
+                    build_replay_event(
+                        event="order_intent",
+                        component="backend.execution.engine",
+                        data={
+                            "stage": "received",
+                            "intent": audit_ctx,
+                        },
+                        trace_id=trace_id,
+                        agent_name=os.getenv("AGENT_NAME") or "execution-engine",
+                        run_id=str(intent.metadata.get("run_id") or "").strip() or None,
+                    )
+                ),
+            )
+        except Exception:
+            pass
 
         # Smart routing: check transaction costs BEFORE risk validation
         routing_decision = None
@@ -814,10 +856,56 @@ class ExecutionEngine:
                     "downgraded": routing_decision.downgraded,
                 })),
             )
+            try:
+                logger.info(
+                    "%s",
+                    dumps_replay_event(
+                        build_replay_event(
+                            event="decision_checkpoint",
+                            component="backend.execution.engine",
+                            data={
+                                "checkpoint": "smart_routing",
+                                "should_execute": routing_decision.should_execute,
+                                "reason": routing_decision.reason,
+                                "spread_pct": routing_decision.spread_pct,
+                                "estimated_slippage": routing_decision.estimated_slippage,
+                                "downgraded": routing_decision.downgraded,
+                                "symbol": intent.symbol,
+                                "asset_class": intent.asset_class,
+                            },
+                            trace_id=trace_id,
+                            agent_name=os.getenv("AGENT_NAME") or "execution-engine",
+                            run_id=str(intent.metadata.get("run_id") or "").strip() or None,
+                        )
+                    ),
+                )
+            except Exception:
+                pass
             
             if not routing_decision.should_execute:
                 # Signal downgraded to WAIT due to high transaction costs
                 risk = RiskDecision(allowed=False, reason="smart_routing_downgrade")
+                try:
+                    logger.info(
+                        "%s",
+                        dumps_replay_event(
+                            build_replay_event(
+                                event="state_transition",
+                                component="backend.execution.engine",
+                                data={
+                                    "from_state": "risk_pending",
+                                    "to_state": "downgraded",
+                                    "reason": routing_decision.reason,
+                                    "symbol": intent.symbol,
+                                },
+                                trace_id=trace_id,
+                                agent_name=os.getenv("AGENT_NAME") or "execution-engine",
+                                run_id=str(intent.metadata.get("run_id") or "").strip() or None,
+                            )
+                        ),
+                    )
+                except Exception:
+                    pass
                 return ExecutionResult(
                     status="downgraded",
                     risk=risk,
@@ -830,16 +918,92 @@ class ExecutionEngine:
             "exec.risk_decision %s",
             json.dumps(_to_jsonable({"allowed": risk.allowed, "reason": risk.reason, "checks": risk.checks})),
         )
+        try:
+            logger.info(
+                "%s",
+                dumps_replay_event(
+                    build_replay_event(
+                        event="decision_checkpoint",
+                        component="backend.execution.engine",
+                        data={
+                            "checkpoint": "risk",
+                            "allowed": risk.allowed,
+                            "reason": risk.reason,
+                            "symbol": intent.symbol,
+                            "strategy_id": intent.strategy_id,
+                            # checks can be large; keep but sanitized/size-limited.
+                            "checks": risk.checks,
+                        },
+                        trace_id=trace_id,
+                        agent_name=os.getenv("AGENT_NAME") or "execution-engine",
+                        run_id=str(intent.metadata.get("run_id") or "").strip() or None,
+                    )
+                ),
+            )
+        except Exception:
+            pass
 
         if not risk.allowed:
+            try:
+                logger.info(
+                    "%s",
+                    dumps_replay_event(
+                        build_replay_event(
+                            event="state_transition",
+                            component="backend.execution.engine",
+                            data={
+                                "from_state": "risk_pending",
+                                "to_state": "rejected",
+                                "reason": risk.reason,
+                                "symbol": intent.symbol,
+                                "strategy_id": intent.strategy_id,
+                            },
+                            trace_id=trace_id,
+                            agent_name=os.getenv("AGENT_NAME") or "execution-engine",
+                            run_id=str(intent.metadata.get("run_id") or "").strip() or None,
+                        )
+                    ),
+                )
+            except Exception:
+                pass
             return ExecutionResult(status="rejected", risk=risk, routing=routing_decision, message=risk.reason)
 
         if self._dry_run:
             logger.info("exec.dry_run_accept %s", json.dumps(_to_jsonable(audit_ctx)))
+            try:
+                logger.info(
+                    "%s",
+                    dumps_replay_event(
+                        build_replay_event(
+                            event="state_transition",
+                            component="backend.execution.engine",
+                            data={
+                                "from_state": "risk_allowed",
+                                "to_state": "dry_run_accepted",
+                                "symbol": intent.symbol,
+                                "strategy_id": intent.strategy_id,
+                                "client_intent_id": intent.client_intent_id,
+                            },
+                            trace_id=trace_id,
+                            agent_name=os.getenv("AGENT_NAME") or "execution-engine",
+                            run_id=str(intent.metadata.get("run_id") or "").strip() or None,
+                        )
+                    ),
+                )
+            except Exception:
+                pass
             return ExecutionResult(status="dry_run", risk=risk, routing=routing_decision, message="dry_run_enabled")
 
-        # Authority boundary: only LIVE mode may place broker orders.
-        require_live_mode(action="place_order")
+        # Defense-in-depth: never place broker orders if the global kill switch is active,
+        # even if upstream risk checks were bypassed/misconfigured.
+        try:
+            require_live_mode(operation="broker order placement")
+        except ExecutionHaltedError:
+            enabled, source = get_kill_switch_state()
+            checks = list(risk.checks or [])
+            checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
+            halted_risk = RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
+            return ExecutionResult(status="rejected", risk=halted_risk, routing=routing_decision, message="kill_switch_enabled")
 
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None
@@ -847,6 +1011,31 @@ class ExecutionEngine:
             "exec.order_placed %s",
             json.dumps(_to_jsonable({"broker": self._broker_name, "broker_order_id": broker_order_id, "order": broker_order})),
         )
+        try:
+            logger.info(
+                "%s",
+                dumps_replay_event(
+                    build_replay_event(
+                        event="order_intent",
+                        component="backend.execution.engine",
+                        data={
+                            "stage": "broker_placed",
+                            "broker": self._broker_name,
+                            "broker_order_id": broker_order_id,
+                            "client_intent_id": intent.client_intent_id,
+                            "symbol": intent.symbol,
+                            "side": intent.side,
+                            "qty": intent.qty,
+                            "order_type": intent.order_type,
+                        },
+                        trace_id=trace_id,
+                        agent_name=os.getenv("AGENT_NAME") or "execution-engine",
+                        run_id=str(intent.metadata.get("run_id") or "").strip() or None,
+                    )
+                ),
+            )
+        except Exception:
+            pass
 
         # If immediately filled (or partially filled), write to ledger AND portfolio history.
         try:

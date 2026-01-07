@@ -94,34 +94,21 @@ def parse_timeframe(value: str) -> Timeframe:
         else:
             raise ValueError(f"Invalid timeframe unit: {value!r}")
 
-    text = normalize_timeframe_text(unit, step)
-    tf = Timeframe(unit=unit, step=step, text=text)
-    validate_timeframe(tf)
-    return tf
+New code should prefer `backend.marketdata.candles.timeframe`.
+"""
 
+from __future__ import annotations
 
-def normalize_timeframe_text(unit: str, step: int) -> str:
-    unit = unit.lower()
-    if unit == "mo":
-        return f"{step}mo"
-    return f"{step}{unit}"
+from datetime import datetime
 
-
-def validate_timeframe(tf: Timeframe) -> None:
-    allowed: dict[str, set[int]] = {
-        "s": {1, 5, 10, 15, 30},
-        "m": {1, 2, 3, 4, 5, 10, 15, 20, 30, 45},
-        "h": {1, 2, 3, 4},
-        "d": {1},
-        "w": {1},
-        "mo": {1},
-    }
-    if tf.unit not in allowed or tf.step not in allowed[tf.unit]:
-        raise ValueError(f"Unsupported timeframe: {tf.text}")
-
-
-def parse_timeframes(values: Iterable[str]) -> list[Timeframe]:
-    return [parse_timeframe(v) for v in values]
+from backend.marketdata.candles.timeframe import (  # noqa: F401
+    SUPPORTED_TIMEFRAMES,
+    Timeframe,
+    bar_range_utc,
+    floor_time,
+    parse_timeframe,
+    parse_timeframes,
+)
 
 
 def bucket_range_utc(

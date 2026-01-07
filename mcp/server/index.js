@@ -13,6 +13,41 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const { URLSearchParams } = require("node:url");
 
+function truthy(v) {
+  if (v === undefined || v === null) return false;
+  const s = String(v).trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "on";
+}
+
+function getKillSwitchState() {
+  // Standardized env var
+  if (truthy(process.env.EXECUTION_HALTED)) {
+    return { enabled: true, source: "env:EXECUTION_HALTED" };
+  }
+  // Back-compat (deprecated)
+  if (truthy(process.env.EXEC_KILL_SWITCH)) {
+    return { enabled: true, source: "env:EXEC_KILL_SWITCH" };
+  }
+
+  const filePath =
+    (process.env.EXECUTION_HALTED_FILE || process.env.EXEC_KILL_SWITCH_FILE || "").trim();
+  if (filePath) {
+    try {
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, "utf8");
+        const firstLine = (raw.split(/\r?\n/)[0] || "").trim();
+        if (truthy(firstLine)) {
+          return { enabled: true, source: `file:${filePath}` };
+        }
+      }
+    } catch {
+      // If unreadable, fail-open for this non-execution service.
+    }
+  }
+
+  return { enabled: false, source: null };
+}
+
 function nowSeconds() {
   return Math.floor(Date.now() / 1000);
 }
@@ -251,6 +286,12 @@ function start() {
   process.on("uncaughtException", (e) => {
     console.error("[mcp] Uncaught exception (kept alive):", e);
   });
+
+  const ks = getKillSwitchState();
+  if (ks.enabled) {
+    // Non-execution agent: keep serving but make it visible.
+    console.error(`[mcp] kill_switch_active enabled=true source=${ks.source}`);
+  }
 
   let buffer = "";
   process.stdin.setEncoding("utf8");

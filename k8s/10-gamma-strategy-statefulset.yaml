@@ -3,6 +3,13 @@ kind: StatefulSet
 metadata:
   name: gamma-strategy
   namespace: trading-floor
+  labels:
+    agenttrader.dev/repo_id: agent-trader-v2
+    app.kubernetes.io/part-of: agent-trader-v2
+    app.kubernetes.io/version: 54afffe
+  annotations:
+    agenttrader.dev/git_sha: "__GIT_SHA__"
+    agenttrader.dev/build_id: "__BUILD_ID__"
 spec:
   serviceName: "gamma-strategy"
   replicas: 1
@@ -13,10 +20,17 @@ spec:
     metadata:
       labels:
         strategy: gamma
-        git_sha: a2466ec
+        agenttrader.dev/repo_id: agent-trader-v2
+        app.kubernetes.io/part-of: agent-trader-v2
+        app.kubernetes.io/version: 54afffe
+        git_sha: 54afffe
+      annotations:
+        agenttrader.dev/git_sha: "__GIT_SHA__"
+        agenttrader.dev/build_id: "__BUILD_ID__"
     spec:
       priorityClassName: high-priority
-      serviceAccountName: trading-floor-sa
+      # Workload Identity (KSA->GSA) is wired via k8s/serviceaccounts/strategy-engine-ksa.yaml
+      serviceAccountName: strategy-engine-ksa
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -27,11 +41,29 @@ spec:
         - containerPort: 8080
           name: http
         env:
+          - name: REPO_ID
+            value: "agent-trader-v2"
+          - name: AGENT_NAME
+            value: "strategy-engine"
+          - name: AGENT_ROLE
+            value: "strategy_eval"
+          - name: AGENT_MODE
+            value: "OFF"
           - name: GIT_SHA
             valueFrom:
-              fieldRef:
-                fieldPath: metadata.labels['git_sha']
-          - name: WORKLOAD
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.labels['strategy']
+              configMapKeyRef:
+                name: agenttrader-kill-switch
+                key: EXECUTION_HALTED
+          - name: EXECUTION_HALTED_FILE
+            value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
+        volumeMounts:
+          - name: kill-switch
+            mountPath: /etc/agenttrader/kill-switch
+            readOnly: true
+      volumes:
+        - name: kill-switch
+          configMap:
+            name: agenttrader-kill-switch
+            items:
+              - key: EXECUTION_HALTED
+                path: EXECUTION_HALTED
