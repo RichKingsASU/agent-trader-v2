@@ -20,6 +20,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
+from backend.common.app_heartbeat_writer import start_heartbeat_background, stop_heartbeat_background
+
 AGENT_KIND = Literal["marketdata", "strategy", "execution", "ingest"]
 CRITICALITY = Literal["critical", "important", "optional"]
 
@@ -372,6 +374,8 @@ async def lifespan(app: FastAPI):
     poll_interval_s = float(os.getenv("POLL_INTERVAL_SECONDS", "10"))
     per_agent_timeout_s = float(os.getenv("PER_AGENT_TIMEOUT_SECONDS", "1.5"))
 
+    hb_handle = start_heartbeat_background(service_name="mission-control")
+
     agents = load_agents_config(agents_path)
     state = MissionControlState(agents=agents)
     app.state.mc_state = state
@@ -408,6 +412,7 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
         await client.aclose()
+        stop_heartbeat_background(hb_handle)
 
 
 app = FastAPI(title="Agent Mission Control", version="0.1.0", lifespan=lifespan)

@@ -30,8 +30,12 @@ from backend.execution.engine import (
     RiskManager,
 )
 from backend.common.kill_switch import get_kill_switch_state
+from backend.common.agent_boot import configure_startup_logging
+from backend.common.app_heartbeat_writer import install_app_heartbeat
 from backend.common.vertex_ai import init_vertex_ai_or_log
 from backend.execution.marketdata_health import check_market_ingest_heartbeat
+from backend.observability.build_fingerprint import get_build_fingerprint
+from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 from backend.safety.startup_validation import (
     validate_agent_mode_or_exit,
@@ -97,6 +101,7 @@ def _build_engine_from_env() -> tuple[ExecutionEngine, RiskManager]:
 
 app = FastAPI(title="AgentTrader Execution Engine")
 install_fastapi_correlation_middleware(app)
+install_app_heartbeat(app, service_name="execution-engine")
 
 @app.on_event("startup")
 def _startup() -> None:
