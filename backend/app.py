@@ -1,4 +1,4 @@
-from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+import os as _os
 
 _log_runtime_fingerprint(service="marketdata-mcp-server")
 

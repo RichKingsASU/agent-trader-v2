@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 
-ALLOWED_AGENT_MODES = {"OFF", "OBSERVE", "EXECUTE"}
+ALLOWED_AGENT_MODES = {"OFF", "OBSERVE", "EVAL", "PAPER"}
 
 
 def _clean(s: Any, *, max_len: int = 256) -> str:
@@ -56,7 +56,7 @@ def require_identity_env() -> dict[str, str]:
     - REPO_ID
     - AGENT_NAME
     - AGENT_ROLE
-    - AGENT_MODE (OFF/OBSERVE/EXECUTE)
+    - AGENT_MODE (OFF/OBSERVE/EVAL/PAPER)
 
     Optional:
     - AGENT_VERSION (defaults to git sha or 'unknown')

@@ -32,6 +32,8 @@ spec:
           env:
             - name: GIT_SHA
               value: REPLACE_ME_GIT_SHA
+            - name: AGENT_MODE
+              value: "OFF"
           command: ["uvicorn"]
           args:
             - backend.ingestion.market_data_ingest_service:app
