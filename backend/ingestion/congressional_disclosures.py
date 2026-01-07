@@ -7,6 +7,10 @@ Supports both API-based ingestion (Quiver Quantitative) and scraping fallback.
 
 from __future__ import annotations
 
+from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
+
+_enforce_agent_mode_guard()
+
 import asyncio
 import json
 import logging

@@ -30,6 +30,8 @@ spec:
                 env:
                   - name: GIT_SHA
                     value: REPLACE_ME_GIT_SHA
+                  - name: AGENT_MODE
+                    value: "OFF"
                 command: ["python"]
                 args: ["-m", "backend.streams.alpaca_backfill_bars"]
 

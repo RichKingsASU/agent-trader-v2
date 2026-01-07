@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
 
-_log_runtime_fingerprint(service="market-ingest")
+_enforce_agent_mode_guard()
 
 import asyncio
 import json

@@ -5,7 +5,11 @@ _log_runtime_fingerprint(service="stream-bridge")
 import asyncio
 import json
 import logging
-import signal
+
+from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
+
+_enforce_agent_mode_guard()
+
 from .config import load_config
 from .firestore_writer import FirestoreWriter
 from .streams.price_stream_client import PriceStreamClient
