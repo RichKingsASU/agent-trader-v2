@@ -2,18 +2,13 @@ steps:
 - name: gcr.io/cloud-builders/bash
   entrypoint: bash
   args:
-    - -ceu
-    - |
-      BUILD_TIME_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      GIT_SHA="${COMMIT_SHA:-$SHORT_SHA}"
-      IMAGE_REF="us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/congressional-ingest:${SHORT_SHA}"
-      docker build \
-        -f infra/Dockerfile.congressional_ingest \
-        --build-arg GIT_SHA="${GIT_SHA}" \
-        --build-arg BUILD_ID="${BUILD_ID}" \
-        --build-arg BUILD_TIME_UTC="${BUILD_TIME_UTC}" \
-        --build-arg IMAGE_REF="${IMAGE_REF}" \
-        -t "${IMAGE_REF}" \
-        .
+    [
+      "build",
+      "-f",
+      "infra/Dockerfile.congressional_ingest",
+      "-t",
+      "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/congressional-ingest:${SHORT_SHA}",
+      ".",
+    ]
 images:
 - "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/congressional-ingest:${SHORT_SHA}"
