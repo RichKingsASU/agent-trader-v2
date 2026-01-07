@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+
+_log_runtime_fingerprint(service="marketdata-mcp-server")
+
 import asyncio
 import os
 import time
