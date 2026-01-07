@@ -1,6 +1,7 @@
-import os as _os
+from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
 
 _log_runtime_fingerprint(service="marketdata-mcp-server")
+del _log_runtime_fingerprint
 
 import asyncio
 import os
@@ -13,12 +14,14 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.app_heartbeat_writer import install_app_heartbeat
 from backend.common.http_correlation import install_http_correlation
 from backend.common.ops_metrics import REGISTRY, agent_start_total, errors_total, mark_activity, update_marketdata_heartbeat_metrics
 from backend.streams.alpaca_quotes_streamer import get_last_marketdata_ts, main as alpaca_streamer_main
 from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.observability.ops_json_logger import OpsLogger
+from backend.utils.session import get_market_session
 
 app = FastAPI()
 install_fastapi_correlation_middleware(app)
