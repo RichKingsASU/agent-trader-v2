@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agenttrader-safety
+  namespace: trading-floor
+data:
+  # FAIL-CLOSED DEFAULT: halted until explicitly turned off.
+  KILL_SWITCH: "true"
+  # Marketdata considered stale after N seconds.
+  STALE_THRESHOLD_SECONDS: "30"
+

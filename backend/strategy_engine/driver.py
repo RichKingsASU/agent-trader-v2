@@ -2,9 +2,13 @@ import asyncio
 from datetime import date
 import argparse
 import json
+import os
+from datetime import datetime, timezone
+from typing import Any
 
 from backend.common.agent_boot import configure_startup_logging
-from backend.observability.build_fingerprint import get_build_fingerprint
+from backend.safety.config import load_kill_switch, load_stale_threshold_seconds
+from backend.safety.safety_state import evaluate_safety_state, is_safe_to_run_strategies
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.observability.correlation import bind_correlation_id
@@ -19,26 +23,88 @@ from .risk import (
 )
 from .strategies.naive_flow_trend import make_decision
 
-def _truthy_env(name: str, default: bool = False) -> bool:
-    v = os.getenv(name)
-    if v is None:
-        return default
-    return str(v).strip().lower() in {"1", "true", "yes", "on"}
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_iso_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    if isinstance(value, str):
+        s = value.strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(s)
+            return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+        except Exception:
+            return None
+    return None
+
+
+async def _fetch_marketdata_heartbeat() -> dict[str, Any]:
+    """
+    Fetches the marketdata heartbeat from marketdata-mcp-server.
+    Fail-closed: errors are surfaced via missing last_marketdata_ts.
+    """
+    url = str(os.getenv("MARKETDATA_HEARTBEAT_URL") or "http://marketdata-mcp-server/heartbeat").strip()
+    timeout_s = float(os.getenv("MARKETDATA_HEARTBEAT_TIMEOUT_S") or "1.5")
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            resp = await client.get(url)
+            # Even if global kill-switch is enabled, heartbeat should be readable (200).
+            data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+            return {"ok": resp.status_code == 200, "url": url, "status_code": resp.status_code, "data": data}
+    except Exception as e:
+        return {"ok": False, "url": url, "error": str(e), "data": {}}
+
+
+def _log_intent(event: dict[str, Any]) -> None:
+    try:
+        print(json.dumps(event, separators=(",", ":"), ensure_ascii=False))
+    except Exception:
+        # Best-effort, never crash strategy loop on logging.
+        pass
 
 
 async def run_strategy(execute: bool):
     """
     Main function to run the strategy engine.
     """
-    execute_requested = bool(execute)
-    # Non-negotiable safety: never execute orders from this runtime.
-    if execute:
-        log_event(
-            "execution_suppressed",
-            level="WARNING",
-            reason="Strategy runtime execution is disabled by policy (audit-trail only).",
+    # --- Preflight safety checks (fail-closed) ---
+    kill = load_kill_switch()
+    threshold = load_stale_threshold_seconds()
+    hb = await _fetch_marketdata_heartbeat()
+    last_ts = _parse_iso_dt((hb.get("data") or {}).get("last_marketdata_ts"))
+
+    state = evaluate_safety_state(
+        trading_enabled=True,
+        kill_switch=kill,
+        marketdata_last_ts=last_ts,
+        stale_threshold_seconds=threshold,
+        now=_utc_now(),
+        ttl_seconds=30,
+    )
+
+    if not is_safe_to_run_strategies(state):
+        _log_intent(
+            {
+                "ts": _utc_now().isoformat(),
+                "intent_type": "strategy_cycle_skipped",
+                "agent_name": "strategy-engine",
+                "kill_switch": bool(kill),
+                "stale_threshold_seconds": threshold,
+                "marketdata_last_ts": last_ts.isoformat() if last_ts else None,
+                "marketdata_heartbeat": hb,
+                "reason_codes": list(state.reason_codes or []),
+            }
         )
-        execute = False
+        return
 
     strategy_id = await get_or_create_strategy_definition(config.STRATEGY_NAME)
     today = date.today()
@@ -121,23 +187,39 @@ async def run_strategy(execute: bool):
                 print(f"  Decision: {action}, but trade blocked. Reason: {reason}")
                 continue
             
-            print(f"  Decision: {action}. Reason: {decision['reason']}")
+        print(f"  Decision: {action}. Reason: {decision['reason']}")
 
-            # Intent point: order proposal (never executing).
-            proposal_ctx = intent_start(
-                "order_proposal",
-                "Proposed order based on strategy decision (non-executing).",
-                payload={
-                    "strategy_name": config.STRATEGY_NAME,
-                    "strategy_id": strategy_id,
-                    "symbol": symbol,
-                    "side": action,
-                    "size": decision.get("size", 1),
-                    "notional": notional,
-                    "reason": decision.get("reason"),
-                    "risk_allowed": True,
-                    "would_execute": False,
-                },
+        # Absolute safety: never execute unless explicitly in EXECUTE mode.
+        agent_mode = str(os.getenv("AGENT_MODE") or "").strip().upper()
+        execute_effective = bool(execute) and agent_mode == "EXECUTE"
+
+        if execute_effective:
+            print(f"  Executing {action} order for 1 {symbol}...")
+            # Call the existing paper trade script
+            process = subprocess.run(
+                [
+                    "python",
+                    "backend/streams/manual_paper_trade.py",
+                    symbol,
+                    action,
+                    str(decision.get("size", 1)),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            print(f"   manual_paper_trade.py stdout: {process.stdout}")
+            print(f"   manual_paper_trade.py stderr: {process.stderr}")
+
+        if execute:
+            # Intentionally non-executing: strategy-engine emits proposals only.
+            print("  Execution is disabled in strategy-engine; proposal emitted only.")
+            await log_decision(
+                strategy_id,
+                symbol,
+                action,
+                "Execution disabled; proposal emitted only.",
+                decision["signal_payload"],
+                False,
             )
             intent_end(proposal_ctx, "success")
 
@@ -157,7 +239,7 @@ async def run_strategy(execute: bool):
 if __name__ == "__main__":
     configure_startup_logging(
         agent_name="strategy-engine",
-        intent="Run the strategy engine loop (fetch data, decide, and emit non-executing order proposals).",
+        intent="Run the strategy engine loop (fetch data, decide); enforce global kill-switch and stale-marketdata gating.",
     )
     try:
         fp = get_build_fingerprint()
