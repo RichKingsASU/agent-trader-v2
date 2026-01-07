@@ -38,39 +38,129 @@ steps:
       - |
         set -euo pipefail
 
-        # NOTE: This guard is intentionally explicit and chatty.
-        # It should fail fast with actionable output when a safety invariant is violated.
+        echo "--- Safety Guard preflight ---"
+        echo "PWD: $(pwd)"
 
-        echo "--- Checking for ':latest' image tags ---"
-        mapfile -t YAML_FILES < <(find . -type f \( -name "*.yaml" -o -name "*.yml" \) ! -name "cloudbuild*")
-        if [ "${#YAML_FILES[@]}" -gt 0 ] && grep -nE "image:.*:latest\b" "${YAML_FILES[@]}"; then
-          echo "❌ FAILED: Use of ':latest' image tag is forbidden."
-          exit 1
-        else
-          echo "✅ PASSED: No ':latest' image tags found."
-        fi
+        # Diagnostics for unexpected tool/runtime issues.
+        diag_grep_error() {
+          local check_name="$1"
+          local files_count="$2"
+          echo "----- Debug: ${check_name} (grep error) -----" >&2
+          echo "PWD: $(pwd)" >&2
+          echo "WORKSPACE_ROOT: ${WORKSPACE_ROOT:-<unset>}" >&2
+          echo "Files scanned: ${files_count}" >&2
+          echo "Listing PWD:" >&2
+          ls -la >&2 || true
+          echo "----- End Debug -----" >&2
+        }
+
+        # Run grep against an explicit file list, interpreting exit codes robustly:
+        # - 0 => policy violation (FAIL with exit 1) and print offending lines
+        # - 1 => PASS (no matches)
+        # - 2 => grep/runtime error (FAIL with exit 1) and print diagnostics
+        #
+        # Usage:
+        #   run_grep_check "<check name>" "<fail message>" "<grep regex>" <file1> <file2> ...
+        run_grep_check() {
+          local check_name="$1"
+          local fail_message="$2"
+          local grep_pattern="$3"
+          shift 3
+          local -a files=( "$@" )
+
+          echo "--- ${check_name} ---"
+          echo "Files scanned: ${#files[@]}"
+          if ((${#files[@]} == 0)); then
+            echo "✅ PASSED: No files to scan."
+            return 0
+          fi
+
+          set +e
+          local matches
+          matches="$(grep -nH "${grep_pattern}" -- "${files[@]}" 2>&1)"
+          local rc=$?
+          set -e
+
+          if [[ ${rc} -eq 0 ]]; then
+            echo "❌ FAILED: ${fail_message}"
+            echo "${matches}"
+            exit 1
+          elif [[ ${rc} -eq 1 ]]; then
+            echo "✅ PASSED: No matches found."
+            return 0
+          else
+            echo "❌ FAILED: grep error while running '${check_name}'." >&2
+            echo "${matches}" >&2
+            diag_grep_error "${check_name}" "${#files[@]}"
+            exit 1
+          fi
+        }
+
+        # 1) ':latest' image tags in yaml/yml excluding cloudbuild
+        mapfile -d '' -t LATEST_TAG_FILES < <(
+          find "${WORKSPACE_ROOT:-/workspace}" -type f \
+            \( -name "*.yaml" -o -name "*.yml" \) \
+            -not -path "*cloudbuild*" \
+            -print0
+        )
+        run_grep_check \
+          "Checking for ':latest' image tags" \
+          "Use of ':latest' image tag is forbidden." \
+          "image:.*:latest" \
+          "${LATEST_TAG_FILES[@]}"
+
+        # 2) AGENT_MODE=EXECUTE in yaml/yml/py/sh/Dockerfile excluding cloudbuild
+        mapfile -d '' -t AGENT_MODE_FILES < <(
+          find "${WORKSPACE_ROOT:-/workspace}" -type f \
+            \( -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" \) \
+            -not -path "*cloudbuild*" \
+            -print0
+        )
 
         echo "--- Checking for 'AGENT_MODE=EXECUTE' ---"
-        mapfile -t CODE_FILES < <(find . -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" -o -name "Dockerfile.*" \) ! -name "cloudbuild*")
-        if [ "${#CODE_FILES[@]}" -gt 0 ] && grep -nE "AGENT_MODE[[:space:]]*[:=][[:space:]]*(['\"])?EXECUTE\1" "${CODE_FILES[@]}" | grep -v "ALLOWED_AGENT_MODES"; then
-          echo "❌ FAILED: AGENT_MODE must not be set to EXECUTE in committed code."
-          exit 1
+        echo "Files scanned: ${#AGENT_MODE_FILES[@]}"
+        if ((${#AGENT_MODE_FILES[@]} == 0)); then
+          echo "✅ PASSED: No files to scan."
         else
-          echo "✅ PASSED: No instances of 'AGENT_MODE=EXECUTE' found."
+          set +e
+          AGENT_MODE_MATCHES="$(
+            grep -nH -e "AGENT_MODE=EXECUTE" -e "AGENT_MODE: EXECUTE" -- "${AGENT_MODE_FILES[@]}" 2>&1 \
+              | grep -v "ALLOWED_AGENT_MODES"
+          )"
+          GREP_RC=$?
+          set -e
+
+          # Note: In a pipeline, the last command's status is what we capture here; treat "no matches after filtering"
+          # as PASS, and any non-1/non-0 as an error needing diagnostics.
+          if [[ ${GREP_RC} -eq 0 ]]; then
+            echo "❌ FAILED: AGENT_MODE must not be set to EXECUTE in committed code."
+            echo "${AGENT_MODE_MATCHES}"
+            exit 1
+          elif [[ ${GREP_RC} -eq 1 ]]; then
+            echo "✅ PASSED: No instances of 'AGENT_MODE=EXECUTE' found."
+          else
+            echo "❌ FAILED: grep error while running 'AGENT_MODE=EXECUTE' check." >&2
+            echo "${AGENT_MODE_MATCHES}" >&2
+            diag_grep_error "Checking for 'AGENT_MODE=EXECUTE'" "${#AGENT_MODE_FILES[@]}"
+            exit 1
+          fi
         fi
 
+        # 3) replicas > 0 in ./k8s/execution (and if directory doesn't exist, PASS)
+        EXECUTION_DIR="${WORKSPACE_ROOT:-/workspace}/k8s/execution"
         echo "--- Checking for scaled execution agents (replicas > 0) ---"
-        mapfile -t EXEC_AGENT_MANIFESTS < <(grep -rl --include="*.yaml" --include="*.yml" "name: execution-agent" ./k8s 2>/dev/null || true)
-        SCALED_EXECUTION_AGENT=0
-        for MANIFEST in "${EXEC_AGENT_MANIFESTS[@]}"; do
-          if grep -nE "replicas:[[:space:]]*[1-9]" "$MANIFEST"; then
-            SCALED_EXECUTION_AGENT=1
-          fi
-        done
-
-        if [ "$SCALED_EXECUTION_AGENT" -eq 1 ]; then
-          echo "❌ FAILED: Execution agent replicas must be 0 in committed code."
-          exit 1
+        if [[ ! -d "${EXECUTION_DIR}" ]]; then
+          echo "Files scanned: 0"
+          echo "✅ PASSED: ${EXECUTION_DIR} does not exist."
+        else
+          mapfile -d '' -t EXECUTION_YAMLS < <(
+            find "${EXECUTION_DIR}" -type f \( -name "*.yaml" -o -name "*.yml" \) -print0
+          )
+          run_grep_check \
+            "Checking for scaled execution agents (replicas > 0)" \
+            "Execution agent replicas must be 0 in committed code." \
+            "replicas:[[:space:]]*[1-9]" \
+            "${EXECUTION_YAMLS[@]}"
         fi
         echo "✅ PASSED: No execution agents found with replicas > 0."
 
