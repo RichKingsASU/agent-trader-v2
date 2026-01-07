@@ -9,6 +9,29 @@
  */
 /* eslint-disable no-console */
 
+let __didLogRuntimeFingerprint = false;
+function logRuntimeFingerprintOnce() {
+  if (__didLogRuntimeFingerprint) return;
+  __didLogRuntimeFingerprint = true;
+
+  const service = String(process.env.SERVICE_NAME || "vertex-mcp-server");
+  const agentMode = String(process.env.AGENT_MODE || "unknown");
+  const gitSha = String(process.env.GIT_SHA || "unknown");
+  const imageTag = String(process.env.IMAGE_TAG || "unknown");
+
+  console.log(
+    [
+      "RUNTIME_FINGERPRINT:",
+      `  service=${service}`,
+      `  agent_mode=${agentMode}`,
+      "  execution_enabled=false",
+      `  git_sha=${gitSha}`,
+      `  image_tag=${imageTag}`
+    ].join("\n")
+  );
+}
+logRuntimeFingerprintOnce();
+
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const { URLSearchParams } = require("node:url");

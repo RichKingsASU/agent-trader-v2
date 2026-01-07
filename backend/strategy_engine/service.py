@@ -124,7 +124,7 @@ async def _startup() -> None:
 async def _shutdown() -> None:
     app.state.shutting_down = True
     try:
-        print("shutdown_intent service=strategy-engine", flush=True)
+        print("SHUTDOWN_INITIATED: strategy-engine", flush=True)
     except Exception:
         pass
 

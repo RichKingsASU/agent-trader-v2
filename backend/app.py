@@ -2,9 +2,6 @@ from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce
 
 _enforce_agent_mode_guard()
 
-import uvicorn
-from fastapi import FastAPI
-from fastapi.responses import Response
 import asyncio
 import os
 import time
@@ -136,7 +133,7 @@ async def startup_event() -> None:
 async def shutdown_event() -> None:
     app.state.shutting_down = True
     try:
-        print(f"shutdown_intent service={_service_name()}", flush=True)
+        print(f"SHUTDOWN_INITIATED: {_service_name()}", flush=True)
     except Exception:
         pass
 

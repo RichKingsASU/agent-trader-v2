@@ -11,6 +11,9 @@ from typing import Any, Optional, Protocol, runtime_checkable
 import requests
 
 from backend.common.env import get_env
+from backend.common.agent_mode import AgentModeError, require_live_mode as require_agent_live_mode
+from backend.common.kill_switch import ExecutionHaltedError, get_kill_switch_state, is_kill_switch_enabled
+from backend.common.runtime_execution_prevention import fatal_if_execution_reached
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.streams.alpaca_env import load_alpaca_env
 
@@ -285,6 +288,22 @@ class AlpacaBroker:
         self._timeout = request_timeout_s
 
     def place_order(self, *, intent: OrderIntent) -> dict[str, Any]:
+        fatal_if_execution_reached(
+            operation="alpaca.place_order",
+            explicit_message=(
+                "Runtime execution is forbidden in agent-trader-v2. "
+                "A broker submission attempt reached AlpacaBroker.place_order; aborting."
+            ),
+            context={
+                "broker": "alpaca",
+                "symbol": getattr(intent, "symbol", None),
+                "side": getattr(intent, "side", None),
+                "qty": getattr(intent, "qty", None),
+                "client_intent_id": getattr(intent, "client_intent_id", None),
+                "strategy_id": getattr(intent, "strategy_id", None),
+                "broker_account_id": getattr(intent, "broker_account_id", None),
+            },
+        )
         payload: dict[str, Any] = {
             "symbol": intent.symbol,
             "qty": str(intent.qty),
@@ -309,6 +328,14 @@ class AlpacaBroker:
         return r.json()
 
     def cancel_order(self, *, broker_order_id: str) -> dict[str, Any]:
+        fatal_if_execution_reached(
+            operation="alpaca.cancel_order",
+            explicit_message=(
+                "Runtime execution is forbidden in agent-trader-v2. "
+                "A broker cancel attempt reached AlpacaBroker.cancel_order; aborting."
+            ),
+            context={"broker": "alpaca", "broker_order_id": str(broker_order_id)},
+        )
         r = requests.delete(
             f"{self._base}/orders/{broker_order_id}",
             headers=self._headers,
@@ -321,6 +348,14 @@ class AlpacaBroker:
         return r.json()
 
     def get_order_status(self, *, broker_order_id: str) -> dict[str, Any]:
+        fatal_if_execution_reached(
+            operation="alpaca.get_order_status",
+            explicit_message=(
+                "Runtime execution is forbidden in agent-trader-v2. "
+                "A broker status poll reached AlpacaBroker.get_order_status; aborting."
+            ),
+            context={"broker": "alpaca", "broker_order_id": str(broker_order_id)},
+        )
         r = requests.get(
             f"{self._base}/orders/{broker_order_id}",
             headers=self._headers,
@@ -996,14 +1031,40 @@ class ExecutionEngine:
 
         # Defense-in-depth: never place broker orders if the global kill switch is active,
         # even if upstream risk checks were bypassed/misconfigured.
-        try:
-            require_live_mode(operation="broker order placement")
-        except ExecutionHaltedError:
+        if is_kill_switch_enabled():
             enabled, source = get_kill_switch_state()
             checks = list(risk.checks or [])
             checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
             halted_risk = RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
-            return ExecutionResult(status="rejected", risk=halted_risk, routing=routing_decision, message="kill_switch_enabled")
+            return ExecutionResult(
+                status="rejected",
+                risk=halted_risk,
+                routing=routing_decision,
+                message="kill_switch_enabled",
+            )
+
+        # Authority boundary: even attempting a broker-side action requires explicit LIVE mode.
+        # (This is separate from kill switch.)
+        require_agent_live_mode(action="place_order")
+
+        # Absolute safety boundary: runtime execution must be impossible even if misconfigured.
+        fatal_if_execution_reached(
+            operation="execution_engine.place_order",
+            explicit_message=(
+                "Runtime execution is forbidden in agent-trader-v2. "
+                "ExecutionEngine reached the broker placement branch; aborting before broker call."
+            ),
+            context={
+                "broker_name": self._broker_name,
+                "symbol": intent.symbol,
+                "side": intent.side,
+                "qty": intent.qty,
+                "client_intent_id": intent.client_intent_id,
+                "strategy_id": intent.strategy_id,
+                "broker_account_id": intent.broker_account_id,
+                "asset_class": intent.asset_class,
+            },
+        )
 
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None
@@ -1062,6 +1123,14 @@ class ExecutionEngine:
         )
         if self._dry_run:
             return {"id": broker_order_id, "status": "dry_run"}
+        fatal_if_execution_reached(
+            operation="execution_engine.cancel_order",
+            explicit_message=(
+                "Runtime execution is forbidden in agent-trader-v2. "
+                "ExecutionEngine.cancel() reached a broker cancel path; aborting."
+            ),
+            context={"broker_name": self._broker_name, "broker_order_id": str(broker_order_id)},
+        )
         resp = self._broker.cancel_order(broker_order_id=broker_order_id)
         logger.info("exec.cancel_response %s", json.dumps(_to_jsonable(resp)))
         return resp
@@ -1073,6 +1142,14 @@ class ExecutionEngine:
         if self._dry_run:
             return {"id": broker_order_id, "status": "dry_run"}
 
+        fatal_if_execution_reached(
+            operation="execution_engine.get_order_status",
+            explicit_message=(
+                "Runtime execution is forbidden in agent-trader-v2. "
+                "ExecutionEngine.sync_and_ledger_if_filled() reached a broker status poll; aborting."
+            ),
+            context={"broker_name": self._broker_name, "broker_order_id": str(broker_order_id)},
+        )
         order = self._broker.get_order_status(broker_order_id=broker_order_id)
         logger.info(
             "exec.order_status %s",

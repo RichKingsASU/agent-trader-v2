@@ -3,6 +3,11 @@ from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_r
 _log_runtime_fingerprint(service="strategy-service")
 del _log_runtime_fingerprint
 
+from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+
+_log_runtime_fingerprint(service="strategy-service")
+
+import asyncio
 import logging
 import os
 import time
@@ -80,7 +85,7 @@ async def _startup() -> None:
 async def _shutdown() -> None:
     app.state.shutting_down = True
     try:
-        print(f"shutdown_intent service={_service_name()}", flush=True)
+        print(f"SHUTDOWN_INITIATED: {_service_name()}", flush=True)
     except Exception:
         pass
     loop_task: asyncio.Task | None = getattr(app.state, "loop_task", None)
