@@ -1,5 +1,6 @@
 .PHONY: report report-skip-health
 .PHONY: day1-dry-run
+.PHONY: deploy-observe
 
 # -----------------------------------------------------------------------------
 # AgentTrader v2 — “Trading Floor” one-command workflow
@@ -161,6 +162,22 @@ deploy: ## Deploy v2 (prefers scripts/deploy_v2.sh; else kubectl apply)
 		kargs=(); [[ -n "$(CONTEXT)" ]] && kargs+=(--context "$(CONTEXT)"); \
 		kubectl "$${kargs[@]}" apply -f "$(K8S_DIR)"; \
 	fi
+
+deploy-observe: ## Deploy safe workloads only (marketdata + strategy-engine). Requires TAG=<sha>
+	@set -eu; \
+	if [[ -z "$(TAG)" ]]; then \
+		echo "ERROR: TAG is required (example: make deploy-observe TAG=$$(git rev-parse --short HEAD))"; \
+		exit 2; \
+	fi; \
+	ns_arg=""; \
+	if [[ "$(origin NAMESPACE)" == "command line" || "$(origin NAMESPACE)" == "environment" ]]; then \
+		ns_arg="--namespace $(NAMESPACE)"; \
+	fi; \
+	ctx_arg=""; \
+	if [[ -n "$(CONTEXT)" ]]; then \
+		ctx_arg="--context $(CONTEXT)"; \
+	fi; \
+	bash ./scripts/deploy_observe.sh --tag "$(TAG)" $$ns_arg $$ctx_arg
 
 report: ## Generate a deploy/report artifact (audit_artifacts/)
 	@echo "== report =="
