@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 import asyncio
 import os
-from datetime import datetime, timezone
+import json
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.ops_metrics import (
@@ -18,6 +18,7 @@ from backend.common.marketdata_heartbeat import snapshot
 from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
 
 app = FastAPI()
+install_fastapi_correlation_middleware(app)
 
 @app.on_event("startup")
 async def startup_event():
@@ -47,7 +48,13 @@ async def read_root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service_id": "agenttrader-prod-streamer"}
+    return {"status": "healthy", "service_id": "agenttrader-prod-streamer", **get_build_fingerprint()}
+
+
+@app.get("/healthz")
+async def healthz_check():
+    # Alias for institutional conventions.
+    return await health_check()
 
 @app.get("/ops/status")
 async def ops_status():
