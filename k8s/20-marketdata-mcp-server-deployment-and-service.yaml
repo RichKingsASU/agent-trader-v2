@@ -27,7 +27,8 @@ spec:
         app.kubernetes.io/instance: marketdata-mcp-server
         version: v2
     spec:
-      serviceAccountName: trading-floor-sa
+      # Workload Identity (KSA->GSA) is wired via k8s/serviceaccounts/marketdata-mcp-server-ksa.yaml
+      serviceAccountName: marketdata-mcp-server-ksa
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
