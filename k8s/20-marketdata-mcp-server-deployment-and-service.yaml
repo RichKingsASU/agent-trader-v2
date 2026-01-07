@@ -37,89 +37,89 @@ spec:
         runAsNonRoot: true
         runAsUser: 10001
       containers:
-      - name: marketdata-mcp-server-container
-        image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/marketdata-mcp-server:54afffe
-        ports:
-        - containerPort: 8080
-          name: http
-        env:
-          - name: REPO_ID
-            value: "agent-trader-v2"
-          - name: AGENT_NAME
-            value: "marketdata-mcp-server"
-          - name: AGENT_ROLE
-            value: "marketdata"
-          - name: AGENT_MODE
-            value: "OBSERVE"
-          - name: SERVICE_NAME
-            value: "marketdata-mcp-server"
-          - name: GIT_SHA
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.labels['app.kubernetes.io/commit']
-          - name: IMAGE_TAG
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.labels['app.kubernetes.io/version']
-          - name: EXECUTION_HALTED
-            valueFrom:
-              configMapKeyRef:
-                name: agenttrader-kill-switch
-                key: EXECUTION_HALTED
-          - name: EXECUTION_HALTED_FILE
-            value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
-          - name: WORKLOAD
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.labels['app']
-          - name: AGENTTRADER_SAFETY_DIR
-            value: "/etc/agenttrader-safety"
-          - name: APCA_API_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: trader-secrets
-                key: APCA_API_KEY_ID
-          - name: FIREBASE_KEY
-            valueFrom:
-              secretKeyRef:
-                name: trader-secrets
-                key: FIREBASE_KEY
-        volumeMounts:
-          - name: agenttrader-safety
-            mountPath: /etc/agenttrader-safety
-            readOnly: true
-        resources:
-          requests:
-            cpu: 250m
-            memory: 512Mi
-            ephemeral-storage: 1Gi
-          limits:
-            cpu: 1
-            memory: 1Gi
-            ephemeral-storage: 2Gi
-        startupProbe:
-          httpGet:
-            path: /healthz
-            port: http
-          periodSeconds: 3
-          timeoutSeconds: 2
-          failureThreshold: 40
-        readinessProbe:
-          httpGet:
-            path: /readyz
-            port: http
-          initialDelaySeconds: 5
-          periodSeconds: 5
-          timeoutSeconds: 2
-          failureThreshold: 3
-        livenessProbe:
-          httpGet:
-            path: /livez
-            port: http
-          initialDelaySeconds: 15
-          periodSeconds: 10
-          timeoutSeconds: 2
-          failureThreshold: 3
+        - name: marketdata-mcp-server-container
+          image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/marketdata-mcp-server:54afffe
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: REPO_ID
+              value: "agent-trader-v2"
+            - name: AGENT_NAME
+              value: "marketdata-mcp-server"
+            - name: AGENT_ROLE
+              value: "marketdata"
+            - name: AGENT_MODE
+              value: "OBSERVE"
+            - name: SERVICE_NAME
+              value: "marketdata-mcp-server"
+            - name: GIT_SHA
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app.kubernetes.io/commit']
+            - name: IMAGE_TAG
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app.kubernetes.io/version']
+            - name: EXECUTION_HALTED
+              valueFrom:
+                configMapKeyRef:
+                  name: agenttrader-kill-switch
+                  key: EXECUTION_HALTED
+            - name: EXECUTION_HALTED_FILE
+              value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
+            - name: WORKLOAD
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app']
+            - name: AGENTTRADER_SAFETY_DIR
+              value: "/etc/agenttrader-safety"
+            - name: APCA_API_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: trader-secrets
+                  key: APCA_API_KEY_ID
+            - name: FIREBASE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: trader-secrets
+                  key: FIREBASE_KEY
+          volumeMounts:
+            - name: agenttrader-safety
+              mountPath: /etc/agenttrader-safety
+              readOnly: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: 1
+              memory: 1Gi
+              ephemeral-storage: 2Gi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 40
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
       volumes:
         - name: agenttrader-safety
           configMap:

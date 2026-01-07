@@ -52,21 +52,18 @@ timeout: 3600s
           shift 3
           local -a files=( "$@" )
 
-        # ----------------------------
-        # Rule 2: No AGENT_MODE=EXECUTE
-        # ----------------------------
-        echo "--- Rule: forbid AGENT_MODE=EXECUTE ---"
-        FILES=$(find . -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" \) ! -name "cloudbuild.yaml" || true)
-        if [ -z "$FILES" ]; then
-          echo "No relevant files found (PASS)"
-        else
-          if echo "$FILES" | xargs -r grep -nE "AGENT_MODE\s*[:=]\s*EXECUTE"; then
-            echo "❌ FAILED: AGENT_MODE=EXECUTE is forbidden in committed code."
-            exit 1
-          else
-            echo "✅ PASSED: No AGENT_MODE=EXECUTE found."
-          fi
-        fi
+  # Safety guard MUST pass before any docker build/push steps run.
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'CI Safety Guard'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -e
+        cd /workspace
+        chmod +x /workspace/.cloudbuild/ci_safety_guard.sh
+        bash /workspace/.cloudbuild/ci_safety_guard.sh
+        echo "CI SAFETY GUARD PASSED"
 
         # ----------------------------
         # Rule 3: Execution agents must not be scaled
