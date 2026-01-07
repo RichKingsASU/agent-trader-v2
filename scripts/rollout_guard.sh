@@ -80,10 +80,33 @@ if [[ "${img}" != *":${TAG}" ]]; then
 fi
 
 # Validate replicas are ready (deployment-focused; works safely for most workloads).
-spec_repl="$(kubectl "${kargs[@]}" -n "${NS}" get "${RESOURCE}" -o "jsonpath={.spec.replicas}" 2>/dev/null || echo "")"
-ready_repl="$(kubectl "${kargs[@]}" -n "${NS}" get "${RESOURCE}" -o "jsonpath={.status.readyReplicas}" 2>/dev/null || echo "")"
-spec_repl="${spec_repl:-0}"
+repl_out="$(
+  kubectl "${kargs[@]}" -n "${NS}" get "${RESOURCE}" \
+    -o "jsonpath={.spec.replicas}{'\t'}{.status.readyReplicas}" 2>/dev/null
+)" || {
+  echo "ERROR: unable to read replica fields for ${RESOURCE} (kubectl get failed)" >&2
+  exit 1
+}
+
+spec_repl=""
+ready_repl=""
+IFS=$'\t' read -r spec_repl ready_repl <<<"${repl_out}"
+
+# Fail-closed: if spec.replicas can't be read, don't guess.
+if [[ -z "${spec_repl}" ]]; then
+  echo "ERROR: unable to read spec.replicas for ${RESOURCE}" >&2
+  exit 1
+fi
+
+# status.readyReplicas is commonly omitted when zero; treat empty as 0 only after a successful read.
 ready_repl="${ready_repl:-0}"
+
+if [[ ! "${spec_repl}" =~ ^[0-9]+$ || ! "${ready_repl}" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: non-numeric replica values for ${RESOURCE}" >&2
+  echo "  spec.replicas:        ${spec_repl:-<empty>}" >&2
+  echo "  status.readyReplicas: ${ready_repl:-<empty>}" >&2
+  exit 1
+fi
 
 if [[ "${ready_repl}" != "${spec_repl}" ]]; then
   echo "ERROR: replica readiness mismatch for ${RESOURCE}" >&2
