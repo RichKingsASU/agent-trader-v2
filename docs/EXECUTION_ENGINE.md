@@ -96,6 +96,18 @@ In dry-run:
 
 - `EXEC_DRY_RUN` (bool-like, default `true`)
 
+### Execution agent safety gate (Cloud Run service)
+
+When using the execution service (`backend/services/execution_service/app.py`) for **live** trading
+(`EXEC_DRY_RUN=0`), the service enforces an explicit agent state machine gate:
+
+- Live trading is refused unless:
+  - `AGENT_MODE=LIVE`
+  - agent state is `READY`
+  - execution kill-switch is OFF
+
+See `docs/EXECUTION_AGENT_STATE_MACHINE.md`.
+
 ### Broker / data sources
 
 - Alpaca:

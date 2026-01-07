@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
+from backend.common.agent_boot import configure_startup_logging
 from backend.ingestion.market_data_ingest import (
     MarketDataIngestor,
     load_config_from_env,
@@ -35,6 +36,11 @@ async def _startup() -> None:
     """
     level = os.getenv("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+    configure_startup_logging(
+        agent_name="market-ingest-service",
+        intent="Run market quote ingestion in background while serving health checks (Cloud Run service).",
+    )
 
     cfg = load_config_from_env()
     ingestor = MarketDataIngestor(cfg)

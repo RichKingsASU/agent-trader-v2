@@ -8,7 +8,8 @@ PROJECT_ID=$(gcloud config get-value project)
 JOB_NAME="strategy-engine-job"
 SCHEDULER_NAME="strategy-engine-scheduler"
 REGION="us-central1"
-IMAGE_URI="gcr.io/${PROJECT_ID}/${JOB_NAME}"
+GIT_SHA="${GIT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+IMAGE_URI="gcr.io/${PROJECT_ID}/${JOB_NAME}:${GIT_SHA}"
 SERVICE_ACCOUNT="my-run-sa@${PROJECT_ID}.iam.gserviceaccount.com"
 
 # --- IAM policy bindings (idempotent) ---
@@ -29,6 +30,7 @@ gcloud run jobs deploy "${JOB_NAME}" \
   --region "${REGION}" \
   --service-account "${SERVICE_ACCOUNT}" \
   --set-secrets="DATABASE_URL=DATABASE_URL:latest" \
+  --set-env-vars="GIT_SHA=${GIT_SHA}" \
   --set-env-vars="STRATEGY_NAME=naive_flow_trend,STRATEGY_SYMBOLS=SPY,IWM,QQQ,STRATEGY_BAR_LOOKBACK_MINUTES=15,STRATEGY_FLOW_LOOKBACK_MINUTES=15" \
   --command "python" \
   --args "-m" \

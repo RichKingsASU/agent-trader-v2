@@ -8,11 +8,40 @@ steps:
       - '-f'
       - 'infra/Dockerfile.congressional_ingest'
       - '-t'
-      - 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/congressional-ingest:$SHORT_SHA'
-      - '-t'
-      - 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/congressional-ingest:latest'
+      - 'gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA'
       - '.'
     id: 'build-image'
+
+  # Push the image to GCR
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA'
+    id: 'push-image-sha'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'congressional-ingest'
+      - '--image=gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA'
+      - '--platform=managed'
+      - '--region=us-central1'
+      - '--set-env-vars=TENANT_ID=${_TENANT_ID}'
+      - '--set-env-vars=NATS_URL=${_NATS_URL}'
+      - '--set-env-vars=POLL_INTERVAL_SECONDS=${_POLL_INTERVAL_SECONDS}'
+      - '--set-env-vars=LOOKBACK_DAYS=${_LOOKBACK_DAYS}'
+      - '--set-env-vars=GIT_SHA=$SHORT_SHA'
+      - '--update-secrets=QUIVER_API_KEY=quiver-api-key:latest'
+      - '--cpu=1'
+      - '--memory=512Mi'
+      - '--min-instances=1'
+      - '--max-instances=1'
+      - '--timeout=3600'
+      - '--no-cpu-throttling'
+      - '--no-allow-unauthenticated'
+    id: 'deploy-cloud-run'
 
 # Substitution variables (can be overridden at build time)
 substitutions:
@@ -23,8 +52,7 @@ substitutions:
 
 # Image outputs
 images:
-  - 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/congressional-ingest:$SHORT_SHA'
-  - 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/congressional-ingest:latest'
+  - 'gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA'
 
 # Build options
 options:

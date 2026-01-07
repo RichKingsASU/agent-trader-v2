@@ -27,6 +27,9 @@ spec:
       containers:
         - name: execution-engine
           image: REPLACE_ME_IMAGE
+          env:
+            - name: GIT_SHA
+              value: REPLACE_ME_GIT_SHA
           ports:
             - name: http1
               containerPort: 8080
