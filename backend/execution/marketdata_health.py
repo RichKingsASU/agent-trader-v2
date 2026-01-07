@@ -7,6 +7,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+from backend.time.nyse_time import parse_ts
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -15,25 +17,10 @@ def _utc_now() -> datetime:
 def _coerce_dt(value: Any) -> datetime | None:
     if value is None:
         return None
-    if isinstance(value, datetime):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
-    if hasattr(value, "to_datetime"):
-        try:
-            dt = value.to_datetime()
-            if isinstance(dt, datetime):
-                return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
-        except Exception:
-            return None
-    if isinstance(value, str):
-        s = value.strip()
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(s)
-            return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
-        except Exception:
-            return None
-    return None
+    try:
+        return parse_ts(value)
+    except Exception:
+        return None
 
 
 @dataclass(frozen=True)

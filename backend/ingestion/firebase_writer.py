@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import random
 from typing import Any
 
+from backend.time.nyse_time import parse_ts, utc_now
 
 @dataclass(frozen=True)
 class FirestorePaths:
@@ -76,31 +77,11 @@ class FirebaseWriter:
         Normalize timestamps to timezone-aware UTC datetimes so Firestore stores a Timestamp.
         """
         if value is None:
-            return datetime.now(timezone.utc)
-
-        if isinstance(value, datetime):
-            if value.tzinfo is None:
-                return value.replace(tzinfo=timezone.utc)
-            return value.astimezone(timezone.utc)
-
-        if isinstance(value, (int, float)):
-            seconds = float(value) / 1000.0 if float(value) > 1e12 else float(value)
-            return datetime.fromtimestamp(seconds, tz=timezone.utc)
-
-        if isinstance(value, str):
-            s = value.strip()
-            if s.endswith("Z"):
-                s = s[:-1] + "+00:00"
-            try:
-                dt = datetime.fromisoformat(s)
-            except ValueError:
-                return self._coerce_timestamp(float(s))
-
-            if dt.tzinfo is None:
-                return dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc)
-
-        raise TypeError(f"Unsupported timestamp type: {type(value).__name__}")
+            return utc_now()
+        try:
+            return parse_ts(value)
+        except Exception:
+            return utc_now()
 
     def _retry(self, fn, *, max_attempts: int = 6, base_delay_s: float = 0.2, max_delay_s: float = 5.0):
         """

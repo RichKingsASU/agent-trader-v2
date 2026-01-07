@@ -8,12 +8,11 @@ from backend.ledger.models import LedgerTrade
 from backend.ledger.strategy_performance import compute_strategy_pnl_for_period
 from backend.marketplace.performance import month_period_utc
 from backend.marketplace.schema import TenantPaths, monthly_perf_id
+from backend.time.nyse_time import to_utc
 
 
 def _as_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    return to_utc(dt)
 
 
 def _to_firestore_ts(dt: datetime) -> datetime:

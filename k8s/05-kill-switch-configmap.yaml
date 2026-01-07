@@ -5,8 +5,9 @@ metadata:
   namespace: trading-floor
 data:
   # Global kill switch:
-  # - "0" (default): execution allowed (subject to other risk rules)
+  # - "0": execution allowed (subject to other risk rules)
   # - "1": execution halted (all execution agents refuse trading)
-  # Security posture for k8s manifests in this repo: default to HALTED.
+  #
+  # Safety default: keep execution halted unless explicitly released.
   EXECUTION_HALTED: "1"
 
