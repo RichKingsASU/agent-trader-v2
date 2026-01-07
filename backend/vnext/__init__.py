@@ -1,7 +1,7 @@
 """
-vNEXT namespace: forward-looking interfaces and contracts.
+vNEXT package.
 
-This package is intentionally light-weight. It defines governance-first interfaces
-that allow future implementations without implicitly authorizing data collection.
+All code under `backend/vnext/` is subject to the governance rules in
+`backend/vnext/GOVERNANCE.md`.
 """
 
