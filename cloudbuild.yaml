@@ -1,7 +1,4 @@
-options:
-  env:
-    - WORKSPACE_ROOT=/workspace
-
+# This CI pipeline enforces institutional safety guarantees.
 steps:
   # Diagnostic step (runs before anything else) to make early failures self-explanatory.
   - name: 'gcr.io/cloud-builders/gcloud'
