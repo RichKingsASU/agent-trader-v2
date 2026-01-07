@@ -20,7 +20,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import FastAPI, Response
@@ -29,6 +29,9 @@ from backend.common.agent_boot import configure_startup_logging
 from backend.common.app_heartbeat_writer import install_app_heartbeat
 from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.observability.ops_json_logger import OpsLogger
+from backend.common.kill_switch import get_kill_switch_state
+from backend.common.ops_metrics import REGISTRY
+from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 
 from .driver import run_strategy
 
@@ -280,6 +283,10 @@ async def healthz() -> dict[str, Any]:
     # Process is alive (do not gate on external dependencies).
     return {"status": "ok"}
 
+@app.get("/ops/health")
+async def ops_health() -> dict[str, Any]:
+    return {"status": "ok", "service": "strategy-engine", "ts": _utc_now_iso()}
+
 
 @app.get("/readyz")
 async def readyz(response: Response) -> dict[str, Any]:
@@ -305,4 +312,63 @@ async def livez(response: Response) -> dict[str, Any]:
     ok = loop_ok and cycle_ok and (not shutting_down)
     response.status_code = 200 if ok else 503
     return {"status": "ok" if ok else ("cycle_dead" if not cycle_ok else "wedged")}
+
+
+@app.get("/ops/status")
+async def ops_status() -> dict[str, Any]:
+    """
+    Stable ops status contract (best-effort).
+
+    Note: This endpoint may perform a small dependency read (marketdata heartbeat)
+    to accurately reflect gating state for strategy execution.
+    """
+    kill, _source = get_kill_switch_state()
+    # Best-effort: reuse the existing heartbeat fetch used by /readyz.
+    md_last_tick = None
+    stale_s = _env_int("MARKETDATA_STALE_THRESHOLD_S", 120)
+    try:
+        status, payload = await _current_state()
+        if status == "ok" and isinstance(payload, dict):
+            md = payload.get("marketdata")
+            if isinstance(md, dict):
+                # Marketdata /heartbeat shape: {"heartbeat": {"age_seconds": ..., "last_tick_epoch_seconds": ...}}
+                hb = md.get("heartbeat") if isinstance(md.get("heartbeat"), dict) else None
+                if isinstance(hb, dict):
+                    now = datetime.now(timezone.utc)
+                    age_s = hb.get("age_seconds")
+                    last_tick_epoch_s = hb.get("last_tick_epoch_seconds")
+                    if isinstance(last_tick_epoch_s, (int, float)):
+                        md_last_tick = datetime.fromtimestamp(float(last_tick_epoch_s), tz=timezone.utc)
+                    elif isinstance(age_s, (int, float)):
+                        md_last_tick = now - timedelta(seconds=float(age_s))
+    except Exception:
+        pass
+
+    st = build_ops_status(
+        service_name="strategy-engine",
+        service_kind="strategy",
+        agent_identity=AgentIdentity(
+            agent_name=str(os.getenv("AGENT_NAME") or "strategy-engine"),
+            agent_role=str(os.getenv("AGENT_ROLE") or "strategy"),
+            agent_mode=str(os.getenv("AGENT_MODE") or "OBSERVE"),
+        ),
+        git_sha=os.getenv("GIT_SHA") or os.getenv("GITHUB_SHA") or None,
+        build_id=os.getenv("BUILD_ID") or None,
+        kill_switch=bool(kill),
+        heartbeat_ttl_seconds=_env_int("OPS_HEARTBEAT_TTL_S", 60),
+        marketdata_last_tick_utc=md_last_tick,
+        marketdata_stale_threshold_seconds=stale_s,
+        endpoints=EndpointsBlock(healthz="/healthz", heartbeat=None, metrics="/metrics"),
+    )
+    return st.model_dump()
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    return Response(content=REGISTRY.render_prometheus_text(), media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+@app.get("/ops/metrics")
+async def ops_metrics() -> Response:
+    return await metrics()
 

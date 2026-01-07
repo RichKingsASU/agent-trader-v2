@@ -6,11 +6,16 @@ export default defineConfig(() => ({
   server: {
     host: true,
     port: 8090,
+    fs: {
+      // Allow importing the shared ops contract from ../shared
+      allow: [path.resolve(__dirname, "..")],
+    },
   },
   plugins: [react()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "@ops-contract": path.resolve(__dirname, "../shared/ops-api-contract/src"),
     },
   },
 }));

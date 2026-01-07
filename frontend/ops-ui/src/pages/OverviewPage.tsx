@@ -1,15 +1,11 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
 import { missionControlApi } from "@/api/client";
-import type { Agent, Event, MissionControlAgentsResponse, MissionControlEventsResponse, OpsState } from "@/api/types";
+import type { Agent, Event, MissionControlEventsResponse, OpsState } from "@/api/types";
 import { Badge } from "@/components/Badge";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { usePolling } from "@/hooks/usePolling";
 import { formatAgeMs, formatIso, parseTimestamp } from "@/utils/time";
-
-function unpackAgents(payload: MissionControlAgentsResponse): Agent[] {
-  return Array.isArray(payload) ? payload : payload.agents || [];
-}
 
 function unpackEvents(payload: MissionControlEventsResponse): Event[] {
   return Array.isArray(payload) ? payload : payload.events || [];
@@ -21,25 +17,17 @@ function normalizeState(raw: unknown): OpsState {
   if (s === "OK") return "OK";
   if (s === "DEGRADED") return "DEGRADED";
   if (s === "HALTED") return "HALTED";
+  if (s === "MARKET_CLOSED") return "MARKET_CLOSED";
   if (s === "OFFLINE") return "OFFLINE";
   return "UNKNOWN";
 }
 
 function getAgentState(agent: Agent): OpsState {
-  const direct = normalizeState(agent.state);
-  if (direct !== "UNKNOWN") return direct;
-  const fromOps = (agent.ops_status as Record<string, unknown> | undefined)?.state;
-  const fromStatus = (agent as unknown as { status?: Record<string, unknown> }).status?.state;
-  return normalizeState(fromOps ?? fromStatus);
+  return normalizeState(agent.ops?.state);
 }
 
 function getAgentLastUpdated(agent: Agent): Date | null {
-  return (
-    parseTimestamp(agent.last_updated) ||
-    parseTimestamp(agent.heartbeat_ts) ||
-    parseTimestamp((agent as unknown as { lastUpdate?: unknown }).lastUpdate) ||
-    null
-  );
+  return parseTimestamp(agent.ops?.last_updated_utc) || parseTimestamp(agent.last_poll_at) || null;
 }
 
 function getEventTs(e: Event): Date | null {
@@ -47,15 +35,24 @@ function getEventTs(e: Event): Date | null {
 }
 
 function countStates(agents: Agent[]) {
-  const counts: Record<OpsState, number> = { OK: 0, DEGRADED: 0, HALTED: 0, OFFLINE: 0, UNKNOWN: 0 };
+  const counts: Record<OpsState, number> = {
+    OK: 0,
+    DEGRADED: 0,
+    HALTED: 0,
+    MARKET_CLOSED: 0,
+    OFFLINE: 0,
+    UNKNOWN: 0,
+  };
   for (const a of agents) counts[getAgentState(a)]++;
   return counts;
 }
 
 export function OverviewPage() {
   const agentsLoader = React.useCallback(async () => {
-    const res = await missionControlApi.listAgents();
-    return res.ok ? ({ ok: true, data: unpackAgents(res.data) } as const) : ({ ok: false, error: res.error } as const);
+    const res = await missionControlApi.getOpsStatus();
+    return res.ok
+      ? ({ ok: true, data: res.data.agents } as const)
+      : ({ ok: false, error: res.error } as const);
   }, []);
 
   const eventsLoader = React.useCallback(async () => {
@@ -101,6 +98,9 @@ export function OverviewPage() {
             <span className="muted">(often intentional)</span>
           </span>
           <span className="status-pill">
+            <Badge state="MARKET_CLOSED">MARKET_CLOSED</Badge> <span className="mono">{counts.MARKET_CLOSED}</span>
+          </span>
+          <span className="status-pill">
             <Badge state="OFFLINE">OFFLINE</Badge> <span className="mono">{counts.OFFLINE}</span>
           </span>
         </div>
@@ -129,23 +129,23 @@ export function OverviewPage() {
             ) : (
               agents
                 .slice()
-                .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+                .sort((a, b) => String(a.agent_name).localeCompare(String(b.agent_name)))
                 .map((a) => {
                   const st = getAgentState(a);
-                  const isExpectedOffline = st === "OFFLINE" && String(a.name) === "execution-agent";
+                  const isExpectedOffline = st === "OFFLINE" && String(a.agent_name) === "execution-agent";
                   const shownState = isExpectedOffline ? "OFFLINE (expected)" : st;
                   const last = getAgentLastUpdated(a);
                   const age = last ? Date.now() - last.getTime() : null;
                   return (
-                    <tr key={String(a.name)}>
+                    <tr key={String(a.agent_name)}>
                       <td className="mono">
-                        <Link to={`/agents/${encodeURIComponent(String(a.name))}`}>{String(a.name)}</Link>
+                        <Link to={`/agents/${encodeURIComponent(String(a.agent_name))}`}>{String(a.agent_name)}</Link>
                       </td>
                       <td className="hide-sm muted">{a.kind ? String(a.kind) : "—"}</td>
                       <td>
                         <Badge state={st}>{shownState}</Badge>
                       </td>
-                      <td className="muted">{a.summary ? String(a.summary) : "—"}</td>
+                      <td className="muted">{a.ops?.summary ? String(a.ops.summary) : "—"}</td>
                       <td className="hide-sm mono">{formatIso(last)}</td>
                       <td className="mono">{formatAgeMs(age)}</td>
                     </tr>

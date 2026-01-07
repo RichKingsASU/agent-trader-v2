@@ -22,6 +22,8 @@ from backend.streams.alpaca_quotes_streamer import get_last_marketdata_ts, main 
 from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.observability.ops_json_logger import OpsLogger
 from backend.utils.session import get_market_session
+from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
+from backend.common.kill_switch import get_kill_switch_state
 
 app = FastAPI()
 install_fastapi_correlation_middleware(app)
@@ -156,6 +158,10 @@ async def healthz() -> dict[str, Any]:
     # Process is alive (do not gate on external dependencies).
     return {"status": "ok", "service": _service_name(), "identity": _identity()}
 
+@app.get("/ops/health")
+async def ops_health() -> dict[str, Any]:
+    return {"status": "ok", "service": _service_name(), "ts": datetime.now(timezone.utc).isoformat()}
+
 
 @app.get("/livez")
 async def livez(response: Response) -> dict[str, Any]:
@@ -230,6 +236,39 @@ async def metrics():
         content=REGISTRY.render_prometheus_text(),
         media_type="text/plain; version=0.0.4; charset=utf-8",
     )
+
+@app.get("/ops/metrics")
+async def ops_metrics():
+    # Stable alias for ops scrapers.
+    return await metrics()
+
+
+@app.get("/ops/status")
+async def ops_status() -> dict[str, Any]:
+    """
+    Stable ops status contract.
+    """
+    kill, _source = get_kill_switch_state()
+    stale_s = int(float(os.getenv("MARKETDATA_STALE_THRESHOLD_S", "120")))
+    last_tick = get_last_marketdata_ts()
+    st = build_ops_status(
+        service_name=_service_name(),
+        service_kind="marketdata",
+        agent_identity=AgentIdentity(
+            agent_name=str(os.getenv("AGENT_NAME") or "marketdata-mcp-server"),
+            agent_role=str(os.getenv("AGENT_ROLE") or "marketdata"),
+            agent_mode=str(os.getenv("AGENT_MODE") or "STREAM"),
+        ),
+        git_sha=os.getenv("GIT_SHA") or os.getenv("GITHUB_SHA") or None,
+        build_id=os.getenv("BUILD_ID") or None,
+        kill_switch=bool(kill),
+        heartbeat_ttl_seconds=int(os.getenv("OPS_HEARTBEAT_TTL_S") or "60"),
+        marketdata_last_tick_utc=last_tick,
+        marketdata_last_bar_utc=None,
+        marketdata_stale_threshold_seconds=stale_s,
+        endpoints=EndpointsBlock(healthz="/healthz", heartbeat="/heartbeat", metrics="/metrics"),
+    )
+    return st.model_dump()
 
 
 def main() -> None:

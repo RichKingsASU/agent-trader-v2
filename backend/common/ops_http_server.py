@@ -49,19 +49,29 @@ class OpsHttpServer:
 
             def do_GET(self) -> None:  # noqa: N802
                 try:
-                    if self.path in ("/health", "/healthz"):
+                    if self.path in ("/health", "/healthz", "/ops/health"):
                         payload = {"status": "ok", "service": service_name}
                         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
                         return self._send(code=200, body=body, content_type="application/json; charset=utf-8")
 
                     if self.path == "/ops/status":
                         payload = status_fn() or {}
-                        payload.setdefault("status", "ok")
-                        payload.setdefault("service", service_name)
+                        # Back-compat: legacy payloads used {"status":"ok","service":...}.
+                        # If the shared OpsStatus contract is present, don't inject extra keys.
+                        if "service_name" not in payload:
+                            payload.setdefault("status", "ok")
+                            payload.setdefault("service", service_name)
                         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
                         return self._send(code=200, body=body, content_type="application/json; charset=utf-8")
 
                     if self.path == "/metrics":
+                        body = REGISTRY.render_prometheus_text().encode("utf-8")
+                        return self._send(
+                            code=200,
+                            body=body,
+                            content_type="text/plain; version=0.0.4; charset=utf-8",
+                        )
+                    if self.path == "/ops/metrics":
                         body = REGISTRY.render_prometheus_text().encode("utf-8")
                         return self._send(
                             code=200,

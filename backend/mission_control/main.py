@@ -21,6 +21,8 @@ from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from backend.common.app_heartbeat_writer import start_heartbeat_background, stop_heartbeat_background
+from backend.common.ops_metrics import REGISTRY
+from backend.ops.status_contract import OpsStatus as OpsStatusModel
 
 AGENT_KIND = Literal["marketdata", "strategy", "execution", "ingest"]
 CRITICALITY = Literal["critical", "important", "optional"]
@@ -422,6 +424,120 @@ app = FastAPI(title="Agent Mission Control", version="0.1.0", lifespan=lifespan)
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     return {"status": "ok", "service": "mission-control", "ts": _utcnow().isoformat()}
+
+@app.get("/ops/health")
+async def ops_health() -> dict[str, Any]:
+    # Stable alias for ops consumers.
+    return {"status": "ok", "service": "mission-control", "ts": _utcnow().isoformat()}
+
+
+def _safe_ops_from_raw(*, raw_ops_status_redacted: Optional[dict[str, Any]], online: Optional[bool]) -> dict[str, Any]:
+    """
+    Best-effort extraction of the shared `OpsStatus` contract from a redacted payload.
+
+    If the payload does not conform, returns:
+    - state: OFFLINE if `online is False`
+    - otherwise UNKNOWN
+    """
+    fallback_state = "OFFLINE" if online is False else "UNKNOWN"
+    fallback = {"state": fallback_state, "summary": fallback_state.title().replace("_", " "), "reason_codes": [], "last_updated_utc": None}
+
+    if not raw_ops_status_redacted or not isinstance(raw_ops_status_redacted, dict):
+        return fallback
+
+    # First, try strict validation against the shared contract.
+    try:
+        model = OpsStatusModel.model_validate(raw_ops_status_redacted)
+        d = model.model_dump()
+        status = (d.get("status") or {}) if isinstance(d, dict) else {}
+        return {
+            "state": status.get("state") or fallback_state,
+            "summary": status.get("summary") or fallback["summary"],
+            "reason_codes": status.get("reason_codes") or [],
+            "last_updated_utc": status.get("last_updated_utc"),
+            "validated_ops_status": d,
+        }
+    except Exception:
+        pass
+
+    # Loose extraction (older/partial payloads).
+    st = raw_ops_status_redacted.get("status") if isinstance(raw_ops_status_redacted.get("status"), dict) else None
+    if st:
+        state = st.get("state") if isinstance(st.get("state"), str) else fallback_state
+        summary = st.get("summary") if isinstance(st.get("summary"), str) else fallback["summary"]
+        reason_codes = st.get("reason_codes") if isinstance(st.get("reason_codes"), list) else []
+        last_updated_utc = st.get("last_updated_utc") if isinstance(st.get("last_updated_utc"), str) else None
+        return {
+            "state": state,
+            "summary": summary,
+            "reason_codes": reason_codes,
+            "last_updated_utc": last_updated_utc,
+            "validated_ops_status": None,
+        }
+
+    return fallback
+
+
+@app.get("/ops/status")
+async def ops_status(
+    refresh: bool = Query(default=True, description="If true, poll agents before returning")
+) -> dict[str, Any]:
+    """
+    Stable UI-facing ops contract.
+
+    Aggregates downstream `/ops/status` across configured agents (best-effort, read-only).
+    """
+    state: MissionControlState = app.state.mc_state
+    client = app.state.http_client
+    if refresh:
+        await _ensure_recent_poll(state, client=client)
+
+    enabled, source = get_kill_switch_state()
+    snapshot = await state.get_status_snapshot()
+
+    agents_out: list[dict[str, Any]] = []
+    for cfg in state.agents:
+        st = snapshot.get(cfg.agent_name)
+        online = st.online if st else None
+        raw_redacted = st.raw_ops_status_redacted if st else None
+        extracted = _safe_ops_from_raw(raw_ops_status_redacted=raw_redacted, online=online)
+        validated_ops_status = extracted.pop("validated_ops_status", None)
+        agents_out.append(
+            {
+                "agent_name": cfg.agent_name,
+                "kind": cfg.kind,
+                "criticality": cfg.criticality,
+                "service_dns": cfg.service_dns,
+                "expected_endpoints": list(cfg.expected_endpoints),
+                "online": online,
+                "last_poll_at": _iso(st.last_poll_at) if st else None,
+                "endpoints": {
+                    "healthz": asdict(st.healthz) if (st and st.healthz) else None,
+                    "ops_status": asdict(st.ops_status) if (st and st.ops_status) else None,
+                    "heartbeat": asdict(st.heartbeat) if (st and st.heartbeat) else None,
+                },
+                "ops_status": validated_ops_status,
+                "ops": extracted,
+                "raw_ops_status_redacted": raw_redacted,
+                "marketdata_freshness": st.marketdata_freshness if st else None,
+            }
+        )
+
+    return {
+        "ts": _utcnow().isoformat(),
+        "kill_switch": {"execution_halted": bool(enabled), "source": source},
+        "last_poll_cycle_at": _iso(state.last_poll_cycle_at),
+        "agents": agents_out,
+    }
+
+
+@app.get("/ops/metrics")
+async def ops_metrics() -> Response:
+    # Stable alias: Prometheus text exposition format.
+    return Response(
+        content=REGISTRY.render_prometheus_text(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 async def _ensure_recent_poll(state: MissionControlState, *, client: Any) -> None:

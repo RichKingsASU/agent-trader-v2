@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi import Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from backend.common.agent_state_machine import (
@@ -46,6 +47,7 @@ from backend.safety.startup_validation import (
     validate_required_env_or_exit,
 )
 from backend.observability.ops_json_logger import OpsLogger
+from backend.common.ops_metrics import REGISTRY
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +162,10 @@ def healthz() -> dict[str, Any]:
     # Alias for institutional conventions.
     return health()
 
+@app.get("/ops/health")
+def ops_health() -> dict[str, Any]:
+    return {"status": "ok", "service": "execution-engine", "ts": datetime.now(timezone.utc).isoformat()}
+
 
 @app.get("/readyz")
 def readyz() -> dict[str, Any]:
@@ -200,6 +206,19 @@ def ops_status() -> dict[str, Any]:
         endpoints=EndpointsBlock(healthz="/health", heartbeat=None, metrics=None),
     )
     return st.model_dump()
+
+
+@app.get("/metrics")
+def metrics() -> Response:
+    return Response(
+        content=REGISTRY.render_prometheus_text(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
+@app.get("/ops/metrics")
+def ops_metrics() -> Response:
+    return metrics()
 
 
 @app.get("/state")

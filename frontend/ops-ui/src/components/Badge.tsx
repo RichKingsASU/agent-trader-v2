@@ -8,6 +8,8 @@ export function Badge({ state, children }: { state: OpsState; children: string }
         ? "degraded"
         : state === "HALTED"
           ? "halted"
+          : state === "MARKET_CLOSED"
+            ? "market_closed"
           : state === "OFFLINE"
             ? "offline"
             : "unknown";
