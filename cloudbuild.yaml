@@ -1,10 +1,14 @@
 steps:
   - name: 'bash'
-    id: 'Safety Guard'
-    entrypoint: '/bin/sh'
+    id: 'Copy Safety Guard Script'
+    entrypoint: 'bash'
     args:
       - '-c'
-      - './scripts/ci_safety_guard.sh'
+      - 'cp ./scripts/ci_safety_guard.sh /workspace/ci_safety_guard.sh && chmod +x /workspace/ci_safety_guard.sh'
+
+  - name: 'bash'
+    id: 'Safety Guard'
+    entrypoint: '/workspace/ci_safety_guard.sh'
 
   # Build and push marketdata-mcp-server
   - name: 'gcr.io/cloud-builders/docker'
