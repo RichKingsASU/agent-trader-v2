@@ -3,10 +3,16 @@ from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_r
 _log_runtime_fingerprint(service="risk-service")
 
 import json
+
+from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
+
+_enforce_agent_mode_guard()
+
 from fastapi import FastAPI
 from .routers import risk_limits
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.observability.correlation import install_fastapi_correlation_middleware
 
 app = FastAPI(title="AgentTrader Risk Service")
@@ -14,6 +20,7 @@ install_fastapi_correlation_middleware(app)
 
 @app.on_event("startup")
 def _startup() -> None:
+    enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="risk-service",
         intent="Serve risk APIs (limits/checks) for strategy execution.",

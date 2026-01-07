@@ -7,6 +7,10 @@ Supports both API-based ingestion (Quiver Quantitative) and scraping fallback.
 
 from __future__ import annotations
 
+from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
+
+_enforce_agent_mode_guard()
+
 import asyncio
 import json
 import logging
@@ -20,6 +24,7 @@ import httpx
 from nats.aio.client import Client as NATS
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.nats.subjects import market_subject
 from backend.common.schemas.codec import encode_message
 from backend.common.schemas.models import MarketEventV1
@@ -444,6 +449,8 @@ async def main():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         stream=sys.stdout,
     )
+
+    enforce_agent_mode_guard()
 
     configure_startup_logging(
         agent_name="congressional-ingest",

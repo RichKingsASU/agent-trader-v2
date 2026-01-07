@@ -51,7 +51,7 @@ spec:
           env:
             # Absolute safety defaults: never allow broker routing from K8s by default.
             - name: AGENT_MODE
-              value: "DISABLED"
+              value: "OFF"
             - name: EXEC_DRY_RUN
               value: "1"
             - name: EXECUTION_HALTED

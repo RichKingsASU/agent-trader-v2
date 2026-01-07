@@ -254,6 +254,15 @@ logs: ## Tail logs for one workload (AGENT=<name>)
 		--agent "$(AGENT)" \
 		$(if $(CONTEXT),--context "$(CONTEXT)",)
 
+rollout: ## Rollout guard (DEPLOY=<deployment> TAG=<image-tag>)
+	@if [[ -z "$(DEPLOY)" ]]; then echo "ERROR: DEPLOY is required (e.g. make rollout DEPLOY=strategy-engine TAG=<sha>)"; exit 2; fi
+	@if [[ -z "$(TAG)" ]]; then echo "ERROR: TAG is required (e.g. make rollout DEPLOY=strategy-engine TAG=<sha>)"; exit 2; fi
+	@./scripts/rollout_guard.sh \
+		--namespace "$(NAMESPACE)" \
+		--deployment "$(DEPLOY)" \
+		--tag "$(TAG)" \
+		$(if $(CONTEXT),--context "$(CONTEXT)",)
+
 scale: ## Scale a workload (AGENT=<name> REPLICAS=<n>)
 	@if [[ -z "$(AGENT)" ]]; then echo "ERROR: AGENT is required"; exit 2; fi
 	@if [[ -z "$(REPLICAS)" ]]; then echo "ERROR: REPLICAS is required"; exit 2; fi

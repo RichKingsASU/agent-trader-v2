@@ -1,12 +1,11 @@
-from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
-
-from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+import os as _os
 
 _log_runtime_fingerprint(service="marketdata-mcp-server")
 
 import asyncio
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import uvicorn
@@ -14,10 +13,12 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.http_correlation import install_http_correlation
 from backend.common.ops_metrics import REGISTRY, agent_start_total, errors_total, mark_activity, update_marketdata_heartbeat_metrics
-from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
+from backend.streams.alpaca_quotes_streamer import get_last_marketdata_ts, main as alpaca_streamer_main
 from backend.observability.correlation import install_fastapi_correlation_middleware
+from backend.utils.session import get_market_session
 
 app = FastAPI()
 install_fastapi_correlation_middleware(app)
@@ -38,6 +39,7 @@ def _identity() -> dict[str, Any]:
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="marketdata-mcp-server",
         intent="Serve marketdata MCP endpoints and run the Alpaca streamer background task.",
@@ -48,6 +50,7 @@ async def startup_event() -> None:
     app.state.shutting_down = False
     app.state.ready = False
     app.state.ready_logged = False
+    app.state.started_at_utc = datetime.now(timezone.utc)
     app.state.loop_heartbeat_monotonic = time.monotonic()
 
     async def _loop_heartbeat() -> None:
@@ -74,21 +77,34 @@ async def startup_event() -> None:
 
     stream_task.add_done_callback(_done_callback)
 
-    # Mark readiness once the background task is scheduled and the loop is running.
-    # NOTE: We avoid tying readiness to "market open" / tick arrival to prevent flapping.
-    await asyncio.sleep(0)
-    if stream_task.done():
-        # Don't claim readiness if the streamer failed immediately.
-        return
-    app.state.ready = True
-    if not bool(getattr(app.state, "ready_logged", False)):
-        app.state.ready_logged = True
-        print("SERVICE_READY: marketdata-mcp-server", flush=True)
+    async def _mark_ready_when_initialized() -> None:
+        # Full init: subscriptions configured by the streamer (ready_event set).
+        try:
+            await app.state.streamer_ready_event.wait()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
+
+        if bool(getattr(app.state, "shutting_down", False)):
+            return
+
+        t: asyncio.Task | None = getattr(app.state, "stream_task", None)
+        if t is None or t.done():
+            return
+
+        app.state.ready = True
+        if not bool(getattr(app.state, "ready_logged", False)):
+            app.state.ready_logged = True
+            print("SERVICE_READY: marketdata-mcp-server", flush=True)
+
+    app.state.ready_task = asyncio.create_task(_mark_ready_when_initialized())
 
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     app.state.shutting_down = True
+    app.state.ready = False
     try:
         print(f"SHUTDOWN_INITIATED: {_service_name()}", flush=True)
     except Exception:
@@ -107,13 +123,14 @@ async def shutdown_event() -> None:
         except Exception:
             pass
 
-    for t in (ready_task, stream_task, loop_task):
-        if t is None:
-            continue
-        try:
-            await t
-        except Exception:
-            pass
+    tasks = [t for t in (ready_task, stream_task, loop_task) if t is not None]
+    if not tasks:
+        return
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10.0)
+    except Exception:
+        # Best-effort; never hang shutdown.
+        pass
 
 
 @app.get("/")
@@ -142,9 +159,23 @@ async def livez(response: Response) -> dict[str, Any]:
     stream_task: asyncio.Task | None = getattr(app.state, "stream_task", None)
     stream_ok = stream_task is not None and (not stream_task.done())
     loop_ok = (now - last) <= max_age_s
-    ok = loop_ok and (not shutting_down) and stream_ok
+    # Marketdata watchdog: if we stop receiving messages during market hours, fail liveness.
+    stale_threshold_s = float(os.getenv("LIVEZ_MARKETDATA_STALE_S") or os.getenv("MARKETDATA_STALE_THRESHOLD_S") or "120")
+    now_utc = datetime.now(timezone.utc)
+    session = get_market_session(now_utc)
+    last_msg = get_last_marketdata_ts() or getattr(app.state, "started_at_utc", now_utc)
+    age_s = (now_utc - last_msg).total_seconds() if session != "CLOSED" else 0.0
+    marketdata_ok = (session == "CLOSED") or (age_s <= stale_threshold_s)
+
+    ok = loop_ok and (not shutting_down) and stream_ok and marketdata_ok
     response.status_code = 200 if ok else 503
-    return {"status": "ok" if ok else ("stream_dead" if not stream_ok else "wedged")}
+    if ok:
+        return {"status": "ok"}
+    if not stream_ok:
+        return {"status": "stream_dead"}
+    if not loop_ok:
+        return {"status": "wedged"}
+    return {"status": "stale", "market_session": session, "age_seconds": age_s, "stale_threshold_seconds": stale_threshold_s}
 
 
 @app.get("/readyz")

@@ -15,5 +15,7 @@ steps:
         --build-arg IMAGE_REF="${IMAGE_REF}" \
         -t "${IMAGE_REF}" \
         .
+
+      sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.streams_bridge.main
 images:
 - 'gcr.io/$PROJECT_ID/agenttrader-stream-bridge:$SHORT_SHA'

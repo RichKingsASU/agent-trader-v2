@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
 
-_log_runtime_fingerprint(service="execution-engine")
+_enforce_agent_mode_guard()
 
 import json
 import logging
@@ -21,6 +21,8 @@ from backend.common.agent_state_machine import (
     trading_allowed,
 )
 from backend.common.agent_mode import AgentModeError
+from backend.common.agent_boot import configure_startup_logging
+from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.execution.engine import (
     AlpacaBroker,
     DryRunBroker,
@@ -29,7 +31,10 @@ from backend.execution.engine import (
     OrderIntent,
     RiskManager,
 )
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.kill_switch import get_kill_switch_state
+from backend.observability.build_fingerprint import get_build_fingerprint
+from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.common.vertex_ai import init_vertex_ai_or_log
 from backend.execution.marketdata_health import check_market_ingest_heartbeat
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
@@ -100,20 +105,7 @@ install_fastapi_correlation_middleware(app)
 
 @app.on_event("startup")
 def _startup() -> None:
-    # Fail fast if environment is unsafe.
-    validate_required_env_or_exit(
-        required=("REPO_ID", "AGENT_NAME", "AGENT_ROLE", "AGENT_MODE", "EXECUTION_ENABLED"),
-        intent_type="execution_service_startup_refused",
-    )
-    validate_agent_mode_or_exit(
-        allowed={"OFF", "OBSERVE", "EXECUTE", "DISABLED", "WARMUP", "LIVE", "HALTED"},
-        intent_type="execution_service_startup_refused",
-    )
-    validate_flag_exact_false_or_exit(
-        var_name="EXECUTION_ENABLED",
-        intent_type="execution_service_startup_refused",
-    )
-
+    enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="execution-engine",
         intent="Serve the execution API; validate config and execute broker order intents.",
@@ -159,21 +151,11 @@ def healthz() -> dict[str, Any]:
     # Alias for institutional conventions.
     return health()
 
-@app.get("/healthz")
-def healthz() -> dict[str, Any]:
-    # Alias for Kubernetes probes.
-    return health()
-
 
 @app.get("/readyz")
 def readyz() -> dict[str, Any]:
     # Readiness is equivalent to health for this API (no external calls).
     return {"status": "ok"}
-
-@app.get("/ops/status")
-def ops_status() -> dict[str, Any]:
-    return {"status": "ok", "service": "execution-engine"}
-
 
 @app.get("/ops/status")
 def ops_status() -> dict[str, Any]:
@@ -284,7 +266,9 @@ def recover(request: Request) -> dict[str, Any]:
 
 @app.post("/execute", response_model=ExecuteIntentResponse)
 def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
-    engine = _engine_from_env()
+    engine: ExecutionEngine = app.state.engine
+    risk: RiskManager = app.state.risk
+    sm: AgentStateMachine = app.state.agent_sm
     # Prefer caller-provided trace_id; fall back to client_intent_id.
     trace_id = str(req.metadata.get("trace_id") or req.client_intent_id or "").strip() or None
     if trace_id:

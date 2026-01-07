@@ -31,6 +31,10 @@ Notes:
 
 from __future__ import annotations
 
+from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
+
+_enforce_agent_mode_guard()
+
 import json
 import logging
 import os
@@ -51,6 +55,7 @@ TRADING_BASE = (
 DATA_BASE = "https://data.alpaca.markets"
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.env import get_env
 from backend.observability.build_fingerprint import get_build_fingerprint
 
@@ -528,6 +533,7 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="options-window-ingest",
         intent="Ingest an option snapshot window around ATM and upsert to Postgres.",

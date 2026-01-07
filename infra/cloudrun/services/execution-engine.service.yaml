@@ -38,6 +38,8 @@ spec:
               value: "REPLACE_ME_MARKETDATA_HEALTH_URL"
             - name: MARKETDATA_MAX_AGE_SECONDS
               value: "60"
+            - name: AGENT_MODE
+              value: "OFF"
           resources:
             limits:
               cpu: "1"
