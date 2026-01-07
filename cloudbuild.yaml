@@ -15,7 +15,7 @@ steps:
         fi
 
         echo "--- Checking for 'AGENT_MODE=EXECUTE' ---"
-        if find . -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | xargs grep -E -q "AGENT_MODE[[:space:]]*[:=][[:space:]]*(['"])"?EXECUTE\1"; then
+        if find . -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | xargs grep -E -q "AGENT_MODE[[:space:]]*[:=][[:space:]]*(['"]?|)EXECUTE(['"]?|)"; then
           echo "❌ FAILED: 'AGENT_MODE' must not be set to 'EXECUTE' in committed code."
           exit 1
         else
