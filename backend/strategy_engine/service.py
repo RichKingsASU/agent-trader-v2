@@ -5,8 +5,11 @@ from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_r
 _log_runtime_fingerprint(service="strategy-engine")
 
 import asyncio
+import json
 import os
 import time
+import urllib.error
+import urllib.request
 from typing import Any
 
 from fastapi import FastAPI, Response
@@ -25,6 +28,66 @@ def _identity() -> dict[str, Any]:
         "git_sha": os.getenv("GIT_SHA") or os.getenv("GITHUB_SHA") or None,
         "environment": os.getenv("ENVIRONMENT") or os.getenv("ENV") or None,
     }
+
+
+def _marketdata_heartbeat_url() -> str:
+    """
+    Prefer the explicit heartbeat URL (ops endpoint), else fall back to the
+    standardized health URL.
+    """
+    v = (os.getenv("MARKETDATA_HEARTBEAT_URL") or "").strip()
+    if v:
+        return v
+    v = (os.getenv("MARKETDATA_HEALTH_URL") or "").strip()
+    if v:
+        return v
+    # Local default (dev).
+    return "http://127.0.0.1:8080/heartbeat"
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return float(str(raw).strip())
+
+
+def _fetch_json(url: str, *, timeout_s: float) -> dict[str, Any]:
+    req = urllib.request.Request(url, headers={"accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+    try:
+        out = json.loads(body or "{}")
+    except Exception:
+        out = {"_raw": body[:2000]}
+    return out if isinstance(out, dict) else {"payload": out}
+
+
+async def _current_state() -> tuple[str, dict[str, Any]]:
+    """
+    Best-effort dependency snapshot used by /readyz.
+
+    "ok" means the service can successfully fetch and parse marketdata heartbeat.
+    We do NOT require marketdata to be "fresh" here; that gating belongs to the
+    strategy execution path (fail-closed).
+    """
+    timeout_s = _env_float("MARKETDATA_HEALTH_TIMEOUT_SECONDS", 2.0)
+    url = _marketdata_heartbeat_url()
+    try:
+        payload = await asyncio.to_thread(_fetch_json, url, timeout_s=timeout_s)
+        return "ok", {
+            "status": "ok",
+            "identity": _identity(),
+            "marketdata_heartbeat_url": url,
+            "marketdata": payload,
+        }
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+        return "marketdata_unreachable", {
+            "status": "degraded",
+            "identity": _identity(),
+            "marketdata_heartbeat_url": url,
+            "error": f"{type(e).__name__}: {e}",
+        }
 
 
 @app.on_event("startup")
@@ -84,15 +147,13 @@ async def _startup() -> None:
             await asyncio.sleep(cycle_s)
 
     app.state.cycle_task = asyncio.create_task(_loop())
-
-    # Readiness: startup completed and critical in-process loops scheduled.
-    app.state.is_ready = True
-    print("SERVICE_READY: strategy-engine", flush=True)
+    # Readiness is flipped by the dependency init task only.
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     app.state.shutting_down = True
+    app.state.ready = False
     try:
         print("SHUTDOWN_INITIATED: strategy-engine", flush=True)
     except Exception:
@@ -110,13 +171,14 @@ async def _shutdown() -> None:
         except Exception:
             pass
 
-    for t in (cycle_task, loop_task, init_task):
-        if t is None:
-            continue
-        try:
-            await t
-        except Exception:
-            pass
+    tasks = [t for t in (cycle_task, loop_task, init_task) if t is not None]
+    if not tasks:
+        return
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10.0)
+    except Exception:
+        # Best-effort; never hang shutdown.
+        pass
 
 
 @app.get("/health")
