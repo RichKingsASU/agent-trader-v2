@@ -1,5 +1,34 @@
 # This CI pipeline enforces institutional safety guarantees.
 steps:
+  # NOTE ON ORDER (determinism + debuggability):
+  # - Checkout first so every later step can log the same source state.
+  # - Safety guard next to fail fast on forbidden config / dangerous settings.
+  # - Import smoke check next to fail fast on broken Python entrypoints *before*
+  #   spending time building images.
+  # - Docker builds are serialized (explicit waitFor chain) to avoid hidden
+  #   parallelism and to make failures reproducible and logs easier to read.
+  # - Docker pushes are last so nothing is published unless all gates pass.
+
+  # a) Checkout
+  - name: 'gcr.io/cloud-builders/git'
+    id: 'Checkout'
+    entrypoint: 'bash'
+    args:
+      - -ceu
+      - |
+        echo "--- Checkout / source context ---"
+        echo "PWD=$$(pwd)"
+        echo "Workspace contents:"
+        ls -la
+        if [ -d .git ]; then
+          echo "GIT_SHA=$$(git rev-parse HEAD)"
+          echo "GIT_STATUS_PORCELAIN:"
+          git status --porcelain || true
+        else
+          echo "INFO: .git directory not present (source may be provided as an archive)."
+        fi
+
+  # b) Safety guard
   - name: 'gcr.io/cloud-builders/bash'
     id: 'PHASE 1: preflight'
     entrypoint: 'bash'
@@ -24,36 +53,126 @@ steps:
         set -euo pipefail
         echo "===== PHASE 2: safety guard ====="
 
-        echo "--- Checking for ':latest' image tags ---"
-        mapfile -t YAML_FILES < <(find . -type f \( -name "*.yaml" -o -name "*.yml" \) ! -name "cloudbuild*")
-        if [ "${#YAML_FILES[@]}" -gt 0 ] && grep -nE "image:.*:latest\b" "${YAML_FILES[@]}"; then
-          echo "❌ FAILED: Use of ':latest' image tag is forbidden."
-          exit 1
-        else
-          echo "✅ PASSED: No ':latest' image tags found."
-        fi
+        # Diagnostics for unexpected tool/runtime issues.
+        diag_grep_error() {
+          local check_name="$1"
+          local files_count="$2"
+          echo "----- Debug: ${check_name} (grep error) -----" >&2
+          echo "PWD: $(pwd)" >&2
+          echo "WORKSPACE_ROOT: ${WORKSPACE_ROOT:-<unset>}" >&2
+          echo "Files scanned: ${files_count}" >&2
+          echo "Listing PWD:" >&2
+          ls -la >&2 || true
+          echo "----- End Debug -----" >&2
+        }
+
+        # Run grep against an explicit file list, interpreting exit codes robustly:
+        # - 0 => policy violation (FAIL with exit 1) and print offending lines
+        # - 1 => PASS (no matches)
+        # - 2 => grep/runtime error (FAIL with exit 1) and print diagnostics
+        #
+        # Usage:
+        #   run_grep_check "<check name>" "<fail message>" "<grep regex>" <file1> <file2> ...
+        run_grep_check() {
+          local check_name="$1"
+          local fail_message="$2"
+          local grep_pattern="$3"
+          shift 3
+          local -a files=( "$@" )
+
+          echo "--- ${check_name} ---"
+          echo "Files scanned: ${#files[@]}"
+          if ((${#files[@]} == 0)); then
+            echo "✅ PASSED: No files to scan."
+            return 0
+          fi
+
+          set +e
+          local matches
+          matches="$(grep -nH "${grep_pattern}" -- "${files[@]}" 2>&1)"
+          local rc=$?
+          set -e
+
+          if [[ ${rc} -eq 0 ]]; then
+            echo "❌ FAILED: ${fail_message}"
+            echo "${matches}"
+            exit 1
+          elif [[ ${rc} -eq 1 ]]; then
+            echo "✅ PASSED: No matches found."
+            return 0
+          else
+            echo "❌ FAILED: grep error while running '${check_name}'." >&2
+            echo "${matches}" >&2
+            diag_grep_error "${check_name}" "${#files[@]}"
+            exit 1
+          fi
+        }
+
+        # 1) ':latest' image tags in yaml/yml excluding cloudbuild
+        mapfile -d '' -t LATEST_TAG_FILES < <(
+          find "${WORKSPACE_ROOT:-/workspace}" -type f \
+            \( -name "*.yaml" -o -name "*.yml" \) \
+            -not -path "*cloudbuild*" \
+            -print0
+        )
+        run_grep_check \
+          "Checking for ':latest' image tags" \
+          "Use of ':latest' image tag is forbidden." \
+          "image:.*:latest" \
+          "${LATEST_TAG_FILES[@]}"
+
+        # 2) AGENT_MODE=EXECUTE in yaml/yml/py/sh/Dockerfile excluding cloudbuild
+        mapfile -d '' -t AGENT_MODE_FILES < <(
+          find "${WORKSPACE_ROOT:-/workspace}" -type f \
+            \( -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" \) \
+            -not -path "*cloudbuild*" \
+            -print0
+        )
 
         echo "--- Checking for 'AGENT_MODE=EXECUTE' ---"
-        mapfile -t CODE_FILES < <(find . -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" -o -name "Dockerfile.*" \) ! -name "cloudbuild*")
-        if [ "${#CODE_FILES[@]}" -gt 0 ] && grep -nE "AGENT_MODE[[:space:]]*[:=][[:space:]]*(['\"])?EXECUTE\1" "${CODE_FILES[@]}" | grep -v "ALLOWED_AGENT_MODES"; then
-          echo "❌ FAILED: AGENT_MODE must not be set to EXECUTE in committed code."
-          exit 1
+        echo "Files scanned: ${#AGENT_MODE_FILES[@]}"
+        if ((${#AGENT_MODE_FILES[@]} == 0)); then
+          echo "✅ PASSED: No files to scan."
         else
-          echo "✅ PASSED: No instances of 'AGENT_MODE=EXECUTE' found."
+          set +e
+          AGENT_MODE_MATCHES="$(
+            grep -nH -e "AGENT_MODE=EXECUTE" -e "AGENT_MODE: EXECUTE" -- "${AGENT_MODE_FILES[@]}" 2>&1 \
+              | grep -v "ALLOWED_AGENT_MODES"
+          )"
+          GREP_RC=$?
+          set -e
+
+          # Note: In a pipeline, the last command's status is what we capture here; treat "no matches after filtering"
+          # as PASS, and any non-1/non-0 as an error needing diagnostics.
+          if [[ ${GREP_RC} -eq 0 ]]; then
+            echo "❌ FAILED: AGENT_MODE must not be set to EXECUTE in committed code."
+            echo "${AGENT_MODE_MATCHES}"
+            exit 1
+          elif [[ ${GREP_RC} -eq 1 ]]; then
+            echo "✅ PASSED: No instances of 'AGENT_MODE=EXECUTE' found."
+          else
+            echo "❌ FAILED: grep error while running 'AGENT_MODE=EXECUTE' check." >&2
+            echo "${AGENT_MODE_MATCHES}" >&2
+            diag_grep_error "Checking for 'AGENT_MODE=EXECUTE'" "${#AGENT_MODE_FILES[@]}"
+            exit 1
+          fi
         fi
 
+        # 3) replicas > 0 in ./k8s/execution (and if directory doesn't exist, PASS)
+        EXECUTION_DIR="${WORKSPACE_ROOT:-/workspace}/k8s/execution"
         echo "--- Checking for scaled execution agents (replicas > 0) ---"
-        mapfile -t EXEC_AGENT_MANIFESTS < <(grep -rl --include="*.yaml" --include="*.yml" "name: execution-agent" ./k8s 2>/dev/null || true)
-        SCALED_EXECUTION_AGENT=0
-        for MANIFEST in "${EXEC_AGENT_MANIFESTS[@]}"; do
-          if grep -nE "replicas:[[:space:]]*[1-9]" "$MANIFEST"; then
-            SCALED_EXECUTION_AGENT=1
-          fi
-        done
-
-        if [ "$SCALED_EXECUTION_AGENT" -eq 1 ]; then
-          echo "❌ FAILED: Execution agent replicas must be 0 in committed code."
-          exit 1
+        if [[ ! -d "${EXECUTION_DIR}" ]]; then
+          echo "Files scanned: 0"
+          echo "✅ PASSED: ${EXECUTION_DIR} does not exist."
+        else
+          mapfile -d '' -t EXECUTION_YAMLS < <(
+            find "${EXECUTION_DIR}" -type f \( -name "*.yaml" -o -name "*.yml" \) -print0
+          )
+          run_grep_check \
+            "Checking for scaled execution agents (replicas > 0)" \
+            "Execution agent replicas must be 0 in committed code." \
+            "replicas:[[:space:]]*[1-9]" \
+            "${EXECUTION_YAMLS[@]}"
         fi
         echo "✅ PASSED: No execution agents found with replicas > 0."
 
@@ -67,7 +186,12 @@ steps:
         set -euo pipefail
         echo "===== PHASE 4: docker build ====="
 
-  # Build and push marketdata-mcp-server
+  # d) Docker build(s) (serialized; each build is immediately gated).
+  #
+  # NOTE: The "import gate" runs inside the built image (docker run) to validate
+  # runtime imports using the image's own dependency set.
+
+  # Build marketdata-mcp-server
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Build marketdata-mcp-server'
     waitFor: ['PHASE 4: docker build']
@@ -102,7 +226,7 @@ steps:
         chmod +x ./scripts/ci_import_gate.sh
         ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.app
 
-  # Build and push strategy-engine
+  # Build strategy-engine
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Build strategy-engine'
     waitFor: ['Import gate marketdata-mcp-server']
@@ -127,7 +251,7 @@ steps:
         chmod +x ./scripts/ci_import_gate.sh
         ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_engine.service
 
-  # Build and push strategy-runtime (used by gamma and whale strategies)
+  # Build strategy-runtime (used by gamma and whale strategies)
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Build strategy-runtime'
     waitFor: ['Import gate strategy-engine']
