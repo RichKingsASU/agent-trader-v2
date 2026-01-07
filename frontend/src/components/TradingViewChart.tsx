@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { createChart, ColorType, CandlestickSeries, LineSeries, HistogramSeries } from "lightweight-charts";
+import { createChart, ColorType } from "lightweight-charts";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -181,7 +181,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
     chartRef.current = chart;
 
     // Add candlestick series
-    const candlestickSeries = chart.addSeries(CandlestickSeries, {
+    const candlestickSeries = chart.addCandlestickSeries({
       upColor: `hsl(${styles.getPropertyValue('--bull').trim()})`,
       downColor: `hsl(${styles.getPropertyValue('--bear').trim()})`,
       borderVisible: false,
@@ -192,7 +192,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
     candlestickSeriesRef.current = candlestickSeries;
 
     // Add volume series
-    const volumeSeries = chart.addSeries(HistogramSeries, {
+    const volumeSeries = chart.addHistogramSeries({
       color: `hsl(${styles.getPropertyValue('--muted-foreground').trim()})`,
       priceFormat: {
         type: 'volume',
@@ -300,7 +300,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
 
     if (indicators.vwap) {
       const vwapValues = calculateVWAP(mockData);
-      const vwapSeries = chart.addSeries(LineSeries, {
+      const vwapSeries = chart.addLineSeries({
         color: '#2962FF',
         lineWidth: 2,
         title: 'VWAP',
@@ -311,7 +311,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
 
     if (indicators.ema9) {
       const ema9Values = calculateEMA(closePrices, 9);
-      const ema9Series = chart.addSeries(LineSeries, {
+      const ema9Series = chart.addLineSeries({
         color: '#F23645',
         lineWidth: 1,
         title: 'EMA 9',
@@ -322,7 +322,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
 
     if (indicators.ema21) {
       const ema21Values = calculateEMA(closePrices, 21);
-      const ema21Series = chart.addSeries(LineSeries, {
+      const ema21Series = chart.addLineSeries({
         color: '#FFA726',
         lineWidth: 1,
         title: 'EMA 21',
@@ -333,7 +333,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
 
     if (indicators.ema50) {
       const ema50Values = calculateEMA(closePrices, 50);
-      const ema50Series = chart.addSeries(LineSeries, {
+      const ema50Series = chart.addLineSeries({
         color: '#26A69A',
         lineWidth: 1,
         title: 'EMA 50',
@@ -344,7 +344,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
 
     if (indicators.sma200) {
       const sma200Values = calculateSMA(closePrices, 200);
-      const sma200Series = chart.addSeries(LineSeries, {
+      const sma200Series = chart.addLineSeries({
         color: '#AB47BC',
         lineWidth: 2,
         title: 'SMA 200',
@@ -360,7 +360,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
     if (indicators.bb) {
       const bb = calculateBollingerBands(closePrices, 20, 2);
       
-      const bbUpperSeries = chart.addSeries(LineSeries, {
+      const bbUpperSeries = chart.addLineSeries({
         color: '#787B86',
         lineWidth: 1,
         lineStyle: 2,
@@ -372,7 +372,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
           .filter(d => !isNaN(d.value))
       );
       
-      const bbMiddleSeries = chart.addSeries(LineSeries, {
+      const bbMiddleSeries = chart.addLineSeries({
         color: '#787B86',
         lineWidth: 1,
         title: 'BB Middle',
@@ -383,7 +383,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
           .filter(d => !isNaN(d.value))
       );
       
-      const bbLowerSeries = chart.addSeries(LineSeries, {
+      const bbLowerSeries = chart.addLineSeries({
         color: '#787B86',
         lineWidth: 1,
         lineStyle: 2,

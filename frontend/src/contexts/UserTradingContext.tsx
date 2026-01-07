@@ -156,7 +156,7 @@ export const UserTradingProvider: React.FC<{ children: React.ReactNode }> = ({ c
         const trades = snapshot.docs.map((doc) => ({
           id: doc.id,
           ...doc.data(),
-        })) as ShadowTrade[];
+        })) as unknown as ShadowTrade[];
         setShadowTrades(trades);
         setShadowTradesLoading(false);
       },

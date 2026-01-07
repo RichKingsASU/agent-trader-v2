@@ -18,6 +18,15 @@ const TIME_WINDOWS = [
   { value: 240, label: 'Last 4 hours' },
 ];
 
+function coerceDate(value: unknown): Date {
+  if (value instanceof Date) return value;
+  if (value && typeof value === 'object' && typeof (value as any).toDate === 'function') {
+    const d = (value as any).toDate();
+    if (d instanceof Date) return d;
+  }
+  return new Date(value as any);
+}
+
 export default function OptionsExplorer() {
   const { 
     snapshots, 
@@ -217,9 +226,9 @@ export default function OptionsExplorer() {
                       <TableCell className="text-right number-mono">{snap.payload?.iv ? `${(snap.payload.iv * 100).toFixed(1)}%` : '-'}</TableCell>
                       <TableCell className="text-right number-mono">{snap.payload?.delta?.toFixed(3) || '-'}</TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {format(new Date(snap.snapshot_time), 'HH:mm:ss')}
+                        {format(coerceDate(snap.snapshot_time), 'HH:mm:ss')}
                         <br />
-                        <span className="text-xs">{formatDistanceToNow(new Date(snap.snapshot_time), { addSuffix: true })}</span>
+                        <span className="text-xs">{formatDistanceToNow(coerceDate(snap.snapshot_time), { addSuffix: true })}</span>
                       </TableCell>
                     </TableRow>
                   ))}
