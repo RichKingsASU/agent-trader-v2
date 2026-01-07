@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from .models import OrderProposal, ProposalStatus
 from .validator import ProposalValidationError, validate_proposal
+from backend.dataplane.file_store import FileProposalStore
 
 
 def _utc_now() -> datetime:
@@ -82,6 +83,11 @@ def _audit_root() -> Path:
 def _proposal_audit_path(now: Optional[datetime] = None) -> Path:
     d = (now or _utc_now()).date().isoformat()
     return _audit_root() / "proposals" / d / "proposals.ndjson"
+
+
+def _env_bool(name: str, default: str = "false") -> bool:
+    v = os.getenv(name, default).strip().lower()
+    return v in {"1", "true", "yes", "y"}
 
 
 @dataclass
@@ -218,6 +224,19 @@ def emit_proposal(proposal: OrderProposal) -> None:
         if isinstance(raw_rationale, dict):
             raw_rationale["indicators"] = _redact(raw_rationale.get("indicators") or {})
             raw["rationale"] = raw_rationale
+
+        # Optional data-plane persistence (vendor-neutral, partitioned NDJSON).
+        if _env_bool("ENABLE_PROPOSAL_STORE", "false"):
+            try:
+                FileProposalStore().write_proposals([raw])
+            except Exception as e:
+                _intent_log(
+                    "order_proposal",
+                    event="dataplane_write_failed",
+                    proposal_id=str(p.proposal_id),
+                    error=str(e),
+                    severity="WARNING",
+                )
 
         with audit_path.open("a", encoding="utf-8") as f:
             f.write(_json_line(raw) + "\n")
