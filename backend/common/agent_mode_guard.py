@@ -1,74 +1,54 @@
 """
-Runtime safety guard: refuse to start when AGENT_MODE=EXECUTE.
+Runtime safety guard for agent mode.
 
-Defense-in-depth requirement:
-- Container startup MUST fail closed if AGENT_MODE is missing/empty/invalid.
-- Allowed modes: OFF, OBSERVE, EVAL, PAPER
-- Forbidden mode: EXECUTE (hard stop)
-
-This guard is intentionally lightweight and side-effect free so it can be invoked
-at the very top of any entrypoint (including FastAPI startup hooks).
+Goal: hard-prevent any runtime from starting with AGENT_MODE=EXECUTE.
 """
 
 from __future__ import annotations
 
+import logging
 import os
-import sys
-from typing import Final
 
-AGENT_MODE_ENV: Final[str] = "AGENT_MODE"
-ALLOWED_AGENT_MODES: Final[set[str]] = {"OFF", "OBSERVE", "EVAL", "PAPER"}
-FORBIDDEN_MODE: Final[str] = "EXECUTE"
-_GUARD_RAN_ENV: Final[str] = "_AGENT_MODE_GUARD_RAN"
+_ALLOWED = {"OFF", "OBSERVE", "EVAL", "PAPER"}
+_logged_startup = False
 
 
-def _die(msg: str, *, code: int) -> "None":
-    print(msg, file=sys.stderr, flush=True)
-    raise SystemExit(code)
-
-
-def enforce_agent_mode_guard(*, env_var: str = AGENT_MODE_ENV) -> str:
+def enforce_agent_mode_guard() -> str:
     """
-    Enforce runtime agent mode policy.
+    Enforce that AGENT_MODE is explicitly set and is NOT EXECUTE.
 
-    Returns the normalized mode (uppercased) if allowed, otherwise exits.
+    Rules:
+    - Allowed: OFF, OBSERVE, EVAL, PAPER
+    - Missing/empty/unknown => exit(1)
+    - EXECUTE => exit(12)
+
+    Also emits exactly one startup log line:
+      "AGENT_STARTUP: mode=<MODE> execution_enabled=false"
     """
-    # Idempotent: if multiple entrypoints/modules call the guard, only the first
-    # invocation emits the canonical startup line.
-    if os.getenv(_GUARD_RAN_ENV) == "1":
-        raw = os.getenv(env_var)
-        return (str(raw).strip().upper() if raw is not None else "")
+    global _logged_startup
 
-    raw = os.getenv(env_var)
-    if raw is None or str(raw).strip() == "":
-        _die(
-            f"AGENT_MODE_GUARD: missing required env var {env_var}; refusing to start (fail-closed)",
-            code=11,
-        )
+    raw = os.getenv("AGENT_MODE")
+    mode = str(raw).strip().upper() if raw is not None else ""
+    mode_for_log = mode or "MISSING"
 
-    mode = str(raw).strip().upper()
-    if mode == FORBIDDEN_MODE:
-        _die(
-            "AGENT_MODE_GUARD: AGENT_MODE=EXECUTE is forbidden; refusing to start",
-            code=12,
-        )
+    if not _logged_startup:
+        # This line is intentionally stable and easy to grep in container logs.
+        print(f"AGENT_STARTUP: mode={mode_for_log} execution_enabled=false", flush=True)
+        _logged_startup = True
 
-    if mode not in ALLOWED_AGENT_MODES:
-        _die(
-            f"AGENT_MODE_GUARD: invalid AGENT_MODE={mode!r} (allowed={sorted(ALLOWED_AGENT_MODES)}); refusing to start",
-            code=13,
-        )
+    logger = logging.getLogger(__name__)
 
-    # Canonical startup line (single line, stable format).
-    print(f"AGENT_STARTUP: mode={mode} execution_enabled=false", flush=True)
-    os.environ[_GUARD_RAN_ENV] = "1"
+    if raw is None or mode == "":
+        logger.error("AGENT_MODE missing; refusing to start")
+        raise SystemExit(1)
+
+    if mode == "EXECUTE":
+        logger.critical("AGENT_MODE=EXECUTE is forbidden; refusing to start")
+        raise SystemExit(12)
+
+    if mode not in _ALLOWED:
+        logger.error("AGENT_MODE=%s not allowed (allowed=%s); refusing to start", mode, sorted(_ALLOWED))
+        raise SystemExit(1)
+
     return mode
-
-
-def main() -> None:
-    enforce_agent_mode_guard()
-
-
-if __name__ == "__main__":
-    main()
 

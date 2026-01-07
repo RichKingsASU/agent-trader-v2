@@ -7,6 +7,8 @@ metadata:
     app.kubernetes.io/name: whale-strategy
     app.kubernetes.io/component: strategy-runtime
     app.kubernetes.io/part-of: agenttrader-v2
+    app.kubernetes.io/version: "__IMAGE_TAG__"
+    app.kubernetes.io/commit: "__GIT_SHA__"
 spec:
   serviceName: "whale-strategy"
   replicas: 1
@@ -20,11 +22,8 @@ spec:
         app.kubernetes.io/name: whale-strategy
         app.kubernetes.io/component: strategy-runtime
         app.kubernetes.io/part-of: agenttrader-v2
-        git_sha: a2466ec
-        app.kubernetes.io/name: agenttrader
-        app.kubernetes.io/part-of: agent-trader-v2
-        app.kubernetes.io/version: 54afffe
-        git_sha: 54afffe
+        app.kubernetes.io/version: "__IMAGE_TAG__"
+        app.kubernetes.io/commit: "__GIT_SHA__"
       annotations:
         agenttrader.dev/git_sha: "__GIT_SHA__"
         agenttrader.dev/build_id: "__BUILD_ID__"
@@ -72,13 +71,17 @@ spec:
           - name: AGENT_ROLE
             value: "strategy_eval"
           - name: AGENT_MODE
-            value: "OFF"
+            value: "EVAL"
           - name: SERVICE_NAME
             value: "whale-strategy"
           - name: GIT_SHA
             valueFrom:
               fieldRef:
-                fieldPath: metadata.labels['git_sha']
+                fieldPath: metadata.labels['app.kubernetes.io/commit']
+          - name: IMAGE_TAG
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['app.kubernetes.io/version']
           - name: EXECUTION_HALTED
             valueFrom:
               configMapKeyRef:

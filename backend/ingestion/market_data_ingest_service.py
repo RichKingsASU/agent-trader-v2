@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.observability.ops_json_logger import OpsLogger
@@ -88,6 +89,8 @@ async def _startup() -> None:
     """
     level = os.getenv("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+    enforce_agent_mode_guard()
 
     configure_startup_logging(
         agent_name="market-ingest-service",

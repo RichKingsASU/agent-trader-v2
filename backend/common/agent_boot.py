@@ -9,7 +9,7 @@ Back-compat wrapper used by multiple services; delegates to:
 from __future__ import annotations
 
 import platform
-from typing import Any
+from typing import Any, Optional
 
 from backend.common.audit_logging import configure_audit_log_enrichment, set_correlation_id
 from backend.observability.agent_identity import get_runtime_metadata, require_identity_env
@@ -49,7 +49,7 @@ def configure_startup_logging(agent_name: str, intent: str) -> None:
     extra: dict[str, Any] = {
         "agent_version": ident.get("agent_version"),
         "python_version": platform.python_version(),
-        "platform": _safe_platform(),
+        "platform": platform.platform(),
         "runtime": get_runtime_metadata(),
     }
 

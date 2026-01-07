@@ -35,6 +35,7 @@ def _identity() -> dict[str, Any]:
 
 @app.on_event("startup")
 async def _startup() -> None:
+    enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="strategy-engine",
         intent="Serve strategy-engine health endpoints and run strategy cycles with fail-closed safety gating.",
