@@ -50,6 +50,7 @@ TRADING_BASE = (
 )
 DATA_BASE = "https://data.alpaca.markets"
 
+from backend.common.agent_boot import configure_startup_logging
 from backend.common.env import get_env
 
 # Keep consistent with other backend/streams scripts
@@ -525,6 +526,10 @@ def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
+    )
+    configure_startup_logging(
+        agent_name="options-window-ingest",
+        intent="Ingest an option snapshot window around ATM and upsert to Postgres.",
     )
 
     cfg = load_config()

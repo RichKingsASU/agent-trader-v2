@@ -24,6 +24,8 @@ IMAGE="$(image_ref "${PROJECT_ID}" "${REGION}" "${AR_REPO}" "${IMAGE_NAME}" "${I
 docker build -f "${DOCKERFILE}" -t "${IMAGE}" "${ROOT_DIR}"
 docker push "${IMAGE}"
 
+EFFECTIVE_GIT_SHA="${GIT_SHA:-${IMAGE_TAG}}"
+
 DEPLOY_ARGS=(
   run deploy "${SERVICE_NAME}"
   --project "${PROJECT_ID}"
@@ -38,6 +40,7 @@ DEPLOY_ARGS=(
   --min-instances 0
   --max-instances 10
 )
+DEPLOY_ARGS+=(--set-env-vars "GIT_SHA=${EFFECTIVE_GIT_SHA}")
 
 if [[ "${ALLOW_UNAUTHENTICATED}" == "1" ]]; then
   DEPLOY_ARGS+=(--allow-unauthenticated)

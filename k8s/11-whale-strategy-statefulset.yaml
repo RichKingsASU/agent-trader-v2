@@ -13,6 +13,7 @@ spec:
     metadata:
       labels:
         strategy: whale
+        git_sha: a2466ec
     spec:
       priorityClassName: high-priority
       serviceAccountName: trading-floor-sa

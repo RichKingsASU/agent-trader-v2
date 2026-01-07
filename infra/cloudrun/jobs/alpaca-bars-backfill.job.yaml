@@ -27,6 +27,9 @@ spec:
             containers:
               - name: alpaca-bars-backfill
                 image: REPLACE_ME_IMAGE
+                env:
+                  - name: GIT_SHA
+                    value: REPLACE_ME_GIT_SHA
                 command: ["python"]
                 args: ["-m", "backend.streams.alpaca_backfill_bars"]
 

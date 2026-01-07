@@ -3,6 +3,8 @@ import subprocess
 from datetime import date
 import argparse
 
+from backend.common.agent_boot import configure_startup_logging
+
 from .config import config
 from .models import fetch_recent_bars, fetch_recent_options_flow
 from .risk import (
@@ -90,6 +92,10 @@ async def run_strategy(execute: bool):
 
 
 if __name__ == "__main__":
+    configure_startup_logging(
+        agent_name="strategy-engine",
+        intent="Run the strategy engine loop (fetch data, decide, and optionally execute paper trades).",
+    )
     parser = argparse.ArgumentParser()
     parser.add_argument("--execute", action="store_true", help="Actually place paper trades.")
     args = parser.parse_args()
