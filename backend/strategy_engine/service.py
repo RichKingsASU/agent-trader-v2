@@ -7,7 +7,7 @@ _validate_or_exit("strategy-engine")
 
 from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
 
-_log_runtime_fingerprint(service="strategy-engine")
+_enforce_agent_mode_guard()
 
 import asyncio
 import os

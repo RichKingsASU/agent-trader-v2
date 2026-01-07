@@ -5,9 +5,7 @@ from backend.common.config_contract import validate_or_exit as _validate_or_exit
 # Fail-fast env contract validation (must run before other backend imports).
 _validate_or_exit("marketdata-mcp-server")
 
-from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
-
-_log_runtime_fingerprint(service="marketdata-mcp-server")
+_enforce_agent_mode_guard()
 
 import asyncio
 import os
