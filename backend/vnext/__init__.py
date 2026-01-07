@@ -1,6 +1,7 @@
 """
-vNEXT backend package.
+vNEXT backend modules.
 
-This namespace is reserved for forward-looking (vNEXT) modules and contracts.
+This package is intentionally small and interface-forward: new capabilities land
+here behind explicit contracts before integrating with production services.
 """
 
