@@ -1,12 +1,12 @@
-# Market Regime
+# Social Intelligence
 
 ## Intent
-Define interfaces and data shapes for detecting and tracking market regimes (trend, chop, volatility states) and exposing regime annotations to downstream vNEXT modules.
+Define interfaces for transforming social content streams into structured features (momentum, narrative clusters, influencer effects) with strong provenance and safety constraints.
 
 ## Non-goals (for this vNEXT skeleton)
-- Selecting a specific regime model/algorithm
-- Online inference wired into production loops
-- Backfilling or migrating existing regime logic
+- Scraping/social platform integrations
+- Real-time streaming consumers
+- Moderation policy enforcement implementation
 
 ## Deliverables in this module
 - `interfaces.py`: Contract-only placeholders (no runtime behavior).

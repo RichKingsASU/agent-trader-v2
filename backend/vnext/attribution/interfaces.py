@@ -1,4 +1,4 @@
-"""vNEXT Market Regime — interface contracts (placeholders only).
+"""vNEXT Attribution — interface contracts (placeholders only).
 
 This file intentionally contains *no runtime behavior*.
 Implementations will be defined later, in separate packages/modules.

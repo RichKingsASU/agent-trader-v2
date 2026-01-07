@@ -1,18 +1,17 @@
-## Stress Replay & Historical Simulation (vNEXT)
+# Stress & Replay
 
-This package defines **deterministic replay contracts** for stress testing strategies against historical inputs.
+## Intent
+Define the contract for deterministic replay and stress-testing scenarios (historical periods, synthetic shocks) with reproducible inputs/outputs.
 
-### Non-negotiables
+## Non-goals (for this vNEXT skeleton)
+- Running backtests or simulations
+- Reading/writing real market data stores
+- Scheduling or orchestration
 
-- **Same code paths as live**: replay must execute strategies through the same entrypoints used in production (only the clock + data sources are swapped for historical snapshots).
-- **No parameter tuning during replay**: replays must not mutate strategy parameters mid-run and must not accept per-run “optimization” overrides.
+## Deliverables in this module
+- `interfaces.py`: Contract-only placeholders (no runtime behavior).
+- `__init__.py`: Empty package marker.
 
-### Contracts
-
-Defined in `backend/vnext/stress_replay/interfaces.py`:
-
-- **`ReplayScenario`**: describes *what* is replayed (time window, immutable input references, determinism seed).
-- **`ReplayConfig`**: describes *how* it is replayed (determinism rails; explicitly disallows parameter tuning).
-- **`ReplayResult`**: describes *what* the run produced (status, metrics, artifact URIs, errors).
-- **`run_replay(strategy_id, scenario_id)`**: minimal interface exposed via `ReplayRunner`.
-
+## Constraints
+- No imports from existing live systems under `backend/`.
+- No execution logic, side effects, network calls, or persistence.
