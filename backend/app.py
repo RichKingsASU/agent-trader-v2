@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 import asyncio
 import os
-from datetime import datetime, timezone
+import json
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.observability.correlation import install_fastapi_correlation_middleware
@@ -30,7 +30,13 @@ async def read_root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service_id": "agenttrader-prod-streamer"}
+    return {"status": "healthy", "service_id": "agenttrader-prod-streamer", **get_build_fingerprint()}
+
+
+@app.get("/healthz")
+async def healthz_check():
+    # Alias for institutional conventions.
+    return await health_check()
 
 @app.get("/healthz")
 async def healthz():

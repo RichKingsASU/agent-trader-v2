@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from typing import Any
@@ -25,7 +26,13 @@ install_fastapi_correlation_middleware(app)
 async def health() -> dict[str, Any]:
     ingestor: MarketDataIngestor | None = getattr(app.state, "ingestor", None)
     stats = ingestor.stats.__dict__ if ingestor is not None else None
-    return {"status": "ok", "service": "market-ingest", "stats": stats}
+    return {"status": "ok", "service": "market-ingest", "stats": stats, **get_build_fingerprint()}
+
+
+@app.get("/healthz")
+async def healthz() -> dict[str, Any]:
+    # Alias for institutional conventions.
+    return await health()
 
 
 @app.on_event("startup")
@@ -43,6 +50,14 @@ async def _startup() -> None:
         agent_name="market-ingest-service",
         intent="Run market quote ingestion in background while serving health checks (Cloud Run service).",
     )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
 
     cfg = load_config_from_env()
     ingestor = MarketDataIngestor(cfg)

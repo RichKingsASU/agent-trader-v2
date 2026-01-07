@@ -1,20 +1,10 @@
 import asyncio
 from datetime import date
 import argparse
-import os
-from uuid import uuid4
+import json
 
 from backend.common.agent_boot import configure_startup_logging
-from backend.trading.proposals.emitter import emit_proposal
-from backend.trading.proposals.models import (
-    OrderProposal,
-    ProposalAssetType,
-    ProposalConstraints,
-    ProposalRationale,
-    ProposalSide,
-    ProposalOption,
-    OptionRight,
-)
+from backend.observability.build_fingerprint import get_build_fingerprint
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.observability.correlation import bind_correlation_id
@@ -169,6 +159,14 @@ if __name__ == "__main__":
         agent_name="strategy-engine",
         intent="Run the strategy engine loop (fetch data, decide, and emit non-executing order proposals).",
     )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--execute",

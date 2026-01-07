@@ -5,12 +5,13 @@ metadata:
   namespace: trading-floor
   labels:
     app: marketdata-mcp-server
-    git_sha: a2466ec
-    app.kubernetes.io/name: agenttrader
+    agenttrader.dev/repo_id: agent-trader-v2
     app.kubernetes.io/part-of: agent-trader-v2
-    app.kubernetes.io/component: mcp
-    app.kubernetes.io/instance: marketdata-mcp-server
-    version: v2
+    app.kubernetes.io/version: 54afffe
+    git_sha: 54afffe
+  annotations:
+    agenttrader.dev/git_sha: "__GIT_SHA__"
+    agenttrader.dev/build_id: "__BUILD_ID__"
 spec:
   replicas: 1
   selector:
@@ -20,12 +21,13 @@ spec:
     metadata:
       labels:
         app: marketdata-mcp-server
-        git_sha: a2466ec
-        app.kubernetes.io/name: agenttrader
+        agenttrader.dev/repo_id: agent-trader-v2
         app.kubernetes.io/part-of: agent-trader-v2
-        app.kubernetes.io/component: mcp
-        app.kubernetes.io/instance: marketdata-mcp-server
-        version: v2
+        app.kubernetes.io/version: 54afffe
+        git_sha: 54afffe
+      annotations:
+        agenttrader.dev/git_sha: "__GIT_SHA__"
+        agenttrader.dev/build_id: "__BUILD_ID__"
     spec:
       # Workload Identity (KSA->GSA) is wired via k8s/serviceaccounts/marketdata-mcp-server-ksa.yaml
       serviceAccountName: marketdata-mcp-server-ksa
@@ -97,11 +99,9 @@ metadata:
   name: marketdata-mcp-server
   namespace: trading-floor
   labels:
-    app.kubernetes.io/name: agenttrader
+    app: marketdata-mcp-server
+    agenttrader.dev/repo_id: agent-trader-v2
     app.kubernetes.io/part-of: agent-trader-v2
-    app.kubernetes.io/component: mcp
-    app.kubernetes.io/instance: marketdata-mcp-server
-    version: v2
 spec:
   selector:
     app: marketdata-mcp-server

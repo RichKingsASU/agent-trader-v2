@@ -7,6 +7,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONPATH=/app
 
+# Build fingerprint (baked into image; can be overridden at deploy-time).
+ARG GIT_SHA=unknown
+ARG BUILD_ID=unknown
+ARG BUILD_TIME_UTC=unknown
+ARG IMAGE_REF=unknown
+ENV GIT_SHA=$GIT_SHA \
+    BUILD_ID=$BUILD_ID \
+    BUILD_TIME_UTC=$BUILD_TIME_UTC \
+    IMAGE_REF=$IMAGE_REF
+
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
 
 # Copy requirements and install Python dependencies
