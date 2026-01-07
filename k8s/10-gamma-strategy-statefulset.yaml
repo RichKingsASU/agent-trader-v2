@@ -3,6 +3,12 @@ kind: StatefulSet
 metadata:
   name: gamma-strategy
   namespace: trading-floor
+  labels:
+    app.kubernetes.io/name: agenttrader
+    app.kubernetes.io/part-of: agent-trader-v2
+    app.kubernetes.io/component: strategy
+    app.kubernetes.io/instance: gamma-strategy
+    version: v2
 spec:
   serviceName: "gamma-strategy"
   replicas: 1
@@ -14,9 +20,15 @@ spec:
       labels:
         strategy: gamma
         git_sha: a2466ec
+        app.kubernetes.io/name: agenttrader
+        app.kubernetes.io/part-of: agent-trader-v2
+        app.kubernetes.io/component: strategy
+        app.kubernetes.io/instance: gamma-strategy
+        version: v2
     spec:
       priorityClassName: high-priority
-      serviceAccountName: trading-floor-sa
+      # Workload Identity (KSA->GSA) is wired via k8s/serviceaccounts/strategy-engine-ksa.yaml
+      serviceAccountName: strategy-engine-ksa
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
