@@ -1,0 +1,26 @@
+strategy_id: whale
+strategy_name: Whale Flow Monitor
+strategy_type: whale
+
+enabled: false
+mode: EVAL_ONLY
+
+symbols: ["SPY", "IWM"]
+
+parameters:
+  flow_lookback_minutes: 10
+  min_premium_usd: 250000
+  note: "Signals only; execution remains gated."
+
+risk:
+  max_notional_per_trade: 0
+  max_trades_per_day: 0
+
+version:
+  config_version: 1
+
+approvals:
+  requires_human_approval: true
+  approved_by: null
+  approved_at_utc: null
+

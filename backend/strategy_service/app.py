@@ -3,34 +3,14 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import strategies, broker_accounts, paper_orders, trades
+from .routers import strategies, broker_accounts, paper_orders, trades, strategy_configs
 
-from backend.common.agent_boot import configure_startup_logging
 from backend.common.kill_switch import get_kill_switch_state
+from backend.common.agent_boot import configure_startup_logging
+from backend.strategies.registry.loader import load_all_configs
 
 app = FastAPI(title="AgentTrader Strategy Service")
 install_fastapi_correlation_middleware(app)
-
-install_http_correlation(app, service="strategy-service")
-
-    enabled, source = get_kill_switch_state()
-    if enabled:
-        # Non-execution service: keep serving, but make it visible in logs.
-        logger.warning("kill_switch_active enabled=true source=%s", source)
-
-
-@app.get("/healthz")
-def healthz() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.get("/readyz")
-def readyz() -> dict[str, str]:
-    return {"status": "ok"}
-
-@app.get("/ops/status")
-def ops_status() -> dict[str, str]:
-    return {"status": "ok", "service": "strategy-service"}
 
 # Enable CORS for frontend
 app.add_middleware(
@@ -45,6 +25,23 @@ app.include_router(strategies.router)
 app.include_router(broker_accounts.router)
 app.include_router(paper_orders.router)
 app.include_router(trades.router)
+app.include_router(strategy_configs.router)
+
+@app.on_event("startup")
+def _startup() -> None:
+    # Identity/intent log (single JSON line).
+    configure_startup_logging(
+        agent_name="strategy-service",
+        intent="Serve strategy management APIs + read-only strategy config registry endpoints.",
+    )
+
+    # Load registry at startup so we fail-fast on invalid/duplicate configs.
+    app.state.strategy_config_registry = load_all_configs()
+
+    enabled, source = get_kill_switch_state()
+    if enabled:
+        # Non-execution service: keep serving, but make it visible in logs.
+        logger.warning("kill_switch_active enabled=true source=%s", source)
 
 # Include institutional analytics router
 try:

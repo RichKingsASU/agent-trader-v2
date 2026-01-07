@@ -1,0 +1,29 @@
+strategy_id: gamma
+strategy_name: Gamma Scalper (0DTE)
+strategy_type: gamma
+
+# Safe-by-default:
+enabled: false
+mode: EVAL_ONLY
+
+# Defaults to ["SPY","IWM"] if omitted
+symbols: ["SPY"]
+
+parameters:
+  bar_lookback_minutes: 30
+  flow_lookback_minutes: 5
+  note: "Evaluation-only until explicitly enabled."
+
+risk:
+  max_notional_per_trade: 0
+  max_trades_per_day: 0
+
+version:
+  config_version: 1
+  # git_sha is injected at load time when available
+
+approvals:
+  requires_human_approval: true
+  approved_by: null
+  approved_at_utc: null
+
