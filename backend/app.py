@@ -1,4 +1,8 @@
-from __future__ import annotations
+from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+
+from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+
+_log_runtime_fingerprint(service="marketdata-mcp-server")
 
 import asyncio
 import os
@@ -53,8 +57,11 @@ async def startup_event() -> None:
 
     app.state.loop_task = asyncio.create_task(_loop_heartbeat())
 
+    # Readiness tracking: only become ready once the streamer has configured subscriptions.
+    app.state.streamer_ready_event = asyncio.Event()
+
     print("Starting Alpaca streamer...", flush=True)
-    stream_task: asyncio.Task = asyncio.create_task(alpaca_streamer_main())
+    stream_task: asyncio.Task = asyncio.create_task(alpaca_streamer_main(app.state.streamer_ready_event))
     app.state.stream_task = stream_task
 
     def _done_callback(t: asyncio.Task) -> None:
@@ -83,15 +90,16 @@ async def startup_event() -> None:
 async def shutdown_event() -> None:
     app.state.shutting_down = True
     try:
-        print(f"shutdown_intent service={_service_name()}", flush=True)
+        print(f"SHUTDOWN_INITIATED: {_service_name()}", flush=True)
     except Exception:
         pass
 
     # Stop background tasks.
     stream_task: asyncio.Task | None = getattr(app.state, "stream_task", None)
     loop_task: asyncio.Task | None = getattr(app.state, "loop_task", None)
+    ready_task: asyncio.Task | None = getattr(app.state, "ready_task", None)
 
-    for t in (stream_task, loop_task):
+    for t in (ready_task, stream_task, loop_task):
         if t is None:
             continue
         try:
@@ -99,7 +107,7 @@ async def shutdown_event() -> None:
         except Exception:
             pass
 
-    for t in (stream_task, loop_task):
+    for t in (ready_task, stream_task, loop_task):
         if t is None:
             continue
         try:
@@ -136,13 +144,7 @@ async def livez(response: Response) -> dict[str, Any]:
     loop_ok = (now - last) <= max_age_s
     ok = loop_ok and (not shutting_down) and stream_ok
     response.status_code = 200 if ok else 503
-    return {
-        "status": "alive" if ok else ("stream_dead" if not stream_ok else "wedged"),
-        "service": _service_name(),
-        "loop_heartbeat_age_s": max(0.0, now - last),
-        "max_age_s": max_age_s,
-        "stream_task_alive": bool(stream_ok),
-    }
+    return {"status": "ok" if ok else ("stream_dead" if not stream_ok else "wedged")}
 
 
 @app.get("/readyz")

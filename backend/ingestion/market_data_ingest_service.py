@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+
+_log_runtime_fingerprint(service="market-ingest")
+
 import asyncio
 import json
 import logging
@@ -132,7 +136,7 @@ async def _startup() -> None:
 async def _shutdown() -> None:
     app.state.shutting_down = True
     try:
-        print("shutdown_intent service=market-ingest", flush=True)
+        print("SHUTDOWN_INITIATED: market-ingest", flush=True)
     except Exception:
         pass
     ingestor: MarketDataIngestor | None = getattr(app.state, "ingestor", None)

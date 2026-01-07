@@ -1,6 +1,11 @@
+from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+
+_log_runtime_fingerprint(service="stream-bridge")
+
 import asyncio
 import json
 import logging
+import signal
 from .config import load_config
 from .firestore_writer import FirestoreWriter
 from .streams.price_stream_client import PriceStreamClient
@@ -39,9 +44,38 @@ async def main():
     ]
 
     try:
+        loop = asyncio.get_running_loop()
+
+        def _initiate_shutdown() -> None:
+            try:
+                print("SHUTDOWN_INITIATED: stream-bridge", flush=True)
+            except Exception:
+                pass
+            for t in tasks:
+                try:
+                    t.cancel()
+                except Exception:
+                    pass
+
+        for s in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(s, _initiate_shutdown)
+            except NotImplementedError:
+                signal.signal(s, lambda *_args: _initiate_shutdown())
+
         await asyncio.gather(*tasks)
-    except KeyboardInterrupt:
-        logger.info("Stream Bridge service stopping.")
+    except asyncio.CancelledError:
+        pass
+    finally:
+        for t in tasks:
+            if t.done():
+                continue
+            try:
+                t.cancel()
+            except Exception:
+                pass
+        await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info("Stream Bridge service stopped.")
 
 if __name__ == "__main__":
     try:

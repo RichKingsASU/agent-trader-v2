@@ -49,6 +49,13 @@ def evaluate_startup_gate(env: Mapping[str, str]) -> tuple[bool, list[str]]:
     elif broker_enabled != "false":
         reason_codes.append("BROKER_EXECUTION_ENABLED_not_false")
 
+    # Repo-level "fail fast if unsafe": execution must be explicitly disabled.
+    execution_enabled = _env(env, "EXECUTION_ENABLED")
+    if execution_enabled is None:
+        reason_codes.append("EXECUTION_ENABLED_missing")
+    elif execution_enabled != "false":
+        reason_codes.append("EXECUTION_ENABLED_not_false")
+
     return (len(reason_codes) == 0, reason_codes)
 
 
@@ -67,6 +74,7 @@ def refuse_startup(*, reason_codes: list[str]) -> NoReturn:
             "AGENT_MODE": "EXECUTE",
             "EXECUTION_AGENT_ENABLED": "true",
             "BROKER_EXECUTION_ENABLED": "false",
+            "EXECUTION_ENABLED": "false",
         },
     }
     print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
