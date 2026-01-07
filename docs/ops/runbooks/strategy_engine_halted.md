@@ -1,38 +1,55 @@
-# Runbook: Strategy engine halted / refusing to run
+## Runbook — Strategy engine halted/unhealthy
 
-## Safety posture
+### Symptoms
 
-- Strategies must remain **observe-only** (produce proposals, not executions).
-- If marketdata is stale, the correct behavior is to refuse to run.
+- Alert fires: **“Strategy engine halted/unhealthy (critical)”**
+- `strategy_cycles_total` stops increasing
+- `/ops/status` may show old `last_cycle_at` / high `last_cycle_age_seconds`
 
-## Symptoms
+### Immediate checks
 
-- Strategy pods are running but not producing expected outputs
-- Logs contain “Refusing to run: marketdata_stale” or repeated dependency errors
-- Pods restart frequently
+```bash
+NAMESPACE=trading-floor
 
-## Likely causes
+# gamma
+kubectl -n "$NAMESPACE" get pods -l strategy=gamma -o wide
+kubectl -n "$NAMESPACE" logs -l strategy=gamma --tail=200
 
-- Marketdata stale (`docs/ops/runbooks/marketdata_stale.md`)
-- Kill-switch is active (expected default posture) and strategy code treats it as “halt strategy”
-- Missing env vars / misconfigured config
-- Downstream persistence unavailable (Firestore/DB) causing crashes
+POD_GAMMA="$(kubectl -n "$NAMESPACE" get pods -l strategy=gamma -o jsonpath='{.items[0].metadata.name}')"
+kubectl -n "$NAMESPACE" exec "$POD_GAMMA" -- python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/ops/status').read().decode())"
+kubectl -n "$NAMESPACE" exec "$POD_GAMMA" -- python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/metrics').read().decode()[:800])"
 
-## Immediate actions (safe)
+# whale (if deployed)
+kubectl -n "$NAMESPACE" get pods -l strategy=whale -o wide
+kubectl -n "$NAMESPACE" logs -l strategy=whale --tail=200
+```
 
-1. **Capture artifacts**
-   - Run `./scripts/ops_pre_market.sh` and attach `audit_artifacts/ops_runs/*`.
-2. **Check marketdata first**
-   - Verify `curl "$MARKETDATA_HEALTH_URL"` returns 200.
-3. **Check pod state + events**
-   - `kubectl -n trading-floor get pods -l app.kubernetes.io/component=strategy`
-   - `kubectl -n trading-floor get events --sort-by=.lastTimestamp | tail -n 50`
-4. **Inspect strategy logs**
-   - `kubectl -n trading-floor logs statefulset/gamma-strategy --tail=200` (and whale)
+### Likely causes
 
-## Verification (done when…)
+- Crashloop (unhandled exception, missing env/config, dependency failure)
+- Downstream dependency failures (DB, Firestore, marketdata)
+- Kill switch enabled (should prevent execution; may be intentional)
+- Resource starvation (OOMKills / CPU throttling)
 
-- Strategy runtime is stable (no CrashLoopBackOff)
-- Marketdata is healthy
-- Strategy outputs resume (proposal artifacts/log markers appear)
+### Safe remediation steps (safety posture)
+
+- **Confirm kill switch state**:
+  - If the kill switch is enabled intentionally, the system is in a safe posture; focus on restoring inputs and only then consider clearing it via your standard ops process.
+
+- **Restart the strategy pod** (safe; does not enable execution by itself):
+
+```bash
+NAMESPACE=trading-floor
+kubectl -n "$NAMESPACE" rollout restart statefulset/gamma-strategy
+kubectl -n "$NAMESPACE" rollout status statefulset/gamma-strategy --timeout=5m
+```
+
+- **If it’s a config/env regression**:
+  - roll back the workload image tag to the last known-good build using your deployment pipeline
+
+### Verification
+
+- `/ops/status` shows recent `last_cycle_at`
+- `strategy_cycles_total` increases over time
+- `strategy_cycles_skipped_total` does not spike
 

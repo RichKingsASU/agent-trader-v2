@@ -1,6 +1,6 @@
-# Ops (AgentTrader v2)
+# Ops Docs (AgentTrader v2)
 
-This folder contains the operational documentation for running AgentTrader v2 safely in autonomous **observe-only** mode.
+## Blueprint (auto-generated)
 
 **Default post-lock operational mode**: `docs/ops/day1_ops.md` (Day 1 Ops Playbook).
 
@@ -14,12 +14,9 @@ This folder contains the operational documentation for running AgentTrader v2 sa
 - **Deploy guardrails (stub)**: `docs/ops/deploy_guardrails.md`
 - **Disaster recovery plan (stub)**: `docs/ops/dr_plan.md`
 
-## Quick commands (read-only)
-
-- Pre-market snapshot:
-  - `./scripts/ops_pre_market.sh`
-- Post-market snapshot:
-  - `./scripts/ops_post_market.sh`
+This produces:
+- `docs/BLUEPRINT.md`
+- `audit_artifacts/blueprints/BLUEPRINT_<YYYYMMDD_HHMM>.md`
 
 ## Safety reminders
 

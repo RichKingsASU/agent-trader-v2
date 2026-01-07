@@ -5,3 +5,6 @@
 -r backend/requirements.txt
 -r functions/requirements.txt
 
+# Test runner (repo uses pytest in /tests)
+pytest>=8.3.0
+

@@ -1,38 +1,49 @@
-# Runbook: Marketdata stale (`/healthz` = 503)
+## Runbook — Marketdata stale
 
-## Safety posture
+### Symptoms
 
-- Treat stale/unreachable marketdata as **hard-stop** for strategy execution and any execution pathways.
-- Do **not** change `EXECUTION_HALTED` from automation.
+- Alert fires: **“Marketdata stale (warning)”**
+- `heartbeat_age_seconds` rises steadily and stays above threshold
+- Strategy components may move into DEGRADED behavior (or stop proposing actions)
 
-## Symptoms
+### Immediate checks
 
-- `curl $MARKETDATA_HEALTH_URL` returns **503**
-- Response shows `ok=false` or `age_seconds > max_age_seconds`
-- Strategy logs show “Refusing to run: marketdata_stale”
+```bash
+NAMESPACE=trading-floor
 
-## Likely causes
+kubectl -n "$NAMESPACE" get pods -l app=marketdata-mcp-server -o wide
+kubectl -n "$NAMESPACE" logs -l app=marketdata-mcp-server --tail=200
 
-- Upstream broker feed outage / credentials invalid
-- Marketdata streamer crash / crash loop
-- Network/DNS issues between consumers and marketdata service
-- Time skew / incorrect threshold (`MARKETDATA_MAX_AGE_SECONDS`)
+# In-pod endpoint checks (no curl required)
+POD="$(kubectl -n "$NAMESPACE" get pods -l app=marketdata-mcp-server -o jsonpath='{.items[0].metadata.name}')"
+kubectl -n "$NAMESPACE" exec "$POD" -- python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/ops/status').read().decode())"
+kubectl -n "$NAMESPACE" exec "$POD" -- python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/metrics').read().decode()[:800])"
+```
 
-## Immediate actions (safe)
+### Likely causes
 
-1. **Capture artifacts**
-   - Run `./scripts/ops_pre_market.sh` (or `./scripts/ops_post_market.sh`) and save the generated run directory.
-2. **Verify service health locally**
-   - `curl -i "$MARKETDATA_HEALTH_URL"`
-   - If in k8s, also check pods and recent events.
-3. **Inspect marketdata logs**
-   - In k8s: `kubectl -n trading-floor logs deploy/marketdata-mcp-server --tail=200`
-4. **Validate credentials wiring**
-   - Confirm secrets are mounted and files exist (do not print secret contents).
+- Alpaca stream disconnected / auth failures / upstream outage
+- Networking/DNS issues in cluster
+- DB errors causing handler slowdown (writes blocking)
+- Resource pressure (CPU throttling / memory pressure)
 
-## Verification (done when…)
+### Safe remediation steps (non-execution)
 
-- `GET /healthz` returns **200** with `ok=true`
-- `age_seconds <= max_age_seconds`
-- Strategy runtime resumes normal observe-only behavior (no repeated refusals)
+- **Restart the marketdata pod** (safe; does not enable execution):
+
+```bash
+NAMESPACE=trading-floor
+kubectl -n "$NAMESPACE" rollout restart deploy/marketdata-mcp-server
+kubectl -n "$NAMESPACE" rollout status deploy/marketdata-mcp-server --timeout=5m
+```
+
+- **Check credentials/config** (do not print secrets):
+  - ensure required env vars exist (API keys via secret, DB URL, etc.)
+  - confirm any kill-switch config is present (it should *not* affect marketdata collection, but may indicate broader incident)
+
+### Verification
+
+- `heartbeat_age_seconds` returns to a low steady value
+- `marketdata_ticks_total` increases over time
+- `/health`, `/ops/status`, and `/metrics` respond from inside the pod
 

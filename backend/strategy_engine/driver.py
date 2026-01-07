@@ -2,11 +2,21 @@ import asyncio
 from datetime import date
 import argparse
 import os
+from datetime import datetime, timezone
 
 from backend.common.agent_boot import configure_startup_logging
-from backend.strategies.registry.loader import load_config
-from backend.strategies.registry.validator import compute_effective_mode
-from backend.strategies.registry.models import StrategyMode
+from backend.common.kill_switch import get_kill_switch_state, require_live_mode
+from backend.common.ops_http_server import OpsHttpServer
+from backend.common.ops_log import log_json
+from backend.common.ops_metrics import (
+    agent_start_total,
+    errors_total,
+    mark_activity,
+    order_proposals_total,
+    safety_halted_total,
+    strategy_cycles_skipped_total,
+    strategy_cycles_total,
+)
 
 from .config import config
 from .models import fetch_recent_bars, fetch_recent_options_flow
@@ -17,53 +27,29 @@ from .risk import (
 )
 from .strategies.naive_flow_trend import make_decision
 
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+_last_cycle_at_iso: str | None = None
 
 
-def _parse_iso_dt(value: Any) -> datetime | None:
-    if not value:
-        return None
-    if isinstance(value, datetime):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
-    if isinstance(value, str):
-        s = value.strip()
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(s)
-            return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
-        except Exception:
-            return None
-    return None
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-async def _fetch_marketdata_heartbeat() -> dict[str, Any]:
-    """
-    Fetches the marketdata heartbeat from marketdata-mcp-server.
-    Fail-closed: errors are surfaced via missing last_marketdata_ts.
-    """
-    url = str(os.getenv("MARKETDATA_HEARTBEAT_URL") or "http://marketdata-mcp-server/heartbeat").strip()
-    timeout_s = float(os.getenv("MARKETDATA_HEARTBEAT_TIMEOUT_S") or "1.5")
+def _status_payload() -> dict[str, object]:
+    enabled, source = get_kill_switch_state()
+    age = None
     try:
-        import httpx
+        # "strategy-engine" activity is marked per symbol evaluation.
+        from backend.common.ops_metrics import activity_age_seconds
 
-        async with httpx.AsyncClient(timeout=timeout_s) as client:
-            resp = await client.get(url)
-            # Even if global kill-switch is enabled, heartbeat should be readable (200).
-            data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-            return {"ok": resp.status_code == 200, "url": url, "status_code": resp.status_code, "data": data}
-    except Exception as e:
-        return {"ok": False, "url": url, "error": str(e), "data": {}}
-
-
-def _log_intent(event: dict[str, Any]) -> None:
-    try:
-        print(json.dumps(event, separators=(",", ":"), ensure_ascii=False))
+        age = activity_age_seconds("strategy-engine")
     except Exception:
-        # Best-effort, never crash strategy loop on logging.
-        pass
+        age = None
+    return {
+        "kill_switch_enabled": bool(enabled),
+        "kill_switch_source": source,
+        "last_cycle_at": _last_cycle_at_iso,
+        "last_cycle_age_seconds": age,
+    }
 
 
 async def run_strategy(execute: bool):
@@ -87,10 +73,65 @@ async def run_strategy(execute: bool):
     repo_id = os.getenv("REPO_ID") or "RichKingsASU/agent-trader-v2"
     proposal_ttl_minutes = int(os.getenv("PROPOSAL_TTL_MINUTES") or "5")
     
-    print(
-        f"Running strategy '{cfg.strategy_id}' for {today} "
-        f"(requested_mode={cfg.mode.value} effective_mode={effective_mode.value})..."
-    )
+    print(f"Running strategy '{config.STRATEGY_NAME}' for {today}...")
+    emitted_any = False
+
+    for symbol in config.STRATEGY_SYMBOLS:
+        # A "cycle" is one symbol evaluation.
+        strategy_cycles_total.inc(1.0)
+        mark_activity("strategy-engine")
+        global _last_cycle_at_iso
+        _last_cycle_at_iso = _utc_now_iso()
+
+        print(f"Processing symbol: {symbol}")
+
+        try:
+            bars = await fetch_recent_bars(symbol, config.STRATEGY_BAR_LOOKBACK_MINUTES)
+            flow_events = await fetch_recent_options_flow(symbol, config.STRATEGY_FLOW_LOOKBACK_MINUTES)
+        except Exception as e:
+            # Skip this cycle on internal failures (SLO-aligned).
+            strategy_cycles_skipped_total.inc(1.0)
+            errors_total.inc(labels={"component": "strategy-engine"})
+            print(f"  Cycle skipped due to error: {type(e).__name__}: {e}")
+            try:
+                log_json(
+                    intent_type="strategy_cycle_skipped",
+                    severity="ERROR",
+                    reason_codes=["internal_error"],
+                    error_type=type(e).__name__,
+                    error=str(e),
+                    symbol=symbol,
+                    strategy=config.STRATEGY_NAME,
+                )
+            except Exception:
+                pass
+            continue
+
+        decision = make_decision(bars, flow_events)
+        action = decision.get("action")
+
+        if action == "flat":
+            await log_decision(strategy_id, symbol, "flat", decision["reason"], decision["signal_payload"], False)
+            print(f"  Decision: flat. Reason: {decision['reason']}")
+            continue
+        else:
+            # We proposed an order (even if later blocked by risk / kill switch).
+            order_proposals_total.inc(1.0)
+            try:
+                log_json(
+                    intent_type="order_proposal",
+                    severity="INFO",
+                    symbol=symbol,
+                    action=action,
+                    strategy=config.STRATEGY_NAME,
+                    reason=decision.get("reason"),
+                )
+            except Exception:
+                pass
+
+        # Calculate notional
+        last_price = bars[0].close if bars else 0
+        notional = last_price * decision.get("size", 0)
 
     bar_lookback = int(cfg.parameters.get("bar_lookback_minutes", config.STRATEGY_BAR_LOOKBACK_MINUTES))
     flow_lookback = int(cfg.parameters.get("flow_lookback_minutes", config.STRATEGY_FLOW_LOOKBACK_MINUTES))
@@ -173,8 +214,35 @@ async def run_strategy(execute: bool):
             
         print(f"  Decision: {action}. Reason: {decision['reason']}")
 
-        can_execute = bool(execute) and effective_mode == StrategyMode.EXECUTE
-        if can_execute:
+        if execute:
+            # Never execute if the global kill switch is active.
+            try:
+                require_live_mode(operation="paper trade execution")
+            except Exception as e:
+                safety_halted_total.inc(1.0)
+                print(f"  Safety halt: refusing execution due to kill switch: {e}")
+                await log_decision(
+                    strategy_id,
+                    symbol,
+                    action,
+                    f"Safety halt: {e}",
+                    decision["signal_payload"],
+                    False,
+                )
+                try:
+                    log_json(
+                        intent_type="safety_halt",
+                        severity="WARNING",
+                        reason_codes=["kill_switch_enabled"],
+                        symbol=symbol,
+                        action=action,
+                        strategy=config.STRATEGY_NAME,
+                        error=str(e),
+                    )
+                except Exception:
+                    pass
+                continue
+
             print(f"  Executing {action} order for 1 {symbol}...")
             # Call the existing paper trade script
             process = subprocess.run(
@@ -221,14 +289,18 @@ if __name__ == "__main__":
         agent_name="strategy-engine",
         intent="Run the strategy engine loop (fetch data, decide); enforce global kill-switch and stale-marketdata gating.",
     )
+    agent_start_total.inc(labels={"component": "strategy-engine"})
+
+    # Expose /ops/status and /metrics on the same PORT contract as other services.
+    # Note: this is intentionally tiny (stdlib) to keep the strategy runtime lean.
+    port = int(os.getenv("PORT", "8080"))
+    srv = OpsHttpServer(host="0.0.0.0", port=port, service_name="strategy-engine", status_fn=_status_payload)
     try:
-        fp = get_build_fingerprint()
-        print(
-            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
-            flush=True,
-        )
-    except Exception:
-        pass
+        srv.start()
+    except Exception as e:
+        errors_total.inc(labels={"component": "strategy-engine"})
+        print(f"[strategy-engine] ops_http_server_failed: {type(e).__name__}: {e}", flush=True)
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--execute",
@@ -239,5 +311,11 @@ if __name__ == "__main__":
 
     try:
         asyncio.run(run_strategy(args.execute))
-    except MarketDataStaleError:
-        raise SystemExit(2)
+    except Exception as e:
+        errors_total.inc(labels={"component": "strategy-engine"})
+        raise
+    finally:
+        try:
+            srv.stop()
+        except Exception:
+            pass
