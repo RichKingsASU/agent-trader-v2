@@ -13,14 +13,9 @@ This produces:
 - `docs/BLUEPRINT.md`
 - `audit_artifacts/blueprints/BLUEPRINT_<YYYYMMDD_HHMM>.md`
 
-## Related references (repo-wide)
+## Safety reminders
 
-- **Kill switch operations**: `docs/KILL_SWITCH.md`
-- **GCP deployment guide**: `docs/DEPLOY_GCP.md`
-- **Deploy script (includes guardrails)**: `scripts/deploy_v2.sh`
-
-## Optional docs (link here if/when added)
-
-- `deploy_guardrails.md` (not currently present)
-- `disaster_recovery.md` (not currently present)
+- Kill-switch defaults to **HALTED** in k8s: `k8s/05-kill-switch-configmap.yaml`
+- Marketdata freshness must gate strategies/execution: `docs/MARKETDATA_HEALTH_CONTRACT.md`
+- Execution remains **disabled** by default (do not enable in automation).
 

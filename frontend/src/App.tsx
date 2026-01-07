@@ -20,6 +20,9 @@ import Allocation from "./pages/Allocation";
 import NotFound from "./pages/NotFound";
 import Landing from "./pages/Landing";
 import Backtesting from "./pages/Backtesting";
+import Analytics from "./pages/Analytics";
+import WhaleFlow from "./pages/WhaleFlow";
+import BacktestDashboard from "./pages/BacktestDashboard";
 
 import LovableDashboardPage from "./pages/lovable/DashboardPage";
 import LovableDeveloperPage from "./pages/lovable/DeveloperPage";

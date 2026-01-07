@@ -129,6 +129,21 @@ def healthz() -> dict[str, Any]:
     # Alias for institutional conventions.
     return health()
 
+@app.get("/healthz")
+def healthz() -> dict[str, Any]:
+    # Alias for Kubernetes probes.
+    return health()
+
+
+@app.get("/readyz")
+def readyz() -> dict[str, Any]:
+    # Readiness is equivalent to health for this API (no external calls).
+    return {"status": "ok"}
+
+@app.get("/ops/status")
+def ops_status() -> dict[str, Any]:
+    return {"status": "ok", "service": "execution-engine"}
+
 
 @app.get("/ops/status")
 def ops_status() -> dict[str, Any]:

@@ -1,0 +1,13 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agenttrader-v2-default-deny-ingress
+  namespace: trading-floor
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: agenttrader-v2
+  policyTypes:
+    - Ingress
+  ingress: []
+
