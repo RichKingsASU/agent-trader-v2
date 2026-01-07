@@ -24,3 +24,11 @@ This produces:
 - Marketdata freshness must gate strategies/execution: `docs/MARKETDATA_HEALTH_CONTRACT.md`
 - Execution remains **disabled** by default (do not enable in automation).
 
+## vNEXT: repo-wide non-invasive confirmation
+
+A repo-wide scan shows **no vNEXT-labeled runtime code** (outside vendored dependencies), so vNEXT introduces:
+- no imports from live-trading execution code
+- no side effects
+- no background threads
+- no network calls
+
