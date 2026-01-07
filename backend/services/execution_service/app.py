@@ -25,6 +25,7 @@ from backend.execution.engine import (
     OrderIntent,
     RiskManager,
 )
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.vertex_ai import init_vertex_ai_or_log
 from backend.execution.marketdata_health import check_market_ingest_heartbeat
@@ -91,6 +92,7 @@ install_fastapi_correlation_middleware(app)
 
 @app.on_event("startup")
 def _startup() -> None:
+    enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="execution-engine",
         intent="Serve the execution API; validate config and execute broker order intents.",

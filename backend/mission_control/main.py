@@ -16,6 +16,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
+
 AGENT_KIND = Literal["marketdata", "strategy", "execution", "ingest"]
 CRITICALITY = Literal["critical", "important", "optional"]
 
@@ -364,6 +366,7 @@ def _agent_detail(cfg: AgentConfig, st: Optional[AgentRuntimeStatus]) -> dict[st
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    enforce_agent_mode_guard()
     agents_path = os.getenv("AGENTS_CONFIG_PATH", "/app/configs/agents/agents.yaml")
     poll_interval_s = float(os.getenv("POLL_INTERVAL_SECONDS", "10"))
     per_agent_timeout_s = float(os.getenv("PER_AGENT_TIMEOUT_SECONDS", "1.5"))

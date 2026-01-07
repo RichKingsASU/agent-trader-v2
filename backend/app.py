@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.http_correlation import install_http_correlation
 from backend.common.ops_metrics import (
     REGISTRY,
@@ -89,6 +90,7 @@ def _status_payload() -> tuple[str, dict[str, Any]]:
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="marketdata-mcp-server",
         intent="Serve marketdata MCP endpoints and run the Alpaca streamer background task.",
