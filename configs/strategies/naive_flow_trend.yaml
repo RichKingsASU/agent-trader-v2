@@ -1,0 +1,25 @@
+strategy_id: naive_flow_trend
+strategy_name: Naive Flow Trend
+strategy_type: utbot
+
+enabled: false
+mode: EVAL_ONLY
+
+symbols: ["SPY", "IWM", "QQQ"]
+
+parameters:
+  bar_lookback_minutes: 30
+  flow_lookback_minutes: 5
+
+risk:
+  max_notional_per_trade: 0
+  max_trades_per_day: 0
+
+version:
+  config_version: 1
+
+approvals:
+  requires_human_approval: true
+  approved_by: null
+  approved_at_utc: null
+

@@ -1,18 +1,12 @@
 import asyncio
 from datetime import date
 import argparse
-import json
 import os
-from datetime import datetime, timezone
-from typing import Any
 
 from backend.common.agent_boot import configure_startup_logging
-from backend.safety.config import load_kill_switch, load_stale_threshold_seconds
-from backend.safety.safety_state import evaluate_safety_state, is_safe_to_run_strategies
-
-from backend.common.agent_boot import configure_startup_logging
-from backend.observability.correlation import bind_correlation_id
-from backend.observability.logger import intent_start, intent_end, log_event
+from backend.strategies.registry.loader import load_config
+from backend.strategies.registry.validator import compute_effective_mode
+from backend.strategies.registry.models import StrategyMode
 
 from .config import config
 from .models import fetch_recent_bars, fetch_recent_options_flow
@@ -76,58 +70,48 @@ async def run_strategy(execute: bool):
     """
     Main function to run the strategy engine.
     """
-    # --- Preflight safety checks (fail-closed) ---
-    kill = load_kill_switch()
-    threshold = load_stale_threshold_seconds()
-    hb = await _fetch_marketdata_heartbeat()
-    last_ts = _parse_iso_dt((hb.get("data") or {}).get("last_marketdata_ts"))
+    # Load strategy config from the repo-native registry (safe-by-default).
+    # Back-compat: default strategy_id to STRATEGY_NAME.
+    requested_id = (os.getenv("STRATEGY_ID") or config.STRATEGY_NAME).strip()
+    cfg = load_config(requested_id)
+    effective_mode = compute_effective_mode(cfg)
 
-    state = evaluate_safety_state(
-        trading_enabled=True,
-        kill_switch=kill,
-        marketdata_last_ts=last_ts,
-        stale_threshold_seconds=threshold,
-        now=_utc_now(),
-        ttl_seconds=30,
-    )
-
-    if not is_safe_to_run_strategies(state):
-        _log_intent(
-            {
-                "ts": _utc_now().isoformat(),
-                "intent_type": "strategy_cycle_skipped",
-                "agent_name": "strategy-engine",
-                "kill_switch": bool(kill),
-                "stale_threshold_seconds": threshold,
-                "marketdata_last_ts": last_ts.isoformat() if last_ts else None,
-                "marketdata_heartbeat": hb,
-                "reason_codes": list(state.reason_codes or []),
-            }
-        )
+    if not cfg.enabled:
+        print(f"Strategy '{cfg.strategy_id}' is disabled; exiting (safe-by-default).")
         return
 
-    strategy_id = await get_or_create_strategy_definition(config.STRATEGY_NAME)
+    # Registry-backed identity in the risk/audit subsystem.
+    strategy_id = await get_or_create_strategy_definition(cfg.strategy_id)
     today = date.today()
     correlation_id = os.getenv("CORRELATION_ID") or uuid4().hex
     repo_id = os.getenv("REPO_ID") or "RichKingsASU/agent-trader-v2"
     proposal_ttl_minutes = int(os.getenv("PROPOSAL_TTL_MINUTES") or "5")
     
-    print(f"Running strategy '{config.STRATEGY_NAME}' for {today}...")
-    emitted_any = False
-
-    cycle_ctx = intent_start(
-        "strategy_evaluation_cycle",
-        "Evaluate strategy signals for configured symbols.",
-        payload={
-            "strategy_name": config.STRATEGY_NAME,
-            "strategy_id": strategy_id,
-            "trade_date": str(today),
-            "symbols": list(config.STRATEGY_SYMBOLS),
-            "symbols_count": len(config.STRATEGY_SYMBOLS),
-            "execute_requested": execute_requested,
-            "execute_enabled": bool(execute),
-        },
+    print(
+        f"Running strategy '{cfg.strategy_id}' for {today} "
+        f"(requested_mode={cfg.mode.value} effective_mode={effective_mode.value})..."
     )
+
+    bar_lookback = int(cfg.parameters.get("bar_lookback_minutes", config.STRATEGY_BAR_LOOKBACK_MINUTES))
+    flow_lookback = int(cfg.parameters.get("flow_lookback_minutes", config.STRATEGY_FLOW_LOOKBACK_MINUTES))
+
+    for symbol in cfg.symbols:
+        print(f"Processing symbol: {symbol}")
+
+        bars = await fetch_recent_bars(symbol, bar_lookback)
+        flow_events = await fetch_recent_options_flow(symbol, flow_lookback)
+
+        decision = make_decision(bars, flow_events)
+        action = decision.get("action")
+
+        if action == "flat":
+            await log_decision(strategy_id, symbol, "flat", decision["reason"], decision["signal_payload"], False)
+            print(f"  Decision: flat. Reason: {decision['reason']}")
+            continue
+
+        # Calculate notional
+        last_price = bars[0].close if bars else 0
+        notional = last_price * decision.get("size", 0)
 
     for symbol in config.STRATEGY_SYMBOLS:
         with bind_correlation_id():
@@ -189,11 +173,8 @@ async def run_strategy(execute: bool):
             
         print(f"  Decision: {action}. Reason: {decision['reason']}")
 
-        # Absolute safety: never execute unless explicitly in EXECUTE mode.
-        agent_mode = str(os.getenv("AGENT_MODE") or "").strip().upper()
-        execute_effective = bool(execute) and agent_mode == "EXECUTE"
-
-        if execute_effective:
+        can_execute = bool(execute) and effective_mode == StrategyMode.EXECUTE
+        if can_execute:
             print(f"  Executing {action} order for 1 {symbol}...")
             # Call the existing paper trade script
             process = subprocess.run(
@@ -221,9 +202,8 @@ async def run_strategy(execute: bool):
                 decision["signal_payload"],
                 False,
             )
-            intent_end(proposal_ctx, "success")
-
-            print("  Dry run mode, no trade executed.")
+        else:
+            print("  No execution (effective_mode is non-execute or --execute not set).")
             await log_decision(
                 strategy_id,
                 symbol,
