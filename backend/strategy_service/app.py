@@ -7,7 +7,7 @@ from backend.common.agent_boot import configure_startup_logging
 from backend.common.kill_switch import get_kill_switch_state
 
 app = FastAPI(title="AgentTrader Strategy Service")
-logger = logging.getLogger(__name__)
+install_fastapi_correlation_middleware(app)
 
 # Startup identity/intent log (single JSON line).
 @app.on_event("startup")

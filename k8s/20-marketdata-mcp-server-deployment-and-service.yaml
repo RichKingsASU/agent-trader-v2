@@ -65,7 +65,22 @@ spec:
           timeoutSeconds: 2
           failureThreshold: 3
         env:
-          - name: EXECUTION_HALTED
+          - name: REPO_ID
+            value: "agent-trader-v2"
+          - name: AGENT_NAME
+            value: "marketdata-mcp-server"
+          - name: AGENT_ROLE
+            value: "marketdata"
+          - name: AGENT_MODE
+            value: "OFF"
+          - name: GIT_SHA
+            valueFrom:
+              configMapKeyRef:
+                name: agenttrader-kill-switch
+                key: EXECUTION_HALTED
+          - name: EXECUTION_HALTED_FILE
+            value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
+          - name: APCA_API_KEY_ID
             valueFrom:
               configMapKeyRef:
                 name: agenttrader-kill-switch

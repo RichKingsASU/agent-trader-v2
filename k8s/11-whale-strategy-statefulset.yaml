@@ -58,7 +58,15 @@ spec:
           timeoutSeconds: 2
           failureThreshold: 3
         env:
-          - name: EXECUTION_HALTED
+          - name: REPO_ID
+            value: "agent-trader-v2"
+          - name: AGENT_NAME
+            value: "strategy-engine"
+          - name: AGENT_ROLE
+            value: "strategy_eval"
+          - name: AGENT_MODE
+            value: "OFF"
+          - name: GIT_SHA
             valueFrom:
               configMapKeyRef:
                 name: agenttrader-kill-switch
