@@ -1,6 +1,20 @@
 import asyncio
 from datetime import date
 import argparse
+import os
+from uuid import uuid4
+
+from backend.common.agent_boot import configure_startup_logging
+from backend.trading.proposals.emitter import emit_proposal
+from backend.trading.proposals.models import (
+    OrderProposal,
+    ProposalAssetType,
+    ProposalConstraints,
+    ProposalRationale,
+    ProposalSide,
+    ProposalOption,
+    OptionRight,
+)
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.observability.correlation import bind_correlation_id
@@ -10,12 +24,17 @@ from .config import config
 from .models import fetch_recent_bars, fetch_recent_options_flow
 from .risk import (
     get_or_create_strategy_definition,
-    get_or_create_today_state,
     can_place_trade,
-    record_trade,
     log_decision,
 )
 from .strategies.naive_flow_trend import make_decision
+
+def _truthy_env(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
+
 
 async def run_strategy(execute: bool):
     """
@@ -33,8 +52,12 @@ async def run_strategy(execute: bool):
 
     strategy_id = await get_or_create_strategy_definition(config.STRATEGY_NAME)
     today = date.today()
+    correlation_id = os.getenv("CORRELATION_ID") or uuid4().hex
+    repo_id = os.getenv("REPO_ID") or "RichKingsASU/agent-trader-v2"
+    proposal_ttl_minutes = int(os.getenv("PROPOSAL_TTL_MINUTES") or "5")
     
     print(f"Running strategy '{config.STRATEGY_NAME}' for {today}...")
+    emitted_any = False
 
     cycle_ctx = intent_start(
         "strategy_evaluation_cycle",
@@ -144,10 +167,14 @@ async def run_strategy(execute: bool):
 if __name__ == "__main__":
     configure_startup_logging(
         agent_name="strategy-engine",
-        intent="Run the strategy engine loop (fetch data, decide, and optionally execute paper trades).",
+        intent="Run the strategy engine loop (fetch data, decide, and emit non-executing order proposals).",
     )
     parser = argparse.ArgumentParser()
-    parser.add_argument("--execute", action="store_true", help="Actually place paper trades.")
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Kept for compatibility; strategy-engine does not execute (proposals only).",
+    )
     args = parser.parse_args()
 
     try:
