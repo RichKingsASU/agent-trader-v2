@@ -18,7 +18,9 @@ spec:
       containers:
         - name: ops-ui
           # Build with: docker build -f frontend/ops-ui/Dockerfile -t <your-registry>/agenttrader-ops-ui:tag .
-          image: ghcr.io/richkingsasu/agenttrader-ops-ui:latest
+          # IMPORTANT (production lock): never use :latest in locked manifests.
+          # Pin to an immutable digest as part of a controlled release.
+          image: ghcr.io/richkingsasu/agenttrader-ops-ui@sha256:REPLACE_ME
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

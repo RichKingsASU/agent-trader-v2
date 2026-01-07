@@ -5,9 +5,20 @@
 - **Blueprint**: `docs/BLUEPRINT.md`
 - **Regenerate**:
 
-```bash
-./scripts/generate_blueprint.sh
-```
+- **Agent mesh plan (single source of truth)**: `docs/ops/agent_mesh.md`
+- **Reporting / readiness**: `docs/ops/reporting.md`
+- **Production lock (v2 freeze)**: `ops/PRODUCTION_LOCK.md`
+- **Validation scripts**:
+  - `scripts/validate_production_lock.sh`
+  - `scripts/tag_production_lock.sh`
+- **Runbooks**: `docs/ops/runbooks/`
+- **Go/No-Go checklist (stub)**: `docs/ops/go_no_go.md`
+- **Deploy guardrails (stub)**: `docs/ops/deploy_guardrails.md`
+- **Disaster recovery plan (stub)**: `docs/ops/dr_plan.md`
+ 
+## Controlled unlocks (human-gated)
+
+All changes to locked scope must follow the controlled unlock procedure in `ops/PRODUCTION_LOCK.md`.
 
 This produces:
 - `docs/BLUEPRINT.md`
