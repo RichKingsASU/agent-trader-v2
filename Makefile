@@ -1,6 +1,7 @@
 .PHONY: report report-skip-health
 .PHONY: day1-dry-run
 .PHONY: ci-validate
+.PHONY: k8s-validate
 
 # -----------------------------------------------------------------------------
 # AgentTrader v2 — “Trading Floor” one-command workflow
@@ -153,6 +154,9 @@ smoke-check: ## Run Python import smoke tests
 ci-validate: ## Validate CI layout (cloudbuild.yaml references)
 	@echo "== ci-validate =="
 	@bash ./scripts/validate_ci_layout.sh
+
+k8s-validate: ## Validate k8s YAML via kubectl client dry-run
+	@bash ./scripts/validate_k8s_yaml.sh --k8s-dir "$(K8S_DIR)"
 
 test: ## Run python tests if present
 	@echo "== test =="
