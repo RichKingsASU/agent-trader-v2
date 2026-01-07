@@ -28,13 +28,8 @@ spec:
         - containerPort: 8080
           name: http
         env:
-          - name: EXECUTION_HALTED
-            valueFrom:
-              configMapKeyRef:
-                name: agenttrader-kill-switch
-                key: EXECUTION_HALTED
-          - name: EXECUTION_HALTED_FILE
-            value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
+          - name: MARKETDATA_MAX_AGE_SECONDS
+            value: "60"
           - name: APCA_API_KEY_ID
             valueFrom:
               secretKeyRef:
@@ -45,10 +40,22 @@ spec:
               secretKeyRef:
                 name: trader-secrets
                 key: FIREBASE_KEY
-        volumeMounts:
-          - name: kill-switch
-            mountPath: /etc/agenttrader/kill-switch
-            readOnly: true
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 6
         resources:
           requests:
             cpu:                250m
