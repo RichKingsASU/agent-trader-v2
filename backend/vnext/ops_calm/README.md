@@ -1,25 +1,17 @@
-# Ops Calm Dashboard (Human-Centric)
+# Ops Calm
 
-This module defines **operator-facing calm signals**: a small set of discrete states and actionable hints that help humans quickly understand “are we okay?” without being flooded by noisy telemetry.
+## Intent
+Define operational calmness interfaces: incident states, degraded-mode behaviors, runbooks-as-data, and SLO/SLA signals to guide safe system posture.
 
-## Principles
+## Non-goals (for this vNEXT skeleton)
+- Starting HTTP servers or emitting metrics
+- Integrating with existing observability stack
+- Automating remediation
 
-- **Reduce anxiety**
-  - Prefer a single, stable state over dozens of constantly changing numbers.
-  - Use *discrete* categories (`GREEN` / `YELLOW` / `RED`) rather than scores that invite over-interpretation.
-  - Keep messages short and consistent.
+## Deliverables in this module
+- `interfaces.py`: Contract-only placeholders (no runtime behavior).
+- `__init__.py`: Empty package marker.
 
-- **Avoid noisy metrics**
-  - Do not surface high-frequency counters, per-second gauges, or rapidly oscillating values as primary signals.
-  - If metrics exist underneath, translate them into stable **reason codes** and **operator actions**.
-  - Low-cardinality fields (e.g. `reason_codes`) are easier to search and safer to aggregate.
-
-## Interface definitions
-
-See `interfaces.py`:
-
-- `CalmState`: discrete operator state (`GREEN`, `YELLOW`, `RED`)
-- `SystemHealth`: calm snapshot (headline, reasons, hints)
-- `OperatorActionHint`: concrete next steps (optionally with a runbook reference)
-- `OpsCalmProvider.get_calm_state()`: the interface for producing a `SystemHealth` snapshot
-
+## Constraints
+- No imports from existing live systems under `backend/`.
+- No execution logic, side effects, network calls, or persistence.
