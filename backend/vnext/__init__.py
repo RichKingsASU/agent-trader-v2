@@ -1,6 +1,6 @@
-"""vNEXT: next-generation interfaces and schemas.
+"""
+vNEXT backend package.
 
-This package is intended for *schema-first* contracts and interfaces.
-Implementation details should live elsewhere.
+This namespace is reserved for forward-looking (vNEXT) modules and contracts.
 """
 
