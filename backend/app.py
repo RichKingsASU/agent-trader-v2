@@ -6,8 +6,8 @@ import os
 import json
 
 from backend.common.agent_boot import configure_startup_logging
-from backend.observability.correlation import install_fastapi_correlation_middleware
-from backend.observability.logger import log_event
+from backend.common.kill_switch import get_kill_switch_state
+from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 
 from backend.common.marketdata_heartbeat import snapshot
 from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
@@ -38,43 +38,55 @@ async def healthz_check():
     # Alias for institutional conventions.
     return await health_check()
 
-@app.get("/healthz")
-async def healthz():
+def _query_last_tick_utc() -> datetime | None:
     """
-    Heartbeat contract endpoint.
-
-    Returns 200 only when marketdata ticks are fresh; otherwise returns 503.
-    Consumers should treat any non-200 (or fetch error) as stale and refuse to run.
+    Best-effort: use the live_quotes table updated by the streamer.
+    If unavailable, return None (status contract will treat as missing).
     """
-    # Debug-only override to simulate staleness in lower envs.
-    force_stale = os.getenv("MARKETDATA_FORCE_STALE", "").strip().lower() in {"1", "true", "yes", "on"}
-    max_age = int(os.getenv("MARKETDATA_MAX_AGE_SECONDS", "60"))
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        return None
+    try:
+        import psycopg2  # local import to keep import-time safe
 
-    snap = snapshot()
-    last_tick_epoch = snap.last_tick_epoch_seconds()
+        with psycopg2.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT MAX(last_update_ts) FROM public.live_quotes;")
+                row = cur.fetchone()
+                ts = row[0] if row else None
+                if ts is None:
+                    return None
+                if isinstance(ts, datetime):
+                    return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts.astimezone(timezone.utc)
+                return None
+    except Exception:
+        return None
 
-    now = datetime.now(timezone.utc).timestamp()
-    age_seconds = None
-    ok = False
-    if last_tick_epoch is not None:
-        age_seconds = float(now - float(last_tick_epoch))
-        ok = age_seconds <= float(max_age)
 
-    if force_stale:
-        ok = False
+@app.get("/ops/status")
+async def ops_status() -> dict:
+    kill, _source = get_kill_switch_state()
+    stale_s = int(os.getenv("MARKETDATA_STALE_THRESHOLD_S") or "120")
+    last_tick = _query_last_tick_utc()
 
-    payload = {
-        "service": "marketdata-mcp-server",
-        "last_tick_epoch_seconds": last_tick_epoch,
-        "age_seconds": age_seconds,
-        "max_age_seconds": max_age,
-        "ok": ok,
-        "forced_stale": force_stale,
-    }
-    if not ok:
-        # 503 => not ready / stale
-        return JSONResponse(payload, status_code=503)
-    return JSONResponse(payload, status_code=200)
+    st = build_ops_status(
+        service_name="marketdata-mcp-server",
+        service_kind="marketdata",
+        agent_identity=AgentIdentity(
+            agent_name=str(os.getenv("AGENT_NAME") or "marketdata-mcp-server"),
+            agent_role=str(os.getenv("AGENT_ROLE") or "marketdata"),
+            agent_mode=str(os.getenv("AGENT_MODE") or "STREAM"),
+        ),
+        git_sha=os.getenv("GIT_SHA") or os.getenv("K_REVISION") or None,
+        build_id=os.getenv("BUILD_ID") or None,
+        kill_switch=bool(kill),
+        heartbeat_ttl_seconds=int(os.getenv("OPS_HEARTBEAT_TTL_S") or "60"),
+        marketdata_last_tick_utc=last_tick,
+        marketdata_stale_threshold_seconds=stale_s,
+        endpoints=EndpointsBlock(healthz="/health", heartbeat=None, metrics=None),
+    )
+    return st.model_dump()
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
