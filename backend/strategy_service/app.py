@@ -1,3 +1,8 @@
+from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+
+_log_runtime_fingerprint(service="strategy-service")
+del _log_runtime_fingerprint
+
 import logging
 import os
 

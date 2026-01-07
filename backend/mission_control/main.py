@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+
+_log_runtime_fingerprint(service="mission-control")
+del _log_runtime_fingerprint
+
 import asyncio
 import os
 import time
