@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import uuid
@@ -35,12 +36,39 @@ def _write_json(obj: dict[str, Any]) -> None:
         pass
 
 
+def _env_any(*names: str, default: str = "unknown") -> str:
+    for n in names:
+        v = os.getenv(n)
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s:
+            return _clean_text(s, max_len=256)
+    return default
+
+
+def _default_service(ident: dict[str, Any]) -> str:
+    # Prefer explicit overrides; fall back to Cloud Run; then agent name; then unknown.
+    return _env_any(
+        "SERVICE_NAME",
+        "SERVICE",
+        "OTEL_SERVICE_NAME",
+        "K_SERVICE",
+        default=str(ident.get("agent_name") or "unknown"),
+    )
+
+
 def _base_fields(*, level: str) -> dict[str, Any]:
     ident = get_agent_identity()
+    lvl = level.upper()
     # Normalize to required keys where possible.
     base: dict[str, Any] = {
         "timestamp": _utc_ts(),
-        "level": level,
+        "level": lvl,
+        # Cloud Logging recognizes "severity" for structured logs.
+        "severity": lvl,
+        "service": _default_service(ident),
+        "image_tag": _env_any("IMAGE_TAG", "IMAGE_REF", "K_REVISION", default="unknown"),
         "repo_id": ident.get("repo_id"),
         "agent_name": ident.get("agent_name"),
         "agent_role": ident.get("agent_role"),
