@@ -53,6 +53,11 @@ steps:
           echo "✅ PASSED: No execution agents found with replicas > 0."
         fi
 
+  - name: 'python:3.11-slim'
+    id: 'Smoke check Python imports (pre-docker)'
+    entrypoint: 'bash'
+    args: ["-c", "python scripts/smoke_check_imports.py"]
+
   # Build and push marketdata-mcp-server
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Build marketdata-mcp-server'
