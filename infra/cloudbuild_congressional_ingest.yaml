@@ -32,10 +32,12 @@ steps:
   - name: gcr.io/cloud-builders/bash
     entrypoint: bash
     args:
-      - -ceu
+      - "-c"
       - |
+        set -euo pipefail
         IMAGE_REF="gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA"
-        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.ingestion.congressional_disclosures
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.ingestion.congressional_disclosures
     id: 'import-gate'
 
   # Push the image to GCR

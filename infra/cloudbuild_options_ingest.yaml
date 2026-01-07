@@ -2,8 +2,9 @@ steps:
   - name: gcr.io/cloud-builders/bash
     entrypoint: bash
     args:
-      - -ceu
+      - "-c"
       - |
+        set -euo pipefail
         BUILD_TIME_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         GIT_SHA="${COMMIT_SHA:-$SHORT_SHA}"
         IMAGE_REF="gcr.io/$PROJECT_ID/agenttrader-options-ingest:$SHORT_SHA"
@@ -16,6 +17,7 @@ steps:
           -t "${IMAGE_REF}" \
           .
 
-        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.streams.alpaca_option_window_ingest
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.streams.alpaca_option_window_ingest
 images:
   - 'gcr.io/$PROJECT_ID/agenttrader-options-ingest:$SHORT_SHA'
