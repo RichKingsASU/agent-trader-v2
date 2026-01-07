@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timezone, date
 from typing import Any, Dict, List, Optional, Tuple
 
-from backend.common.timeutils import parse_alpaca_timestamp
+from backend.time.providers import normalize_alpaca_timestamp
 
 def map_devconsole_news(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -10,7 +10,7 @@ def map_devconsole_news(payload: Dict[str, Any]) -> Dict[str, Any]:
     TODO: Adjust field names based on actual Developer Console news payload structure (e.g., Benzinga).
     """
     event_ts_str = payload.get("timestamp") or payload.get("published_at")
-    event_ts = parse_alpaca_timestamp(event_ts_str) if event_ts_str else datetime.now(timezone.utc)
+    event_ts = normalize_alpaca_timestamp(event_ts_str) if event_ts_str else datetime.now(timezone.utc)
 
     return {
         "event_ts": event_ts,
@@ -31,7 +31,7 @@ def map_devconsole_options_flow(payload: Dict[str, Any]) -> Dict[str, Any]:
     TODO: Adjust field names based on actual Developer Console options flow payload structure (e.g., OPRA/Polygon).
     """
     event_ts_str = payload.get("timestamp")
-    event_ts = parse_alpaca_timestamp(event_ts_str) if event_ts_str else datetime.now(timezone.utc)
+    event_ts = normalize_alpaca_timestamp(event_ts_str) if event_ts_str else datetime.now(timezone.utc)
 
     expiration_date_str = payload.get("expiration_date")
     expiration_date = datetime.strptime(expiration_date_str, '%Y-%m-%d').date() if expiration_date_str else None
@@ -63,7 +63,7 @@ def map_devconsole_account_update(payload: Dict[str, Any]) -> Tuple[List[Dict[st
     balances_data = []
     account_meta = {"broker": payload.get("broker", "td_ameritrade"), "external_account_id": payload.get("account_id")}
     updated_at_str = payload.get("timestamp")
-    updated_at = parse_alpaca_timestamp(updated_at_str) if updated_at_str else datetime.now(timezone.utc)
+    updated_at = normalize_alpaca_timestamp(updated_at_str) if updated_at_str else datetime.now(timezone.utc)
 
     # Example mapping for positions
     for p_raw in payload.get("positions", []):
