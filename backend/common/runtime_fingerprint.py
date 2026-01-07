@@ -26,17 +26,16 @@ def log_runtime_fingerprint(*, service: str) -> None:
     git_sha = os.getenv("GIT_SHA") or "unknown"
     image_tag = os.getenv("IMAGE_TAG") or "unknown"
 
-    msg = (
-        "RUNTIME_FINGERPRINT:\n"
-        f"  service={service}\n"
-        f"  agent_mode={agent_mode}\n"
-        "  execution_enabled=false\n"
-        f"  git_sha={git_sha}\n"
-        f"  image_tag={image_tag}"
-    )
-
     try:
-        print(msg, flush=True)
+        # Stdlib-only structured JSON line (Cloud Logging queryable).
+        from backend.observability.ops_json_logger import OpsLogger  # noqa: WPS433
+
+        OpsLogger(str(service)).startup_fingerprint(
+            execution_enabled=False,
+            agent_mode=agent_mode,
+            git_sha=git_sha,
+            image_tag=image_tag,
+        )
     except Exception:
         # Never fail container startup due to fingerprint logging.
         pass
