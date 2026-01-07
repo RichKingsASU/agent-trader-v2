@@ -1,7 +1,7 @@
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 import asyncio
-import sys
 import os
 from datetime import datetime, timezone
 
@@ -9,6 +9,7 @@ from backend.common.agent_boot import configure_startup_logging
 from backend.common.kill_switch import get_kill_switch_state
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 
+from backend.common.marketdata_heartbeat import snapshot
 from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
 
 app = FastAPI()
