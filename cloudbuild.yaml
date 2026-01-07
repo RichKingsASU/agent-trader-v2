@@ -1,6 +1,10 @@
 # This CI pipeline enforces institutional safety guarantees.
+#
+# Contract:
+# - CI safety guard must run and pass before any docker build step.
+# - No non-deterministic images (e.g. implicit :latest) may be referenced.
+# - Only allowed Cloud Build substitutions are used: _PROJECT, _REGION, _REPO, _TAG, SHORT_SHA.
 steps:
-  # Diagnostic step (runs before anything else) to make early failures self-explanatory.
   - name: 'gcr.io/cloud-builders/gcloud'
     id: 'Diagnostics (pre-build)'
     entrypoint: 'bash'
@@ -10,17 +14,17 @@ steps:
         echo "================================================================"
         echo "PHASE 1: preflight"
         echo "================================================================"
-        echo "--- Checkout / source context ---"
+        echo "--- Source context ---"
         echo "PWD=$$(pwd)"
         echo "Workspace contents:"
         ls -la
         ls -la scripts/ || true
         git rev-parse --short HEAD || true
-        echo $BRANCH_NAME $COMMIT_SHA || true
+        echo "$$BRANCH_NAME $$COMMIT_SHA" || true
 
-  # b) Safety guard
   - name: 'gcr.io/cloud-builders/bash'
     id: 'CI Layout Validate'
+    waitFor: ['Diagnostics (pre-build)']
     entrypoint: 'bash'
     args:
       - -ceu
@@ -28,149 +32,47 @@ steps:
         echo "---- preflight: CI layout validate ----"
         bash ./scripts/validate_ci_layout.sh
 
-  - name: 'bash'
-    id: 'Safety Guard'
-    waitFor: ['Checkout']
-    entrypoint: 'bash'
-    args:
-      - -c
-      - |
-        set -euo pipefail
-
-        echo "================================================================"
-        echo "PHASE 2: safety guard"
-        echo "================================================================"
-        echo "--- Safety Guard preflight ---"
-        echo "PWD: $(pwd)"
-
-        # Diagnostics for unexpected tool/runtime issues.
-        diag_grep_error() {
-          local check_name="$1"
-          local files_count="$2"
-          echo "----- Debug: ${check_name} (grep error) -----" >&2
-          echo "PWD: $(pwd)" >&2
-          echo "WORKSPACE_ROOT: ${WORKSPACE_ROOT:-<unset>}" >&2
-          echo "Files scanned: ${files_count}" >&2
-          echo "Listing PWD:" >&2
-          ls -la >&2 || true
-          echo "----- End Debug -----" >&2
-        }
-
-        # Run grep against an explicit file list, interpreting exit codes robustly:
-        # - 0 => policy violation (FAIL with exit 1) and print offending lines
-        # - 1 => PASS (no matches)
-        # - 2 => grep/runtime error (FAIL with exit 1) and print diagnostics
-        #
-        # Usage:
-        #   run_grep_check "<check name>" "<fail message>" "<grep regex>" <file1> <file2> ...
-        run_grep_check() {
-          local check_name="$1"
-          local fail_message="$2"
-          local grep_pattern="$3"
-          shift 3
-          local -a files=( "$@" )
-
-          echo "--- ${check_name} ---"
-          echo "Files scanned: ${#files[@]}"
-          if ((${#files[@]} == 0)); then
-            echo "✅ PASSED: No files to scan."
-            return 0
-          fi
-
-          set +e
-          local matches
-          matches="$(grep -nH "${grep_pattern}" -- "${files[@]}" 2>&1)"
-          local rc=$?
-          set -e
-
-          if [[ ${rc} -eq 0 ]]; then
-            echo "❌ FAILED: ${fail_message}"
-            echo "${matches}"
-            exit 1
-          else
-            echo "✅ PASSED: No ':latest' image tags found."
-          fi
-        fi
-
-  # b) Safety guard
+  # Safety guard MUST pass before any docker build steps run.
   - name: 'gcr.io/cloud-builders/bash'
-    id: 'CI Layout Validate'
-    waitFor: ['Checkout']
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - |
-        set -e
-        mkdir -p /workspace/.cloudbuild
-        cp -f /workspace/scripts/ci_safety_guard.sh /workspace/.cloudbuild/ci_safety_guard.sh
-        ls -la /workspace/.cloudbuild
-        ls -la /workspace/.cloudbuild/ci_safety_guard.sh
-
-  # Safety guard MUST pass before any docker build/push steps run.
-  - name: 'gcr.io/cloud-builders/gcloud'
     id: 'CI Safety Guard'
+    waitFor: ['CI Layout Validate']
     entrypoint: 'bash'
     args:
-      - -c
+      - -ceu
       - |
-        set -e
-        cd /workspace
-        chmod +x /workspace/.cloudbuild/ci_safety_guard.sh
-        bash /workspace/.cloudbuild/ci_safety_guard.sh
-        echo "CI SAFETY GUARD PASSED"
-
+        chmod +x ./scripts/ci_safety_guard.sh
+        ./scripts/ci_safety_guard.sh
         echo "CI SAFETY GUARD PASSED — proceeding to build"
 
-  # c) Import smoke check (source-based; fail fast before image builds).
-  #
-  # We intentionally install from a pinned lock file for deterministic results.
-  # The smoke check here is scoped to the entrypoints built in this pipeline.
+  # Import smoke check (source-based; fail fast before image builds).
   - name: 'python:3.12-slim'
     id: 'Import smoke check'
-    waitFor: ['Safety Guard']
+    waitFor: ['CI Safety Guard']
     entrypoint: 'bash'
     args:
       - -ceu
       - |
         echo "================================================================"
-        echo "PHASE 3: import smoke"
+        echo "PHASE 2: import smoke"
         echo "================================================================"
-        echo "--- Import smoke check (source) ---"
         python -V
-        python -m pip --version || python -m ensurepip
         python -m pip install --no-cache-dir --upgrade pip
         python -m pip install --no-cache-dir -r backend/strategy_service/requirements.lock
-        python ./scripts/smoke_check_imports.py \
-          --no-defaults \
-          --module backend.app \
-          --module backend.strategy_engine.service \
+        python ./scripts/smoke_check_imports.py \\
+          --no-defaults \\
+          --module backend.app \\
+          --module backend.strategy_engine.service \\
           --module backend.strategy_service.app
 
-  # d) Docker build(s) (serialized; each build is immediately gated).
-  #
-  # NOTE: The "import gate" runs inside the built image (docker run) to validate
-  # runtime imports using the image's own dependency set.
-
-  - name: 'gcr.io/cloud-builders/bash'
-    id: 'PHASE 4: docker build'
-    waitFor: ['Import smoke check']
-    entrypoint: 'bash'
-    args:
-      - -ceu
-      - |
-        echo "================================================================"
-        echo "PHASE 4: docker build"
-        echo "================================================================"
-
-  # Build marketdata-mcp-server
+  # Build + gate: marketdata-mcp-server
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Build marketdata-mcp-server'
-    waitFor: ['PHASE 4: docker build']
+    waitFor: ['Import smoke check']
     args: [
       'build',
       '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}',
-      '-f', '/workspace/backend/Dockerfile.marketdata-mcp-server',
-      '/workspace'
+      '-f', 'backend/Dockerfile.marketdata-mcp-server',
+      '.'
     ]
 
   - name: 'gcr.io/cloud-builders/bash'
@@ -178,59 +80,34 @@ steps:
     waitFor: ['Build marketdata-mcp-server']
     entrypoint: 'bash'
     args:
-      - build
-      - -t
-      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
-      - -f
-      - infra/Dockerfile.strategy_engine
-      - .
-
-  - id: Push strategy-engine
-    name: gcr.io/cloud-builders/docker
-    args:
-      - push
-      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
-
-  # ------------------------------------------------------------
-  # PHASE 3: BUILD MARKETDATA MCP SERVER
-  # ------------------------------------------------------------
-  - id: Build marketdata-mcp-server
-    name: gcr.io/cloud-builders/docker
-    args:
-      - "-c"
+      - '-ceu'
       - |
-        set -euo pipefail
-        IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
-        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
+        IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "$$IMAGE_REF" backend.app
 
-  # e) Docker push(es) (serialized; publish only after all gates pass).
+  # Build + gate: strategy-engine
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Build strategy-engine'
+    waitFor: ['Import gate marketdata-mcp-server']
+    args: [
+      'build',
+      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}',
+      '-f', 'infra/Dockerfile.strategy_engine',
+      '.'
+    ]
+
   - name: 'gcr.io/cloud-builders/bash'
-    id: 'PHASE 5: docker push'
-    waitFor: ['Import gate strategy-runtime']
+    id: 'Import gate strategy-engine'
+    waitFor: ['Build strategy-engine']
     entrypoint: 'bash'
     args:
-      - -ceu
+      - '-ceu'
       - |
-        echo "================================================================"
-        echo "PHASE 5: docker push"
-        echo "================================================================"
-
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Push marketdata-mcp-server'
-    waitFor: ['PHASE 5: docker push']
-    args: [
-      'push',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
-    ]
-
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Push strategy-engine'
-    waitFor: ['Push marketdata-mcp-server']
-    args: [
-      'push',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
-    ]
+        IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "$$IMAGE_REF" backend.strategy_engine.service
 
 images:
-  - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
-  - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}
+  - '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
+  - '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
