@@ -5,7 +5,11 @@ metadata:
   namespace: trading-floor
   labels:
     app: marketdata-mcp-server
-    agenttrader.dev/repo_id: agent-trader-v2
+    app.kubernetes.io/name: marketdata-mcp-server
+    app.kubernetes.io/component: marketdata-mcp-server
+    app.kubernetes.io/part-of: agenttrader-v2
+    git_sha: a2466ec
+    app.kubernetes.io/name: agenttrader
     app.kubernetes.io/part-of: agent-trader-v2
     app.kubernetes.io/version: 54afffe
     git_sha: 54afffe
@@ -21,7 +25,11 @@ spec:
     metadata:
       labels:
         app: marketdata-mcp-server
-        agenttrader.dev/repo_id: agent-trader-v2
+        app.kubernetes.io/name: marketdata-mcp-server
+        app.kubernetes.io/component: marketdata-mcp-server
+        app.kubernetes.io/part-of: agenttrader-v2
+        git_sha: a2466ec
+        app.kubernetes.io/name: agenttrader
         app.kubernetes.io/part-of: agent-trader-v2
         app.kubernetes.io/version: 54afffe
         git_sha: 54afffe
@@ -40,6 +48,22 @@ spec:
         ports:
         - containerPort: 8080
           name: http
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 20
+          timeoutSeconds: 2
+          failureThreshold: 3
         env:
           - name: REPO_ID
             value: "agent-trader-v2"
@@ -58,39 +82,57 @@ spec:
             value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
           - name: APCA_API_KEY_ID
             valueFrom:
-              configMapKeyRef:
-                name: agenttrader-kill-switch
-                key: EXECUTION_HALTED
-          - name: EXECUTION_HALTED_FILE
-            value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
-          # Secrets: do NOT inject plaintext or Secret refs in manifests.
-          # Future wiring uses Secret Manager + CSI mounts under /var/run/secrets/agenttrader (see k8s/secrets/).
-          - name: DRY_RUN
-            value: "1"
-          - name: ALPACA_API_KEY
-            value: ""
-          - name: ALPACA_SECRET_KEY
-            value: ""
-          - name: ALPACA_API_KEY_FILE
-            value: /var/run/secrets/agenttrader/marketdata/alpaca_api_key
-          - name: ALPACA_SECRET_KEY_FILE
-            value: /var/run/secrets/agenttrader/marketdata/alpaca_secret_key
+              fieldRef:
+                fieldPath: metadata.labels['git_sha']
+          - name: WORKLOAD
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['app']
+          - name: AGENTTRADER_SAFETY_DIR
+            value: "/etc/agenttrader-safety"
+          - name: APCA_API_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: trader-secrets
+                key: APCA_API_KEY_ID
+          - name: FIREBASE_KEY
+            valueFrom:
+              secretKeyRef:
+                name: trader-secrets
+                key: FIREBASE_KEY
         volumeMounts:
-          - name: kill-switch
-            mountPath: /etc/agenttrader/kill-switch
+          - name: agenttrader-safety
+            mountPath: /etc/agenttrader-safety
             readOnly: true
         resources:
           requests:
-            cpu:                250m
-            ephemeral-storage:  1Gi
-            memory:             1Gi
+            cpu: 250m
+            memory: 512Mi
+            ephemeral-storage: 1Gi
+          limits:
+            cpu: 1
+            memory: 1Gi
+            ephemeral-storage: 2Gi
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          timeoutSeconds: 3
+          failureThreshold: 3
       volumes:
-        - name: kill-switch
+        - name: agenttrader-safety
           configMap:
-            name: agenttrader-kill-switch
-            items:
-              - key: EXECUTION_HALTED
-                path: EXECUTION_HALTED
+            name: agenttrader-safety
       priorityClassName: high-priority
 ---
 apiVersion: v1
@@ -99,13 +141,35 @@ metadata:
   name: marketdata-mcp-server
   namespace: trading-floor
   labels:
-    app: marketdata-mcp-server
-    agenttrader.dev/repo_id: agent-trader-v2
-    app.kubernetes.io/part-of: agent-trader-v2
+    app.kubernetes.io/name: marketdata-mcp-server
+    app.kubernetes.io/component: marketdata-mcp-server
+    app.kubernetes.io/part-of: agenttrader-v2
 spec:
   selector:
     app: marketdata-mcp-server
   ports:
     - protocol: TCP
+      name: http
       port: 80
       targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  # Standardized, deterministic in-cluster name:
+  name: agenttrader-marketdata-mcp-server
+  namespace: trading-floor
+  labels:
+    app.kubernetes.io/name: agenttrader-marketdata-mcp-server
+    app.kubernetes.io/component: marketdata-mcp-server
+    app.kubernetes.io/part-of: agenttrader-v2
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/part-of: agenttrader-v2
+    app.kubernetes.io/component: marketdata-mcp-server
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: http

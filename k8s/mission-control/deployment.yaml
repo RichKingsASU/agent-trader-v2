@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mission-control
+  namespace: trading-floor
+  labels:
+    app.kubernetes.io/name: agenttrader
+    app.kubernetes.io/part-of: agent-trader-v2
+    app.kubernetes.io/component: ops
+    app.kubernetes.io/instance: mission-control
+    version: v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mission-control
+  template:
+    metadata:
+      labels:
+        app: mission-control
+        app.kubernetes.io/name: agenttrader
+        app.kubernetes.io/part-of: agent-trader-v2
+        app.kubernetes.io/component: ops
+        app.kubernetes.io/instance: mission-control
+        version: v2
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: mission-control
+          # Replace with your built image reference
+          image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/mission-control:REPLACE_ME
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: AGENT_MODE
+              value: OBSERVE
+            - name: AGENTS_CONFIG_PATH
+              value: /app/configs/agents/agents.yaml
+            - name: POLL_INTERVAL_SECONDS
+              value: "10"
+            - name: PER_AGENT_TIMEOUT_SECONDS
+              value: "1.5"
+            - name: EXECUTION_HALTED_FILE
+              value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
+            - name: DEPLOY_REPORT_PATH
+              value: /var/agenttrader/reports/deploy_report.md
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          volumeMounts:
+            - name: kill-switch
+              mountPath: /etc/agenttrader/kill-switch
+              readOnly: true
+            - name: reports
+              mountPath: /var/agenttrader/reports
+      volumes:
+        - name: kill-switch
+          configMap:
+            name: agenttrader-kill-switch
+            items:
+              - key: EXECUTION_HALTED
+                path: EXECUTION_HALTED
+        # Default: emptyDir (operators can replace with PVC / hostPath / ConfigMap-as-file)
+        - name: reports
+          emptyDir: {}
+

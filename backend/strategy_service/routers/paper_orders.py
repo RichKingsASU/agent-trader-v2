@@ -5,6 +5,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+import os
+
 from backend.tenancy.auth import get_tenant_context
 from backend.tenancy.context import TenantContext
 
@@ -12,6 +14,8 @@ from ..db import build_raw_order, insert_paper_order
 from ..models import PaperOrderCreate
 
 router = APIRouter()
+
+RISK_SERVICE_URL = os.getenv("RISK_SERVICE_URL", "http://127.0.0.1:8002")
 
 
 class PaperOrderRequest(BaseModel):
@@ -44,7 +48,7 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
                 "current_day_drawdown": "0.0",
             }
             response = await client.post(
-                "http://127.0.0.1:8002/risk/check-trade",
+                f"{RISK_SERVICE_URL}/risk/check-trade",
                 json=risk_check_payload,
                 headers={"Authorization": request.headers.get("Authorization", "")},
             )

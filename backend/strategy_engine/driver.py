@@ -56,15 +56,35 @@ async def run_strategy(execute: bool):
     """
     Main function to run the strategy engine.
     """
-    execute_requested = bool(execute)
-    # Non-negotiable safety: never execute orders from this runtime.
-    if execute:
-        log_event(
-            "execution_suppressed",
-            level="WARNING",
-            reason="Strategy runtime execution is disabled by policy (audit-trail only).",
+    # --- Preflight safety checks (fail-closed) ---
+    kill = load_kill_switch()
+    threshold = load_stale_threshold_seconds()
+    hb = await _fetch_marketdata_heartbeat()
+    last_ts = _parse_iso_dt((hb.get("data") or {}).get("last_marketdata_ts"))
+
+    state = evaluate_safety_state(
+        trading_enabled=True,
+        kill_switch=kill,
+        marketdata_last_ts=last_ts,
+        stale_threshold_seconds=threshold,
+        now=_utc_now(),
+        ttl_seconds=30,
+    )
+
+    if not is_safe_to_run_strategies(state):
+        _log_intent(
+            {
+                "ts": _utc_now().isoformat(),
+                "intent_type": "strategy_cycle_skipped",
+                "agent_name": "strategy-engine",
+                "kill_switch": bool(kill),
+                "stale_threshold_seconds": threshold,
+                "marketdata_last_ts": last_ts.isoformat() if last_ts else None,
+                "marketdata_heartbeat": hb,
+                "reason_codes": list(state.reason_codes or []),
+            }
         )
-        execute = False
+        return
 
     strategy_id = await get_or_create_strategy_definition(config.STRATEGY_NAME)
     today = date.today()
@@ -266,7 +286,7 @@ async def run_strategy(execute: bool):
 if __name__ == "__main__":
     configure_startup_logging(
         agent_name="strategy-engine",
-        intent="Run the strategy engine loop (fetch data, decide, and emit non-executing order proposals).",
+        intent="Run the strategy engine loop (fetch data, decide); enforce global kill-switch and stale-marketdata gating.",
     )
     agent_start_total.inc(labels={"component": "strategy-engine"})
 

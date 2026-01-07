@@ -5,7 +5,8 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    PORT=8080
 
 # Build fingerprint (baked into image; can be overridden at deploy-time).
 ARG GIT_SHA=unknown
@@ -21,9 +22,17 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
 
 COPY . /app
 
-RUN python -m pip install --no-cache-dir -r /app/backend/strategy_engine/requirements.txt
+# Use the shared backend requirements (FastAPI + httpx needed for health contracts).
+RUN python -m pip install --no-cache-dir -r /app/backend/requirements.txt
 
 RUN chown -R appuser:appuser /app
 USER 10001
 
-CMD ["python", "-m", "backend.strategy_engine.driver", "--execute"]
+EXPOSE 8080
+
+# Healthcheck should not flap on halted markets.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/livez').read()" || exit 1
+
+# Serve health endpoints and run safety-gated cycles (evaluation only).
+CMD ["uvicorn", "backend.strategy_engine.service:app", "--host", "0.0.0.0", "--port", "8080"]
