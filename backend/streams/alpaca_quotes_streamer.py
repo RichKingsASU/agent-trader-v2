@@ -16,6 +16,7 @@ from backend.common.ops_metrics import (
     marketdata_ticks_total,
     mark_activity,
 )
+from backend.observability.logger import intent_end, intent_start, log_event
 
 LAST_MARKETDATA_TS_UTC: datetime | None = None
 LAST_MARKETDATA_SOURCE: str = "alpaca_quotes_streamer"
@@ -53,11 +54,30 @@ except KeyError as e:
 _batch_last_log_ts = 0.0
 _batch_count = 0
 
+
+def _symbols_from_env() -> list[str]:
+    raw = os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ")
+    syms = [s.strip().upper() for s in raw.split(",") if s.strip()]
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in syms:
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
 async def quote_data_handler(data):
     """Handler for incoming quote data."""
     # Consider each quote/tick as a heartbeat signal for marketdata freshness.
     marketdata_ticks_total.inc(1.0)
     mark_activity("marketdata")
+    try:
+        _mark_marketdata_seen(getattr(data, "timestamp", None))
+    except Exception:
+        _mark_marketdata_seen()
     logging.info(f"Received quote for {data.symbol}: Bid={data.bid_price}, Ask={data.ask_price}")
 
     # Intent point: data batch received (rate-limited; avoid per-tick spam).
@@ -128,10 +148,22 @@ async def main():
     
     try:
         await wss_client.run()
+    except asyncio.CancelledError:
+        # Allow graceful shutdown when the parent service receives SIGTERM.
+        try:
+            wss_client.stop()
+        except Exception:
+            pass
+        raise
     except Exception as e:
         errors_total.inc(labels={"component": "marketdata-mcp-server"})
         logging.error(f"Streamer crashed: {type(e).__name__}: {e}")
         raise
+    finally:
+        try:
+            wss_client.stop()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     try:

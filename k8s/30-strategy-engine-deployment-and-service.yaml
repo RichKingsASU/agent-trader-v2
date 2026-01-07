@@ -36,6 +36,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.labels['app']
+            - name: SERVICE_NAME
+              value: "strategy-engine"
             - name: AGENTTRADER_SAFETY_DIR
               value: "/etc/agenttrader-safety"
             - name: MARKETDATA_HEARTBEAT_URL
@@ -55,6 +57,13 @@ spec:
               cpu: 1
               memory: 1Gi
               ephemeral-storage: 2Gi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
           readinessProbe:
             httpGet:
               path: /readyz
