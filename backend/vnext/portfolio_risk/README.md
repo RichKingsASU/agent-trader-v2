@@ -1,17 +1,14 @@
-# Portfolio Risk
+# Portfolio Risk (vNEXT)
 
-## Intent
-Define portfolio-level risk representation and interfaces (exposures, Greeks, concentration, liquidity) as consumable artifacts for vNEXT governance and attribution.
+This module defines **read-only**, **strategy-agnostic** portfolio-level risk data models.
 
-## Non-goals (for this vNEXT skeleton)
-- Connecting to broker accounts
-- Calculating real Greeks from live option chains
-- Replacing existing `backend/risk*` services
+## Principles
 
-## Deliverables in this module
-- `interfaces.py`: Contract-only placeholders (no runtime behavior).
-- `__init__.py`: Empty package marker.
+- **Read-only**: outputs describe exposures/risks and MUST NOT trigger trades or execution.
+- **Strategy-agnostic**: callers may compute inputs from any source (broker, ledger, backtests, mocks).
 
-## Constraints
-- No imports from existing live systems under `backend/`.
-- No execution logic, side effects, network calls, or persistence.
+## What’s included
+
+- Data models for exposure snapshots, concentration metrics, and correlation risk summaries.
+- A provider interface (`get_portfolio_risk()`) that returns an aggregated risk report.
+
