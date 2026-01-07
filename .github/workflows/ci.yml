@@ -75,6 +75,9 @@ jobs:
       - name: Backend compile check
         run: python -m compileall backend
 
+      - name: Intent logging schema check
+        run: python scripts/validate_intent_logging.py
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:

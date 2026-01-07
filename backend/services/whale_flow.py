@@ -18,6 +18,7 @@ from google.cloud.firestore import Client
 
 from backend.persistence.firebase_client import get_firestore_client
 from backend.tenancy.paths import tenant_collection
+from backend.time.nyse_time import parse_ts
 
 logger = logging.getLogger(__name__)
 
@@ -388,19 +389,12 @@ class WhaleFlowService:
     
     def _parse_timestamp(self, timestamp: Any) -> datetime:
         """Parse various timestamp formats to datetime."""
-        if isinstance(timestamp, datetime):
-            return timestamp if timestamp.tzinfo else timestamp.replace(tzinfo=timezone.utc)
-        
-        if isinstance(timestamp, str):
-            # Try ISO format
-            try:
-                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-            except ValueError:
-                pass
-        
-        # Default to now
-        return datetime.now(timezone.utc)
+        if timestamp is None:
+            return datetime.now(timezone.utc)
+        try:
+            return parse_ts(timestamp)
+        except Exception:
+            return datetime.now(timezone.utc)
     
     def _to_decimal(self, value: Any) -> Optional[Decimal]:
         """Convert value to Decimal, handling None and various types."""

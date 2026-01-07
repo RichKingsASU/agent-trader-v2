@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: execution-agent
+  namespace: agenttrader
+  labels:
+    app: execution-agent
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: execution-agent
+  template:
+    metadata:
+      labels:
+        app: execution-agent
+    spec:
+      containers:
+        - name: execution-agent
+          # Placeholder image. Keep safe defaults below.
+          image: execution-agent:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            # Hard gate inputs (safe defaults)
+            - name: REPO_ID
+              value: "agent-trader-v2"
+            - name: AGENT_NAME
+              value: "execution-agent"
+            - name: AGENT_ROLE
+              value: "execution"
+            - name: AGENT_MODE
+              value: "OFF"
+            - name: EXECUTION_AGENT_ENABLED
+              value: "false"
+            - name: BROKER_EXECUTION_ENABLED
+              value: "false"
+
+            # Proposal ingestion
+            - name: PROPOSALS_PATH
+              value: "/var/run/agenttrader/proposals.ndjson"
+            - name: PROPOSALS_START_AT
+              value: "end"
+
+            # Marketdata freshness stub
+            - name: MARKETDATA_STALE_THRESHOLD_S
+              value: "120"
+            - name: MARKETDATA_LAST_TS_UTC
+              value: ""
+
+            # Output
+            - name: DECISIONS_BASE_DIR
+              value: "audit_artifacts/execution_decisions"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+
