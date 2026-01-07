@@ -247,3 +247,11 @@ For questions or issues:
 - Check `scripts/run_stress_test.py` for examples
 - Review `tests/test_monte_carlo.py` for unit tests
 - See `IMPLEMENTATION_SUMMARY.md` for architecture details
+
+## vNEXT: repo-wide non-invasive confirmation
+
+A repo-wide scan shows **no vNEXT-labeled runtime code** (outside vendored dependencies), so vNEXT introduces:
+- no imports from live-trading execution code
+- no side effects
+- no background threads
+- no network calls

@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 
 from backend.common.agent_boot import configure_startup_logging
-from backend.common.agent_mode_guard import enforce_agent_mode_guard
+from backend.common.app_heartbeat_writer import install_app_heartbeat
 from backend.common.http_correlation import install_http_correlation
 from backend.common.ops_metrics import REGISTRY, agent_start_total, errors_total, mark_activity, update_marketdata_heartbeat_metrics
 from backend.streams.alpaca_quotes_streamer import get_last_marketdata_ts, main as alpaca_streamer_main
@@ -23,6 +23,7 @@ from backend.utils.session import get_market_session
 app = FastAPI()
 install_fastapi_correlation_middleware(app)
 install_http_correlation(app, service="marketdata-mcp-server")
+install_app_heartbeat(app, service_name="marketdata-mcp-server")
 
 
 def _service_name() -> str:
