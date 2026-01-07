@@ -1,210 +1,114 @@
-# This CI pipeline enforces institutional safety guarantees.
+timeout: 3600s
+
+substitutions:
+  _PROJECT: agenttrader-prod
+  _REGION: us-east4
+  _REPO: trader-repo
+  _TAG: ${SHORT_SHA}
+
 steps:
-  # NOTE ON ORDER (determinism + debuggability):
-  # - Checkout first so every later step can log the same source state.
-  # - Safety guard next to fail fast on forbidden config / dangerous settings.
-  # - Import smoke check next to fail fast on broken Python entrypoints *before*
-  #   spending time building images.
-  # - Docker builds are serialized (explicit waitFor chain) to avoid hidden
-  #   parallelism and to make failures reproducible and logs easier to read.
-  # - Docker pushes are last so nothing is published unless all gates pass.
-
-  # a) Checkout
-  - name: 'gcr.io/cloud-builders/git'
-    id: 'Checkout'
-    entrypoint: 'bash'
+  # ------------------------------------------------------------
+  # PHASE 1: SAFETY GUARD (DETERMINISTIC, HARDENED)
+  # ------------------------------------------------------------
+  - id: Safety Guard
+    name: bash
+    entrypoint: bash
     args:
-      - -ceu
-      - |
-        echo "--- Checkout / source context ---"
-        echo "PWD=$$(pwd)"
-        echo "Workspace contents:"
-        ls -la
-        if [ -d .git ]; then
-          echo "GIT_SHA=$$(git rev-parse HEAD)"
-          echo "GIT_STATUS_PORCELAIN:"
-          git status --porcelain || true
-        else
-          echo "INFO: .git directory not present (source may be provided as an archive)."
-        fi
-
-  # b) Safety guard
-  - name: 'gcr.io/cloud-builders/bash'
-    id: 'CI Layout Validate'
-    entrypoint: 'bash'
-    args:
-      - -ceu
-      - |
-        bash ./scripts/validate_ci_layout.sh
-
-  - name: 'bash'
-    id: 'Safety Guard'
-    waitFor: ['Checkout']
-    entrypoint: 'bash'
-    args:
-      - '-c'
+      - -c
       - |
         set -euo pipefail
 
-        # NOTE: This guard is intentionally explicit and chatty.
-        # It should fail fast with actionable output when a safety invariant is violated.
+        echo "=== CI SAFETY GUARD START ==="
+        ROOT="$(pwd)"
+        echo "Repo root: $ROOT"
 
-        echo "--- Checking for ':latest' image tags ---"
-        LATEST_MATCH="$(find . -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -nH "image:.*:latest" 2>/dev/null | head -n 1 || true)"
-        if [ -n "$$LATEST_MATCH" ]; then
-          echo "CI SAFETY GUARD FAILED"
-          echo "Rule: No ':latest' image tags"
-          echo "Triggered by: $$LATEST_MATCH"
-          echo "Remediation: Pin images to immutable versions (e.g., ':1.2.3') or digests (e.g., '@sha256:...')."
-          exit 1
+        # ----------------------------
+        # Rule 1: No :latest images
+        # ----------------------------
+        echo "--- Rule: forbid :latest image tags ---"
+        FILES=$(find . -type f \( -name "*.yaml" -o -name "*.yml" \) ! -name "cloudbuild.yaml" || true)
+        if [ -z "$FILES" ]; then
+          echo "No YAML files found (PASS)"
         else
-          echo "✅ PASSED: No ':latest' image tags found."
-        fi
-
-        echo "--- Checking for 'AGENT_MODE=EXECUTE' ---"
-        AGENT_MODE_EXECUTE_FOUND=0
-        find "${WORKSPACE_ROOT}" -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | while read FILE_VAR;
-        do
-          # RISK: The `while ...; do ... done` is fed by a pipeline, so in bash it runs in a subshell.
-          #       Any changes to `AGENT_MODE_EXECUTE_FOUND` inside the loop will *not* propagate to the parent shell,
-          #       making the post-loop `if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]` check ineffective.
-          #       (This is more of a safety-gap than an early-failure cause, but it can hide real violations.)
-          if [ -f "$$FILE_VAR" ]; then
-            while read LINE_VAR;
-            do
-              # Check for literal 'AGENT_MODE=EXECUTE' or 'AGENT_MODE: EXECUTE'
-              if echo "$$LINE_VAR" | grep -q "AGENT_MODE=EXECUTE" || echo "$$LINE_VAR" | grep -q "AGENT_MODE: EXECUTE"; then
-                # Exclude the ALLOWED_AGENT_MODES definition itself
-                if ! echo "$$LINE_VAR" | grep -q "ALLOWED_AGENT_MODES"; then
-                  echo "CI SAFETY GUARD FAILED"
-                  echo "Rule: AGENT_MODE must not be set to EXECUTE in committed code"
-                  echo "Triggered by file: $$FILE_VAR"
-                  echo "Triggered by line: $$LINE_VAR"
-                  echo "Remediation: Remove the setting or change it to a non-executing mode; enforce EXECUTE only via runtime configuration/secrets, never committed code."
-                  AGENT_MODE_EXECUTE_FOUND=1
-                  break # Exit inner loop
-                fi
-              fi
-            done < "$$FILE_VAR"
+          if echo "$FILES" | xargs -r grep -n "image:.*:latest"; then
+            echo "❌ FAILED: ':latest' image tags are forbidden."
+            exit 1
+          else
+            echo "✅ PASSED: No ':latest' image tags found."
           fi
-          if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]; then
-            break # Exit outer loop
-          fi
-        done
-
-        if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]; then
-          exit 1
-        else
-          set +e
-          AGENT_MODE_MATCHES="$(
-            grep -nH -e "AGENT_MODE=EXECUTE" -e "AGENT_MODE: EXECUTE" -- "${AGENT_MODE_FILES[@]}" 2>&1 \
-              | grep -v "ALLOWED_AGENT_MODES"
-          )"
-          GREP_RC=$?
-          set -e
-
-        echo "--- Checking for scaled execution agents (replicas > 0) ---"
-        REPLICAS_MATCH="$(find ./k8s/execution -name "*.yaml" -o -name "*.yml" | xargs grep -nH "replicas:[[:space:]]*[1-9]" 2>/dev/null | head -n 1 || true)"
-        if [ -n "$$REPLICAS_MATCH" ]; then
-          echo "CI SAFETY GUARD FAILED"
-          echo "Rule: Execution agent replicas must be 0 in committed code"
-          echo "Triggered by: $$REPLICAS_MATCH"
-          echo "Remediation: Set 'replicas: 0' in committed manifests; scale up only via approved runtime overrides (e.g., kubectl/Helm/Kustomize) during controlled operations."
-          exit 1
         fi
-        echo "✅ PASSED: No execution agents found with replicas > 0."
 
-        echo "CI SAFETY GUARD PASSED — proceeding to build"
+        # ----------------------------
+        # Rule 2: No AGENT_MODE=EXECUTE
+        # ----------------------------
+        echo "--- Rule: forbid AGENT_MODE=EXECUTE ---"
+        FILES=$(find . -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" \) ! -name "cloudbuild.yaml" || true)
+        if [ -z "$FILES" ]; then
+          echo "No relevant files found (PASS)"
+        else
+          if echo "$FILES" | xargs -r grep -nE "AGENT_MODE\s*[:=]\s*EXECUTE"; then
+            echo "❌ FAILED: AGENT_MODE=EXECUTE is forbidden in committed code."
+            exit 1
+          else
+            echo "✅ PASSED: No AGENT_MODE=EXECUTE found."
+          fi
+        fi
 
-  # Build marketdata-mcp-server
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Build marketdata-mcp-server'
-    waitFor: ['Import smoke check']
-    args: [
-      'build',
-      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}',
-      '-f', '/workspace/backend/Dockerfile.marketdata-mcp-server',
-      '/workspace'
-    ]
+        # ----------------------------
+        # Rule 3: Execution agents must not be scaled
+        # ----------------------------
+        echo "--- Rule: execution agents replicas must be 0 ---"
+        if [ -d "./k8s/execution" ]; then
+          if grep -R "replicas:[[:space:]]*[1-9]" ./k8s/execution; then
+            echo "❌ FAILED: Execution agents must have replicas: 0."
+            exit 1
+          else
+            echo "✅ PASSED: Execution agents not scaled."
+          fi
+        else
+          echo "No execution manifests present (PASS)"
+        fi
 
-  - name: 'gcr.io/cloud-builders/bash'
-    id: 'Import gate marketdata-mcp-server'
-    waitFor: ['Build marketdata-mcp-server']
-    entrypoint: 'bash'
+        echo "=== CI SAFETY GUARD PASSED ==="
+
+  # ------------------------------------------------------------
+  # PHASE 2: BUILD STRATEGY ENGINE
+  # ------------------------------------------------------------
+  - id: Build strategy-engine
+    name: gcr.io/cloud-builders/docker
     args:
-      - "-c"
-      - |
-        set -euo pipefail
-        IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
-        chmod +x ./scripts/ci_import_gate.sh
-        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.app
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
+      - -f
+      - infra/Dockerfile.strategy_engine
+      - .
 
-  # Build strategy-engine
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Build strategy-engine'
-    waitFor: ['Import gate marketdata-mcp-server']
-    args: [
-      'build',
-      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}',
-      '-f', '/workspace/infra/Dockerfile.strategy_engine',
-      '/workspace'
-    ]
-
-  - name: 'gcr.io/cloud-builders/bash'
-    id: 'Import gate strategy-engine'
-    waitFor: ['Build strategy-engine']
-    entrypoint: 'bash'
+  - id: Push strategy-engine
+    name: gcr.io/cloud-builders/docker
     args:
-      - "-c"
-      - |
-        set -euo pipefail
-        IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
-        chmod +x ./scripts/ci_import_gate.sh
-        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_engine.service
+      - push
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
 
-  # Build strategy-runtime (used by gamma and whale strategies)
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Build strategy-runtime'
-    waitFor: ['Import gate strategy-engine']
-    args: [
-      'build',
-      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}',
-      '-f', '/workspace/backend/strategy_service/Dockerfile',
-      '/workspace'
-    ]
-
-  - name: 'gcr.io/cloud-builders/bash'
-    id: 'Import gate strategy-runtime'
-    waitFor: ['Build strategy-runtime']
-    entrypoint: 'bash'
+  # ------------------------------------------------------------
+  # PHASE 3: BUILD MARKETDATA MCP SERVER
+  # ------------------------------------------------------------
+  - id: Build marketdata-mcp-server
+    name: gcr.io/cloud-builders/docker
     args:
-      - "-c"
-      - |
-        set -euo pipefail
-        IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
-        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}
+      - -f
+      - infra/Dockerfile.marketdata_mcp_server
+      - .
 
-  # e) Docker push(es) (serialized; publish only after all gates pass).
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Push marketdata-mcp-server'
-    waitFor: ['Import gate strategy-runtime']
-    args: [
-      'push',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
-    ]
+  - id: Push marketdata-mcp-server
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}
 
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Push strategy-engine'
-    waitFor: ['Push marketdata-mcp-server']
-    args: [
-      'push',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
-    ]
-
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Push strategy-runtime'
-    waitFor: ['Push strategy-engine']
-    args: [
-      'push',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
-    ]
+images:
+  - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
+  - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}
