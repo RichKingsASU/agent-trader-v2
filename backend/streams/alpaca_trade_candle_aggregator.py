@@ -12,6 +12,7 @@ from alpaca.data.enums import DataFeed
 from alpaca.data.live.stock import StockDataStream
 
 from backend.common.timeutils import ensure_aware_utc, utc_now
+from backend.dataplane.file_store import FileCandleStore, FileTickStore
 from backend.marketdata.candles.aggregator import CandleAggregator
 from backend.marketdata.candles.models import EmittedCandle
 from backend.marketdata.candles.timeframes import SUPPORTED_TIMEFRAMES
@@ -25,6 +26,11 @@ def _env_list(name: str, default: str) -> list[str]:
     raw = os.getenv(name, default)
     parts = [p.strip() for p in raw.split(",")]
     return [p for p in parts if p]
+
+
+def _env_bool(name: str, default: str = "false") -> bool:
+    v = os.getenv(name, default).strip().lower()
+    return v in {"1", "true", "yes", "y"}
 
 
 def _parse_feed(value: str) -> DataFeed:
@@ -172,12 +178,31 @@ async def _db_consumer(queue: asyncio.Queue[EmittedCandle], writer: MarketCandle
             await asyncio.sleep(1)
 
 
-async def _periodic_flush(agg: CandleAggregator, queue: asyncio.Queue[EmittedCandle], *, interval_sec: float) -> None:
+async def _periodic_flush(
+    agg: CandleAggregator,
+    queue: asyncio.Queue[EmittedCandle],
+    *,
+    interval_sec: float,
+    candle_store: FileCandleStore | None = None,
+) -> None:
     while True:
         await asyncio.sleep(interval_sec)
         try:
             now = utc_now()
-            for c in agg.flush(now):
+            flushed = agg.flush(now)
+            if candle_store is not None:
+                try:
+                    finals = [c for c in flushed if getattr(c, "is_final", False)]
+                    if finals:
+                        grouped: dict[tuple[str, str], list[EmittedCandle]] = {}
+                        for c in finals:
+                            grouped.setdefault((c.symbol, c.timeframe), []).append(c)
+                        for (sym, tf), batch in grouped.items():
+                            candle_store.write_candles(sym, tf, batch)
+                except Exception:
+                    logger.exception("candle store write failed (flush loop)")
+
+            for c in flushed:
                 queue.put_nowait(c)
         except Exception:
             logger.exception("candle flush loop error")
@@ -235,13 +260,19 @@ async def main() -> None:
         session_daily=cfg.session_daily,
         emit_updates=True,
     )
+
+    enable_tick_store = _env_bool("ENABLE_TICK_STORE", "false")
+    enable_candle_store = _env_bool("ENABLE_CANDLE_STORE", "false")
+    tick_store = FileTickStore() if enable_tick_store else None
+    candle_store = FileCandleStore() if enable_candle_store else None
+
     writer = await MarketCandlesWriter.create(cfg.database_url)
     out_q: asyncio.Queue[EmittedCandle] = asyncio.Queue(maxsize=cfg.db_batch_max * 4)
 
     # Start DB writer + periodic flush loops
     tasks = [
         asyncio.create_task(_db_consumer(out_q, writer, batch_max=cfg.db_batch_max)),
-        asyncio.create_task(_periodic_flush(agg, out_q, interval_sec=cfg.flush_interval_sec)),
+        asyncio.create_task(_periodic_flush(agg, out_q, interval_sec=cfg.flush_interval_sec, candle_store=candle_store)),
         asyncio.create_task(_periodic_ops(agg, interval_sec=30.0)),
     ]
 
@@ -255,7 +286,29 @@ async def main() -> None:
             "size": getattr(data, "size", None),
             "timestamp": getattr(data, "timestamp", None),
         }
+
+        if tick_store is not None:
+            try:
+                sym = str(event.get("symbol") or "").strip().upper()
+                if sym:
+                    tick_store.write_ticks(sym, [event])
+            except Exception:
+                logger.exception("tick store write failed")
+
         candles = agg.ingest(event)
+
+        if candle_store is not None:
+            try:
+                finals = [c for c in candles if getattr(c, "is_final", False)]
+                if finals:
+                    grouped: dict[tuple[str, str], list[EmittedCandle]] = {}
+                    for c in finals:
+                        grouped.setdefault((c.symbol, c.timeframe), []).append(c)
+                    for (sym, tf), batch in grouped.items():
+                        candle_store.write_candles(sym, tf, batch)
+            except Exception:
+                logger.exception("candle store write failed")
+
         for c in candles:
             try:
                 out_q.put_nowait(c)
@@ -275,7 +328,20 @@ async def main() -> None:
     finally:
         # Best-effort shutdown flush
         try:
-            for c in agg.flush(utc_now()):
+            flushed = agg.flush(utc_now())
+            if candle_store is not None:
+                try:
+                    finals = [c for c in flushed if getattr(c, "is_final", False)]
+                    if finals:
+                        grouped: dict[tuple[str, str], list[EmittedCandle]] = {}
+                        for c in finals:
+                            grouped.setdefault((c.symbol, c.timeframe), []).append(c)
+                        for (sym, tf), batch in grouped.items():
+                            candle_store.write_candles(sym, tf, batch)
+                except Exception:
+                    logger.exception("candle store write failed (shutdown flush)")
+
+            for c in flushed:
                 out_q.put_nowait(c)
             await out_q.join()
         except Exception:
