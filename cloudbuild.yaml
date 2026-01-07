@@ -95,10 +95,12 @@ steps:
     id: 'Import gate marketdata-mcp-server'
     entrypoint: 'bash'
     args:
-      - -ceu
+      - "-c"
       - |
+        set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
-        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.app
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.app
 
   # Build and push strategy-engine
   - name: 'gcr.io/cloud-builders/docker'
@@ -114,10 +116,12 @@ steps:
     id: 'Import gate strategy-engine'
     entrypoint: 'bash'
     args:
-      - -ceu
+      - "-c"
       - |
+        set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
-        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.strategy_engine.service
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_engine.service
 
   # Build and push strategy-runtime (used by gamma and whale strategies)
   - name: 'gcr.io/cloud-builders/docker'
@@ -133,7 +137,9 @@ steps:
     id: 'Import gate strategy-runtime'
     entrypoint: 'bash'
     args:
-      - -ceu
+      - "-c"
       - |
+        set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
-        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.strategy_service.app
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
