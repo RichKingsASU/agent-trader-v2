@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 
+from backend.common.logging import init_structured_logging
 from backend.common.runtime_fingerprint import log_runtime_fingerprint
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.safety.startup_validation import validate_agent_mode_or_exit
@@ -22,9 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    # Basic logging (service is intended to run as a simple process / container).
-    level = (os.getenv("LOG_LEVEL") or "INFO").upper()
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    init_structured_logging(service="news-ingest")
 
     # Enforce OBSERVE-only at runtime for this service.
     validate_agent_mode_or_exit(allowed={"OBSERVE"})

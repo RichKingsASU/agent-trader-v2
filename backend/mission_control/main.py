@@ -21,6 +21,9 @@ from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from backend.common.app_heartbeat_writer import start_heartbeat_background, stop_heartbeat_background
+from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware
+
+init_structured_logging(service="mission-control")
 
 AGENT_KIND = Literal["marketdata", "strategy", "execution", "ingest"]
 CRITICALITY = Literal["critical", "important", "optional"]
@@ -417,6 +420,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Agent Mission Control", version="0.1.0", lifespan=lifespan)
+install_fastapi_request_id_middleware(app, service="mission-control")
 
 
 @app.get("/healthz")
