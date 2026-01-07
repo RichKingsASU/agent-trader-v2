@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dr-snapshot-reader
+  namespace: trading-floor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dr-snapshot-reader
+  namespace: trading-floor
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "serviceaccounts", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dr-snapshot-reader
+  namespace: trading-floor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dr-snapshot-reader
+subjects:
+  - kind: ServiceAccount
+    name: dr-snapshot-reader
+    namespace: trading-floor
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-dr-snapshots
+  namespace: trading-floor
+spec:
+  # Disabled by default (scaffold only).
+  suspend: true
+  schedule: "17 3 * * *" # 03:17 UTC daily
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: dr-snapshot-reader
+          restartPolicy: Never
+          containers:
+            - name: dr-snapshot
+              # Scaffold: you must build/publish an ops image that contains the repo scripts
+              # (capture_lkg.sh + backup_cluster_state.sh) and pin it by digest.
+              image: "REPLACE_WITH_YOUR_OPS_IMAGE@sha256:REPLACE_ME"
+              args:
+                - /bin/bash
+                - -lc
+                - |
+                  set -euo pipefail
+                  ./scripts/capture_lkg.sh trading-floor
+                  ./scripts/backup_cluster_state.sh trading-floor
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+

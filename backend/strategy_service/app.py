@@ -44,6 +44,12 @@ def _startup() -> None:
 def health() -> dict:
     return {"status": "ok", "service": "strategy-service"}
 
+@app.get("/ops/status")
+def ops_status() -> dict[str, Any]:
+    kill, _source = get_kill_switch_state()
+    tenant_id = str(os.getenv("TENANT_ID") or os.getenv("STRATEGY_TENANT_ID") or "").strip() or None
+    stale_s = int(os.getenv("MARKETDATA_STALE_THRESHOLD_S") or "120")
+    hb = check_market_ingest_heartbeat(tenant_id=tenant_id, stale_threshold_seconds=stale_s)
 
 @app.get("/healthz")
 def healthz() -> dict:
