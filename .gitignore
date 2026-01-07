@@ -11,6 +11,8 @@ secret.json
 serviceAccountKey.json
 service-account-key.json
 *.json
+!firebase.json
+!.firebaserc
 *.pem
 *.key
 deploy_logs/
