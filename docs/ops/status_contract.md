@@ -1,104 +1,48 @@
-# Ops Status Contract (AgentTrader v2)
+# Ops “Status Page” Contract (minimal, read-only)
 
-Goal: a UI (or deployment report) can show **calm, deterministic** operational states across:
-- marketdata
-- strategy-engine
-- execution-agent (often scaled to 0)
-- ingest jobs
-- overall “Trading Floor”
+Goal: allow an Ops UI to display **service state** without touching execution paths.
 
-This contract is implemented in `backend/ops/status_contract.py` and exposed by services at:
-- `GET /ops/status`
+Services must expose:
+- `GET /ops/status` on **strategy-engine**
+- `GET /ops/status` on **marketdata-mcp-server**
 
-## JSON schema (example shape)
+## Contract (JSON schema)
+
+Response is JSON with these fields (all fields always present; some may be `null`):
+
+- **`uptime`**: number  
+  Seconds since process start (monotonic, best-effort).
+- **`last_heartbeat`**: string | null  
+  RFC3339/ISO8601 UTC timestamp like `"2026-01-07T12:00:00Z"`.  
+  For marketdata, this should prefer “last tick observed” when available.
+- **`data_freshness_seconds`**: number | null  
+  Seconds since the last relevant data observation.
+  - marketdata-mcp-server: seconds since last tick (if any)
+  - strategy-engine: best-effort marketdata freshness observed by the engine (if any)
+- **`build_sha`**: string  
+  Git commit SHA (or `"unknown"` if not provided).
+- **`agent_mode`**: string  
+  Process authority mode (e.g. `"OBSERVE"`, `"EVAL"`, `"PAPER"`). **Must not be `"EXECUTE"`.**
+
+## Example response
 
 ```json
 {
-  "service_name": "marketdata-mcp-server",
-  "service_kind": "marketdata",
-  "repo_id": "RichKingsASU/agent-trader-v2",
-  "git_sha": "abc123",
-  "build_id": null,
-  "agent_identity": {
-    "agent_name": "marketdata-mcp-server",
-    "agent_role": "marketdata",
-    "agent_mode": "STREAM"
-  },
-  "status": {
-    "state": "OK",
-    "summary": "Healthy",
-    "reason_codes": [],
-    "last_updated_utc": "2026-01-07T12:00:00Z"
-  },
-  "heartbeat": {
-    "last_heartbeat_utc": "2026-01-07T12:00:00Z",
-    "age_seconds": 0.0,
-    "ttl_seconds": 60
-  },
-  "marketdata": {
-    "last_tick_utc": "2026-01-07T12:00:00Z",
-    "last_bar_utc": null,
-    "stale_threshold_seconds": 120,
-    "is_fresh": true
-  },
-  "safety": {
-    "kill_switch": false,
-    "safe_to_run_strategies": true,
-    "safe_to_execute_orders": false,
-    "gating_reasons": []
-  },
-  "endpoints": {
-    "healthz": "/health",
-    "heartbeat": null,
-    "metrics": null
-  }
+  "uptime": 12345.67,
+  "last_heartbeat": "2026-01-07T12:00:00Z",
+  "data_freshness_seconds": 2.4,
+  "build_sha": "54afffe",
+  "agent_mode": "OBSERVE"
 }
 ```
 
-## Truth table (single deterministic semantics)
+## Safety constraints
 
-States: `OK | DEGRADED | HALTED | MARKET_CLOSED | OFFLINE | UNKNOWN`
+- The endpoint is **read-only**: it must not place orders, trigger execution, or mutate external state.
+- It must return quickly even when dependencies are degraded; unknown freshness should be expressed as `null`.
 
-Key rules (in priority order):
-- **UNKNOWN**: only when required fields are missing (contract cannot be trusted).
-- **OFFLINE (execution)**: `execution_enabled=false` or `execution_replicas=0` → OFFLINE (not an error).
-- **OFFLINE (general)**: process not up / not reachable.
-- **HALTED**: process is up AND kill-switch is true.
-- **Market-hours awareness**:
-  - if market is closed and the service is otherwise healthy → **MARKET_CLOSED** (not DEGRADED).
-- **Marketdata freshness during market hours**:
-  - marketdata stale/missing → **DEGRADED** for `marketdata`
-  - marketdata stale/missing → **HALTED** for `strategy` (and execution runtime)
+## Note (optional richer contract)
 
-Reason codes are stable strings (examples):
-- `KILL_SWITCH`
-- `MARKET_CLOSED`
-- `MARKETDATA_STALE`
-- `MARKETDATA_MISSING`
-- `EXECUTION_DISABLED`
-- `REQUIRED_FIELDS_MISSING`
-
-## Examples (what the UI should show)
-
-### OK during market hours
-- `status.state=OK`
-- `reason_codes=[]`
-
-### MARKET_CLOSED after hours
-- `status.state=MARKET_CLOSED`
-- `reason_codes=["MARKET_CLOSED"]`
-
-### DEGRADED marketdata stale
-- `service_kind=marketdata`
-- `status.state=DEGRADED`
-- `reason_codes=["MARKETDATA_STALE"]`
-
-### HALTED kill-switch
-- `status.state=HALTED`
-- `reason_codes=["KILL_SWITCH"]`
-
-### OFFLINE execution-agent (scaled 0)
-- `service_kind=execution`
-- `status.state=OFFLINE`
-- `reason_codes=["EXECUTION_DISABLED"]`
+This repo also contains a richer, deterministic multi-block ops schema in `backend/ops/status_contract.py`.  
+Services may return additional fields beyond this minimal contract, but the five keys above are the **stable** UI baseline.
 

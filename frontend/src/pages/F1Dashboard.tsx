@@ -91,6 +91,7 @@ const F1Dashboard = () => {
           macd_state: macdState,
           rvol: newRVOL,
           trend_bias: trendBias,
+          volatility_regime: volRegime,
         };
       });
     }, Math.random() * 2000 + 3000); // Random interval 3-5 seconds

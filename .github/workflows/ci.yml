@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -21,6 +22,40 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # CI containment: GitHub Actions must never perform cloud or image build operations.
+      # Cloud Build is the single source of truth for building/pushing images and deployments.
+      - name: CI containment: deny cloud CLIs (gcloud/docker/kubectl)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-deny
+
+          cat > .ci-deny/gcloud <<'EOF'
+          #!/usr/bin/env bash
+          echo "ERROR: gcloud is forbidden in GitHub Actions CI (use Cloud Build)." >&2
+          exit 2
+          EOF
+
+          cat > .ci-deny/docker <<'EOF'
+          #!/usr/bin/env bash
+          echo "ERROR: docker is forbidden in GitHub Actions CI (use Cloud Build)." >&2
+          exit 2
+          EOF
+
+          cat > .ci-deny/kubectl <<'EOF'
+          #!/usr/bin/env bash
+          echo "ERROR: kubectl is forbidden in GitHub Actions CI (use approved deploy pipelines)." >&2
+          exit 2
+          EOF
+
+          chmod +x .ci-deny/gcloud .ci-deny/docker .ci-deny/kubectl
+          echo "PATH=$PWD/.ci-deny:$PATH" >> "$GITHUB_ENV"
+
+          # Sanity: ensure the deny-shims are the first resolution targets.
+          command -v gcloud >/dev/null && [[ "$(command -v gcloud)" == *"/.ci-deny/gcloud" ]]
+          command -v docker >/dev/null && [[ "$(command -v docker)" == *"/.ci-deny/docker" ]]
+          command -v kubectl >/dev/null && [[ "$(command -v kubectl)" == *"/.ci-deny/kubectl" ]]
 
       - name: Blockers: banned vendor refs + secret patterns
         shell: bash
@@ -51,6 +86,42 @@ jobs:
             echo "ERROR: possible secret material detected." >&2
             exit 1
           fi
+
+      - name: YAML syntax validation (no schema; no cloud calls)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade pyyaml
+          python - <<'PY'
+          from __future__ import annotations
+          import sys
+          from pathlib import Path
+          import yaml
+
+          roots = ["config", "configs", ".github/workflows", "infra", "k8s"]
+          files: list[Path] = []
+          for r in roots:
+            p = Path(r)
+            if p.exists():
+              files.extend(sorted(p.rglob("*.yml")))
+              files.extend(sorted(p.rglob("*.yaml")))
+
+          bad: list[tuple[str, str]] = []
+          for f in files:
+            try:
+              txt = f.read_text(encoding="utf-8", errors="replace")
+              list(yaml.safe_load_all(txt))
+            except Exception as e:  # noqa: BLE001
+              bad.append((str(f), str(e)))
+
+          if bad:
+            for f, e in bad[:50]:
+              print(f"ERROR: YAML parse failed: {f}: {e}", file=sys.stderr)
+            raise SystemExit(2)
+
+          print(f"ok: parsed {len(files)} YAML files")
+          PY
 
       - name: Set up Python
         uses: actions/setup-python@v5

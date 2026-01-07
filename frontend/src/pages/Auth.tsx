@@ -9,10 +9,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, Mail, Lock, AlertCircle } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { isFirebaseConfigured } from "@/firebase";
 
 export default function Auth() {
   const navigate = useNavigate();
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -93,6 +94,44 @@ export default function Auth() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  // Pre-Firebase stabilization: allow local/dev access without configuring external SaaS.
+  if (!isFirebaseConfigured) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+        <Card className="w-full max-w-md">
+          <CardHeader className="text-center">
+            <CardTitle className="text-2xl font-bold">Agent Trader</CardTitle>
+            <CardDescription>Local mode (Firebase not configured)</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <Alert className="border-white/10 bg-transparent">
+              <AlertDescription>
+                This repo is in <strong>Pre-Firebase Stabilization</strong>. Sign-in is mocked locally so the UI can run
+                without external SaaS dependencies.
+              </AlertDescription>
+            </Alert>
+            <Button
+              className="w-full"
+              onClick={async () => {
+                setLoading(true);
+                try {
+                  await login();
+                  navigate("/");
+                } finally {
+                  setLoading(false);
+                }
+              }}
+              disabled={loading}
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Continue in Local Mode
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     );
   }
