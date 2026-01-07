@@ -21,7 +21,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Target, ChevronDown, ChevronUp } from "lucide-react";
 import { toast } from "sonner";
 import { useLayout } from "@/contexts/LayoutContext";
-import { useLiveAccount } from "@/hooks/useLiveQuotes";
+import { useLiveAccount } from "@/hooks/useLiveAccount";
 
 interface AccountData {
   account_id: string;

@@ -1,9 +1,21 @@
 import { useMemo } from "react";
-
-import { useMarketLiveQuotes } from "@/hooks/useMarketLiveQuotes";
 import { useAccountStore } from "@/store/useAccountStore";
 
 export type LiveStatus = "LIVE" | "STALE" | "OFFLINE";
+
+export interface LiveQuote {
+  symbol: string;
+  bid_price?: number | null;
+  ask_price?: number | null;
+  last_trade_price?: number | null;
+  price?: number | null;
+  source?: string | null;
+  last_update_ts?: Date | null;
+}
+
+export interface LiveQuotesBySymbol {
+  [symbol: string]: LiveQuote;
+}
 
 export interface UseLiveQuotesOptions {
   subscribeQuotes?: boolean;
@@ -17,90 +29,43 @@ export interface UseLiveQuotesReturn {
   quotesBySymbol: ReturnType<typeof useMarketLiveQuotes>["quotesBySymbol"];
   loading: boolean;
   error: string | null;
-  heartbeat: ReturnType<typeof useMarketLiveQuotes>["heartbeat"];
-  heartbeatAt: ReturnType<typeof useMarketLiveQuotes>["heartbeatAt"];
   status: LiveStatus;
+  heartbeatAt: Date | null;
+  lastUpdated: Date | null;
   isLive: boolean;
-  lastUpdated: ReturnType<typeof useMarketLiveQuotes>["lastUpdated"];
 
-  // Account snapshot (warm-cache only in pre-Firebase stabilization)
+  // Convenience fields used by some pages/headers.
   equity: number;
-  buyingPower: number;
-  cash: number;
 }
 
 /**
- * Pre-Firebase stabilization wrapper:
- * - Keeps the existing `useLiveQuotes` API shape used throughout the UI
- * - Uses `useMarketLiveQuotes` for market ingest status/quotes (if available)
- * - Exposes cached account numbers from the local store (no external SaaS required)
+ * Minimal, safe live-quotes hook.
+ *
+ * This repo’s UI expects `useLiveQuotes()` to exist even when real-time ingest
+ * isn’t configured yet. For Firebase Hosting + Auth migration, we keep this
+ * hook read-only and stable: it returns cached account numbers from
+ * `useAccountStore` and marks ingest as OFFLINE.
  */
-export function useLiveQuotes(options: UseLiveQuotesOptions = {}): UseLiveQuotesReturn {
-  const market = useMarketLiveQuotes({
-    subscribeQuotes: options.subscribeQuotes,
-    subscribeHeartbeat: options.subscribeHeartbeat,
-    heartbeatStaleAfterSeconds: options.heartbeatStaleAfterSeconds,
-  });
+export const useLiveQuotes = (_options: UseLiveQuotesOptions = {}): UseLiveQuotesReturn => {
+  const { equity } = useAccountStore((s) => ({ equity: s.equity }));
 
-  const { equity, buying_power, cash } = useAccountStore((s) => ({
-    equity: s.equity,
-    buying_power: s.buying_power,
-    cash: s.cash,
-  }));
+  const quotesBySymbol = useMemo<LiveQuotesBySymbol>(() => ({}), []);
+  const quotes = useMemo<LiveQuote[]>(() => [], []);
+
+  const status: LiveStatus = "OFFLINE";
+  const heartbeatAt: Date | null = null;
+  const lastUpdated: Date | null = null;
 
   return {
-    ...market,
-    status: market.status as LiveStatus,
+    quotes,
+    quotesBySymbol,
+    loading: false,
+    error: null,
+    status,
+    heartbeatAt,
+    lastUpdated,
+    isLive: false,
     equity,
-    buyingPower: buying_power,
-    cash,
   };
-}
-
-export interface UseLiveAccountReturn {
-  equity: number;
-  buying_power: number;
-  buyingPower: number;
-  cash: number;
-  updatedAt: Date | null;
-  hasCache: boolean;
-  loading: boolean;
-  listenerStatus: "idle" | "connecting" | "connected" | "error";
-  listenerError: string | null;
-}
-
-/**
- * Lightweight account snapshot hook (warm-cache only).
- * This intentionally avoids any external SaaS dependency pre-Firebase.
- */
-export function useLiveAccount(): UseLiveAccountReturn {
-  const { equity, buying_power, cash, updated_at_ms, hasWarmCache, hasHydrated, listenerStatus, listenerError } =
-    useAccountStore((s) => ({
-      equity: s.equity,
-      buying_power: s.buying_power,
-      cash: s.cash,
-      updated_at_ms: s.updated_at_ms,
-      hasWarmCache: s.hasWarmCache,
-      hasHydrated: s.hasHydrated,
-      listenerStatus: s.listenerStatus,
-      listenerError: s.listenerError,
-    }));
-
-  const updatedAt = typeof updated_at_ms === "number" ? new Date(updated_at_ms) : null;
-  const hasAny = equity !== 0 || buying_power !== 0 || cash !== 0 || updatedAt !== null;
-  const hasCache = hasWarmCache || hasAny;
-  const loading = useMemo(() => !hasHydrated && !hasCache && listenerStatus !== "connected", [hasHydrated, hasCache, listenerStatus]);
-
-  return {
-    equity,
-    buying_power,
-    buyingPower: buying_power,
-    cash,
-    updatedAt,
-    hasCache,
-    loading,
-    listenerStatus,
-    listenerError,
-  };
-}
+};
 

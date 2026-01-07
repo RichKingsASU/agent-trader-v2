@@ -8,6 +8,7 @@ import { LayoutProvider } from "./contexts/LayoutContext";
 import { AuthProvider } from "./contexts/AuthContext";
 import { UserTradingProvider } from "./contexts/UserTradingContext";
 import { MainLayout } from "./layouts/MainLayout";
+import RequireOperator from "./components/auth/RequireOperator";
 import Index from "./pages/Index";
 import F1Dashboard from "./pages/F1Dashboard";
 import Console from "./pages/Console";
@@ -46,33 +47,38 @@ const App = () => (
                 <Sonner />
                 <MainLayout>
                   <Routes>
-                  <Route path="/" element={<F1Dashboard />} />
-                  <Route path="/landing" element={<Landing />} />
-                  <Route path="/auth" element={<Auth />} />
-                  <Route path="/settings" element={<Settings />} />
-                  <Route path="/allocation" element={<Allocation />} />
-                  <Route path="/analytics" element={<Analytics />} />
-                  <Route path="/legacy" element={<Index />} />
-                  <Route path="/console/:symbol" element={<Console />} />
-                  <Route path="/options" element={<Options />} />
-                  <Route path="/options-dashboard" element={<OptionsDashboard />} />
-                  <Route path="/whale-flow" element={<WhaleFlow />} />
-                  <Route path="/developer" element={<Developer />} />
-                  <Route path="/mission-control" element={<MissionControl />} />
-                  <Route path="/backtest" element={<BacktestDashboard />} />
-                  <Route path="/ops" element={<OpsLayout />}>
-                    <Route index element={<OpsOverview />} />
-                    <Route path="options" element={<OptionsExplorer />} />
-                    <Route path="news" element={<NewsViewer />} />
-                    <Route path="jobs" element={<JobHealth />} />
-                    <Route path="debug" element={<OpsDebug />} />
-                  </Route>
-                  <Route path="/backtesting" element={<Backtesting />} />
-                  
-                  
-                  {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-                  <Route path="*" element={<NotFound />} />
-                </Routes>
+                    {/* Public routes */}
+                    <Route path="/auth" element={<Auth />} />
+                    <Route path="/landing" element={<Landing />} />
+
+                    {/* Operator-only routes */}
+                    <Route element={<RequireOperator />}>
+                      <Route path="/" element={<F1Dashboard />} />
+                      <Route path="/settings" element={<Settings />} />
+                      <Route path="/allocation" element={<Allocation />} />
+                      <Route path="/analytics" element={<Analytics />} />
+                      <Route path="/legacy" element={<Index />} />
+                      <Route path="/console/:symbol" element={<Console />} />
+                      <Route path="/options" element={<Options />} />
+                      <Route path="/options-dashboard" element={<OptionsDashboard />} />
+                      <Route path="/whale-flow" element={<WhaleFlow />} />
+                      <Route path="/developer" element={<Developer />} />
+                      <Route path="/mission-control" element={<MissionControl />} />
+                      <Route path="/backtest" element={<BacktestDashboard />} />
+                      <Route path="/lovable/dashboard" element={<LovableDashboardPage />} />
+                      <Route path="/lovable/developer" element={<LovableDeveloperPage />} />
+                      <Route path="/ops" element={<OpsLayout />}>
+                        <Route index element={<OpsOverview />} />
+                        <Route path="options" element={<OptionsExplorer />} />
+                        <Route path="news" element={<NewsViewer />} />
+                        <Route path="jobs" element={<JobHealth />} />
+                      </Route>
+                      <Route path="/backtesting" element={<Backtesting />} />
+
+                      {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+                      <Route path="*" element={<NotFound />} />
+                    </Route>
+                  </Routes>
               </MainLayout>
             </TooltipProvider>
             </UserTradingProvider>

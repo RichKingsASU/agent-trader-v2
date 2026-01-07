@@ -12,7 +12,7 @@ import { useLayout } from "@/contexts/LayoutContext";
 import { useLiveWatchlist } from "@/hooks/useLiveWatchlist";
 import { useLiveQuotes } from "@/hooks/useLiveQuotes";
 import LiveQuotesWidget from "@/components/LiveQuotesWidget";
-import { useLiveAccount } from "@/hooks/useLiveQuotes";
+import { useLiveAccount } from "@/hooks/useLiveAccount";
 
 const F1Dashboard = () => {
   const navigate = useNavigate();
