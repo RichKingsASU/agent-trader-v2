@@ -20,7 +20,7 @@ MISSION_CONTROL_URL ?= http://agenttrader-mission-control
 
 PY ?= python3
 
-.PHONY: help fmt lint smoke-check test build frontend-build deploy guard report readiness status git-status logs scale port-forward clean dev
+.PHONY: help fmt lint smoke-check test build frontend-build deploy guard report readiness status git-status logs scale port-forward clean dev rollout
 
 help: ## Show available targets and usage
 	@echo "AgentTrader v2 — Trading Floor Makefile"
@@ -198,6 +198,15 @@ logs: ## Tail logs for one workload (AGENT=<name>)
 	@./scripts/kubectl_logs.sh \
 		--namespace "$(NAMESPACE)" \
 		--agent "$(AGENT)" \
+		$(if $(CONTEXT),--context "$(CONTEXT)",)
+
+rollout: ## Rollout guard (DEPLOY=<deployment> TAG=<image-tag>)
+	@if [[ -z "$(DEPLOY)" ]]; then echo "ERROR: DEPLOY is required (e.g. make rollout DEPLOY=strategy-engine TAG=<sha>)"; exit 2; fi
+	@if [[ -z "$(TAG)" ]]; then echo "ERROR: TAG is required (e.g. make rollout DEPLOY=strategy-engine TAG=<sha>)"; exit 2; fi
+	@./scripts/rollout_guard.sh \
+		--namespace "$(NAMESPACE)" \
+		--deployment "$(DEPLOY)" \
+		--tag "$(TAG)" \
 		$(if $(CONTEXT),--context "$(CONTEXT)",)
 
 scale: ## Scale a workload (AGENT=<name> REPLICAS=<n>)

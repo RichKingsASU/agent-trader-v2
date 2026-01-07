@@ -7,7 +7,7 @@ steps:
       - |
         set -e
         echo "--- Checking for ':latest' image tags ---"
-        if find . -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -E -q "image:.*:latest"; then
+        if find . -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -q "image:.*:latest"; then
           echo "❌ FAILED: Use of ':latest' image tag is forbidden."
           exit 1
         else
@@ -15,15 +15,38 @@ steps:
         fi
 
         echo "--- Checking for 'AGENT_MODE=EXECUTE' ---"
-        if find . -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | grep -v "ALLOWED_AGENT_MODES" | xargs grep -E -q "(AGENT_MODE[[:space:]]*=[[:space:]]*|AGENT_MODE:[[:space:]]*)"('|")?EXECUTE('|")?"; then
-          echo "❌ FAILED: 'AGENT_MODE' must not be set to 'EXECUTE' in committed code."
+        AGENT_MODE_EXECUTE_FOUND=0
+        find . -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | while read FILE_VAR;
+        do
+          if [ -f "$$FILE_VAR" ]; then
+            while read LINE_VAR;
+            do
+              # Check for literal 'AGENT_MODE=EXECUTE' or 'AGENT_MODE: EXECUTE'
+              if echo "$$LINE_VAR" | grep -q "AGENT_MODE=EXECUTE" || echo "$$LINE_VAR" | grep -q "AGENT_MODE: EXECUTE"; then
+                # Exclude the ALLOWED_AGENT_MODES definition itself
+                if ! echo "$$LINE_VAR" | grep -q "ALLOWED_AGENT_MODES"; then
+                  echo "❌ FAILED: AGENT_MODE must not be set to EXECUTE in committed code."
+                  echo "   File: $$FILE_VAR"
+                  echo "   Line: $$LINE_VAR"
+                  AGENT_MODE_EXECUTE_FOUND=1
+                  break # Exit inner loop
+                fi
+              fi
+            done < "$$FILE_VAR"
+          fi
+          if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]; then
+            break # Exit outer loop
+          fi
+        done
+
+        if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]; then
           exit 1
         else
           echo "✅ PASSED: No instances of 'AGENT_MODE=EXECUTE' found."
         fi
 
         echo "--- Checking for scaled execution agents (replicas > 0) ---"
-        if find ./k8s/execution -name "*.yaml" -o -name "*.yml" | xargs grep -E -q "replicas:[[:space:]]*[1-9]"; then
+        if find ./k8s/execution -name "*.yaml" -o -name "*.yml" | xargs grep -q "replicas:[[:space:]]*[1-9]"; then
           echo "❌ FAILED: Execution agent replicas must be 0 in committed code."
           exit 1
         else
@@ -35,10 +58,8 @@ steps:
     id: 'Build marketdata-mcp-server'
     args: [
       'build',
-      '-t',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}',
-      '-f',
-      'backend/Dockerfile.marketdata-mcp-server',
+      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}',
+      '-f', 'backend/Dockerfile.marketdata-mcp-server',
       '.'
     ]
 
@@ -56,10 +77,8 @@ steps:
     id: 'Build strategy-engine'
     args: [
       'build',
-      '-t',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}',
-      '-f',
-      'infra/Dockerfile.strategy_engine',
+      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}',
+      '-f', 'infra/Dockerfile.strategy_engine',
       '.'
     ]
 
@@ -77,10 +96,8 @@ steps:
     id: 'Build strategy-runtime'
     args: [
       'build',
-      '-t',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}',
-      '-f',
-      'backend/strategy_service/Dockerfile',
+      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}',
+      '-f', 'backend/strategy_service/Dockerfile',
       '.'
     ]
 
