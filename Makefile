@@ -1,6 +1,7 @@
 .PHONY: report report-skip-health
 .PHONY: day1-dry-run
 .PHONY: ci-validate
+.PHONY: k8s-validate
 
 # -----------------------------------------------------------------------------
 # AgentTrader v2 — “Trading Floor” one-command workflow

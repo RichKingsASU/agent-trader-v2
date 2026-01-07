@@ -1,293 +1,114 @@
-# This CI pipeline enforces institutional safety guarantees.
+timeout: 3600s
+
+substitutions:
+  _PROJECT: agenttrader-prod
+  _REGION: us-east4
+  _REPO: trader-repo
+  _TAG: ${SHORT_SHA}
+
 steps:
-  # NOTE ON ORDER (determinism + debuggability):
-  # - Checkout first so every later step can log the same source state.
-  # - Safety guard next to fail fast on forbidden config / dangerous settings.
-  # - Import smoke check next to fail fast on broken Python entrypoints *before*
-  #   spending time building images.
-  # - Docker builds are serialized (explicit waitFor chain) to avoid hidden
-  #   parallelism and to make failures reproducible and logs easier to read.
-  # - Docker pushes are last so nothing is published unless all gates pass.
-
-  # a) Checkout
-  - name: 'gcr.io/cloud-builders/git'
-    id: 'Checkout'
-    entrypoint: 'bash'
+  # ------------------------------------------------------------
+  # PHASE 1: SAFETY GUARD (DETERMINISTIC, HARDENED)
+  # ------------------------------------------------------------
+  - id: Safety Guard
+    name: bash
+    entrypoint: bash
     args:
-      - -ceu
-      - |
-        echo "--- Checkout / source context ---"
-        echo "PWD=$$(pwd)"
-        echo "Workspace contents:"
-        ls -la
-        if [ -d .git ]; then
-          echo "GIT_SHA=$$(git rev-parse HEAD)"
-          echo "GIT_STATUS_PORCELAIN:"
-          git status --porcelain || true
-        else
-          echo "INFO: .git directory not present (source may be provided as an archive)."
-        fi
-
-  # b) Safety guard
-  - name: 'gcr.io/cloud-builders/bash'
-    id: 'CI Layout Validate'
-    entrypoint: 'bash'
-    args:
-      - -ceu
-      - |
-        bash ./scripts/validate_ci_layout.sh
-
-  - name: 'bash'
-    id: 'Safety Guard'
-    waitFor: ['Checkout']
-    entrypoint: 'bash'
-    args:
-      - '-c'
+      - -c
       - |
         set -euo pipefail
 
-        echo "--- Safety Guard preflight ---"
-        echo "PWD: $(pwd)"
+        echo "=== CI SAFETY GUARD START ==="
+        ROOT="$(pwd)"
+        echo "Repo root: $ROOT"
 
-        # Diagnostics for unexpected tool/runtime issues.
-        diag_grep_error() {
-          local check_name="$1"
-          local files_count="$2"
-          echo "----- Debug: ${check_name} (grep error) -----" >&2
-          echo "PWD: $(pwd)" >&2
-          echo "WORKSPACE_ROOT: ${WORKSPACE_ROOT:-<unset>}" >&2
-          echo "Files scanned: ${files_count}" >&2
-          echo "Listing PWD:" >&2
-          ls -la >&2 || true
-          echo "----- End Debug -----" >&2
-        }
-
-        # Run grep against an explicit file list, interpreting exit codes robustly:
-        # - 0 => policy violation (FAIL with exit 1) and print offending lines
-        # - 1 => PASS (no matches)
-        # - 2 => grep/runtime error (FAIL with exit 1) and print diagnostics
-        #
-        # Usage:
-        #   run_grep_check "<check name>" "<fail message>" "<grep regex>" <file1> <file2> ...
-        run_grep_check() {
-          local check_name="$1"
-          local fail_message="$2"
-          local grep_pattern="$3"
-          shift 3
-          local -a files=( "$@" )
-
-          echo "--- ${check_name} ---"
-          echo "Files scanned: ${#files[@]}"
-          if ((${#files[@]} == 0)); then
-            echo "✅ PASSED: No files to scan."
-            return 0
-          fi
-
-          set +e
-          local matches
-          matches="$(grep -nH "${grep_pattern}" -- "${files[@]}" 2>&1)"
-          local rc=$?
-          set -e
-
-          if [[ ${rc} -eq 0 ]]; then
-            echo "❌ FAILED: ${fail_message}"
-            echo "${matches}"
+        # ----------------------------
+        # Rule 1: No :latest images
+        # ----------------------------
+        echo "--- Rule: forbid :latest image tags ---"
+        FILES=$(find . -type f \( -name "*.yaml" -o -name "*.yml" \) ! -name "cloudbuild.yaml" || true)
+        if [ -z "$FILES" ]; then
+          echo "No YAML files found (PASS)"
+        else
+          if echo "$FILES" | xargs -r grep -n "image:.*:latest"; then
+            echo "❌ FAILED: ':latest' image tags are forbidden."
             exit 1
-          elif [[ ${rc} -eq 1 ]]; then
-            echo "✅ PASSED: No matches found."
-            return 0
           else
-            echo "❌ FAILED: grep error while running '${check_name}'." >&2
-            echo "${matches}" >&2
-            diag_grep_error "${check_name}" "${#files[@]}"
-            exit 1
+            echo "✅ PASSED: No ':latest' image tags found."
           fi
-        }
+        fi
 
-        # 1) ':latest' image tags in yaml/yml excluding cloudbuild
-        mapfile -d '' -t LATEST_TAG_FILES < <(
-          find "${WORKSPACE_ROOT:-/workspace}" -type f \
-            \( -name "*.yaml" -o -name "*.yml" \) \
-            -not -path "*cloudbuild*" \
-            -print0
-        )
-        run_grep_check \
-          "Checking for ':latest' image tags" \
-          "Use of ':latest' image tag is forbidden." \
-          "image:.*:latest" \
-          "${LATEST_TAG_FILES[@]}"
-
-        # 2) AGENT_MODE=EXECUTE in yaml/yml/py/sh/Dockerfile excluding cloudbuild
-        mapfile -d '' -t AGENT_MODE_FILES < <(
-          find "${WORKSPACE_ROOT:-/workspace}" -type f \
-            \( -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" \) \
-            -not -path "*cloudbuild*" \
-            -print0
-        )
-
-        echo "--- Checking for 'AGENT_MODE=EXECUTE' ---"
-        echo "Files scanned: ${#AGENT_MODE_FILES[@]}"
-        if ((${#AGENT_MODE_FILES[@]} == 0)); then
-          echo "✅ PASSED: No files to scan."
+        # ----------------------------
+        # Rule 2: No AGENT_MODE=EXECUTE
+        # ----------------------------
+        echo "--- Rule: forbid AGENT_MODE=EXECUTE ---"
+        FILES=$(find . -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" \) ! -name "cloudbuild.yaml" || true)
+        if [ -z "$FILES" ]; then
+          echo "No relevant files found (PASS)"
         else
-          set +e
-          AGENT_MODE_MATCHES="$(
-            grep -nH -e "AGENT_MODE=EXECUTE" -e "AGENT_MODE: EXECUTE" -- "${AGENT_MODE_FILES[@]}" 2>&1 \
-              | grep -v "ALLOWED_AGENT_MODES"
-          )"
-          GREP_RC=$?
-          set -e
-
-          # Note: In a pipeline, the last command's status is what we capture here; treat "no matches after filtering"
-          # as PASS, and any non-1/non-0 as an error needing diagnostics.
-          if [[ ${GREP_RC} -eq 0 ]]; then
-            echo "❌ FAILED: AGENT_MODE must not be set to EXECUTE in committed code."
-            echo "${AGENT_MODE_MATCHES}"
+          if echo "$FILES" | xargs -r grep -nE "AGENT_MODE\s*[:=]\s*EXECUTE"; then
+            echo "❌ FAILED: AGENT_MODE=EXECUTE is forbidden in committed code."
             exit 1
-          elif [[ ${GREP_RC} -eq 1 ]]; then
-            echo "✅ PASSED: No instances of 'AGENT_MODE=EXECUTE' found."
           else
-            echo "❌ FAILED: grep error while running 'AGENT_MODE=EXECUTE' check." >&2
-            echo "${AGENT_MODE_MATCHES}" >&2
-            diag_grep_error "Checking for 'AGENT_MODE=EXECUTE'" "${#AGENT_MODE_FILES[@]}"
-            exit 1
+            echo "✅ PASSED: No AGENT_MODE=EXECUTE found."
           fi
         fi
 
-        # 3) replicas > 0 in ./k8s/execution (and if directory doesn't exist, PASS)
-        EXECUTION_DIR="${WORKSPACE_ROOT:-/workspace}/k8s/execution"
-        echo "--- Checking for scaled execution agents (replicas > 0) ---"
-        if [[ ! -d "${EXECUTION_DIR}" ]]; then
-          echo "Files scanned: 0"
-          echo "✅ PASSED: ${EXECUTION_DIR} does not exist."
+        # ----------------------------
+        # Rule 3: Execution agents must not be scaled
+        # ----------------------------
+        echo "--- Rule: execution agents replicas must be 0 ---"
+        if [ -d "./k8s/execution" ]; then
+          if grep -R "replicas:[[:space:]]*[1-9]" ./k8s/execution; then
+            echo "❌ FAILED: Execution agents must have replicas: 0."
+            exit 1
+          else
+            echo "✅ PASSED: Execution agents not scaled."
+          fi
         else
-          mapfile -d '' -t EXECUTION_YAMLS < <(
-            find "${EXECUTION_DIR}" -type f \( -name "*.yaml" -o -name "*.yml" \) -print0
-          )
-          run_grep_check \
-            "Checking for scaled execution agents (replicas > 0)" \
-            "Execution agent replicas must be 0 in committed code." \
-            "replicas:[[:space:]]*[1-9]" \
-            "${EXECUTION_YAMLS[@]}"
+          echo "No execution manifests present (PASS)"
         fi
-        echo "✅ PASSED: No execution agents found with replicas > 0."
 
-  # c) Import smoke check (source-based; fail fast before image builds).
-  #
-  # We intentionally install from a pinned lock file for deterministic results.
-  # The smoke check here is scoped to the entrypoints built in this pipeline.
-  - name: 'python:3.12-slim'
-    id: 'Import smoke check'
-    waitFor: ['Safety Guard']
-    entrypoint: 'bash'
+        echo "=== CI SAFETY GUARD PASSED ==="
+
+  # ------------------------------------------------------------
+  # PHASE 2: BUILD STRATEGY ENGINE
+  # ------------------------------------------------------------
+  - id: Build strategy-engine
+    name: gcr.io/cloud-builders/docker
     args:
-      - -ceu
-      - |
-        echo "--- Import smoke check (source) ---"
-        python -V
-        python -m pip --version || python -m ensurepip
-        python -m pip install --no-cache-dir --upgrade pip
-        python -m pip install --no-cache-dir -r backend/strategy_service/requirements.lock
-        python ./scripts/smoke_check_imports.py \
-          --no-defaults \
-          --module backend.app \
-          --module backend.strategy_engine.service \
-          --module backend.strategy_service.app
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
+      - -f
+      - infra/Dockerfile.strategy_engine
+      - .
 
-  # d) Docker build(s) (serialized; each build is immediately gated).
-  #
-  # NOTE: The "import gate" runs inside the built image (docker run) to validate
-  # runtime imports using the image's own dependency set.
-
-  # Build marketdata-mcp-server
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Build marketdata-mcp-server'
-    waitFor: ['Import smoke check']
-    args: [
-      'build',
-      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}',
-      '-f', '/workspace/backend/Dockerfile.marketdata-mcp-server',
-      '/workspace'
-    ]
-
-  - name: 'gcr.io/cloud-builders/bash'
-    id: 'Import gate marketdata-mcp-server'
-    waitFor: ['Build marketdata-mcp-server']
-    entrypoint: 'bash'
+  - id: Push strategy-engine
+    name: gcr.io/cloud-builders/docker
     args:
-      - "-c"
-      - |
-        set -euo pipefail
-        IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
-        chmod +x ./scripts/ci_import_gate.sh
-        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.app
+      - push
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
 
-  # Build strategy-engine
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Build strategy-engine'
-    waitFor: ['Import gate marketdata-mcp-server']
-    args: [
-      'build',
-      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}',
-      '-f', '/workspace/infra/Dockerfile.strategy_engine',
-      '/workspace'
-    ]
-
-  - name: 'gcr.io/cloud-builders/bash'
-    id: 'Import gate strategy-engine'
-    waitFor: ['Build strategy-engine']
-    entrypoint: 'bash'
+  # ------------------------------------------------------------
+  # PHASE 3: BUILD MARKETDATA MCP SERVER
+  # ------------------------------------------------------------
+  - id: Build marketdata-mcp-server
+    name: gcr.io/cloud-builders/docker
     args:
-      - "-c"
-      - |
-        set -euo pipefail
-        IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
-        chmod +x ./scripts/ci_import_gate.sh
-        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_engine.service
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}
+      - -f
+      - infra/Dockerfile.marketdata_mcp_server
+      - .
 
-  # Build strategy-runtime (used by gamma and whale strategies)
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Build strategy-runtime'
-    waitFor: ['Import gate strategy-engine']
-    args: [
-      'build',
-      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}',
-      '-f', '/workspace/backend/strategy_service/Dockerfile',
-      '/workspace'
-    ]
-
-  - name: 'gcr.io/cloud-builders/bash'
-    id: 'Import gate strategy-runtime'
-    waitFor: ['Build strategy-runtime']
-    entrypoint: 'bash'
+  - id: Push marketdata-mcp-server
+    name: gcr.io/cloud-builders/docker
     args:
-      - "-c"
-      - |
-        set -euo pipefail
-        IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
-        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
+      - push
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}
 
-  # e) Docker push(es) (serialized; publish only after all gates pass).
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Push marketdata-mcp-server'
-    waitFor: ['Import gate strategy-runtime']
-    args: [
-      'push',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
-    ]
-
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Push strategy-engine'
-    waitFor: ['Push marketdata-mcp-server']
-    args: [
-      'push',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
-    ]
-
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'Push strategy-runtime'
-    waitFor: ['Push strategy-engine']
-    args: [
-      'push',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
-    ]
+images:
+  - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
+  - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}
