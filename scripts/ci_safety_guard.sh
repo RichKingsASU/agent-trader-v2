@@ -73,6 +73,8 @@ print_failure() {
 
 # 1) Check for ':latest' image tags in K8s/infra manifests
 check_for_latest_tag() {
+    local rule_name="No ':latest' image tags"
+    local remediation_hint="Pin images to an immutable tag (e.g. version or digest) instead of ':latest'."
     print_header "Checking for ':latest' image tags"
     local search_dirs=()
     [ -d "${K8S_DIR}" ] && search_dirs+=("${K8S_DIR}")
@@ -100,6 +102,8 @@ check_for_latest_tag() {
 
 # 2) Check for AGENT_MODE set to EXECUTE
 check_for_execute_mode() {
+    local rule_name="No 'AGENT_MODE=EXECUTE' in committed code"
+    local remediation_hint="Remove the setting or change to a safe mode (e.g. DRY_RUN/SIMULATE) and pass EXECUTE only via runtime config."
     print_header "Checking for 'AGENT_MODE=EXECUTE'"
     # Scan only manifest/config locations to avoid false positives in docs/tests/scripts.
     local scan_dirs=()
@@ -132,6 +136,8 @@ check_for_execute_mode() {
 
 # 3) Check for execution agent replicas > 0
 check_for_scaled_executors() {
+    local rule_name="Execution agent replicas must be 0"
+    local remediation_hint="Set replicas to 0 in committed manifests; scale via runtime tooling (e.g. HPA/override) when needed."
     print_header "Checking for scaled execution agents (replicas > 0)"
     if [ ! -d "${K8S_DIR}" ]; then
         print_success "No k8s/ directory found; skipping executor replica scan."
