@@ -2,8 +2,11 @@
 
 This folder contains the operational documentation for running AgentTrader v2 safely in autonomous **observe-only** mode.
 
+**Default post-lock operational mode**: `docs/ops/day1_ops.md` (Day 1 Ops Playbook).
+
 ## Index
 
+- **Day 1 Ops Playbook (post-lock default mode)**: `docs/ops/day1_ops.md`
 - **Agent mesh plan (single source of truth)**: `docs/ops/agent_mesh.md`
 - **Reporting / readiness**: `docs/ops/reporting.md`
 - **Runbooks**: `docs/ops/runbooks/`
