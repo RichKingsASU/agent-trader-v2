@@ -1,30 +1,19 @@
-options:
-  env:
-    - WORKSPACE_ROOT=/workspace
-
+# This CI pipeline enforces institutional safety guarantees.
 steps:
-  - name: 'bash' # RISK: In Cloud Build, `name` is a *container image*, not a shell.
-                 # RISK: `bash` likely resolves to Docker Hub `bash:latest` (implicit `:latest`), which can fail early due to:
-                 # - Docker Hub rate limits / unauthenticated pull restrictions
-                 # - org policies restricting external registries
-                 # - image not existing / tag drift (un-pinned)
-                 # This is the #1 likely reason the build fails before any docker build/push (IMAGES: -).
+  - name: 'gcr.io/cloud-builders/bash'
     id: 'Safety Guard'
     entrypoint: 'bash' # RISK: Assumes the container image has `bash` in PATH; if `name: bash` pulls a minimal image, this can be "exec: bash: not found".
     args:
       - '-c'
       - |
-        set -e
-        # NOTE: Working directory assumption: Cloud Build defaults to `/workspace` (repo root). All relative paths below assume that.
-        # RISK: If `dir:` is introduced later or a different builder changes CWD, `find .` and `./k8s/...` will scan the wrong tree.
+        set -euo pipefail
+
+        # NOTE: This guard is intentionally explicit and chatty.
+        # It should fail fast with actionable output when a safety invariant is violated.
 
         echo "--- Checking for ':latest' image tags ---"
-        # RISK: Depends on core utilities existing in the container (`find`, `grep`, `xargs`). If the `bash` image lacks these, this will fail immediately.
-        # RISK: `find . -name "*.yaml" -o -name "*.yml"` has no parentheses and no `-type f`; it may emit directories or unexpected matches in edge cases.
-        # RISK: `grep -v "cloudbuild"` filters by substring anywhere in the path; it may exclude more than intended if a directory/file contains "cloudbuild".
-        # RISK: `xargs grep ...` with *no input* can invoke `grep` with no args (exit 2). In bash, failures inside `if <pipeline>; then` don't trip `set -e`,
-        #       so this can silently turn the check into a no-op while still emitting confusing stderr.
-        if find . -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -q "image:.*:latest"; then
+        mapfile -t YAML_FILES < <(find . -type f \( -name "*.yaml" -o -name "*.yml" \) ! -name "cloudbuild*")
+        if [ "${#YAML_FILES[@]}" -gt 0 ] && grep -nE "image:.*:latest\b" "${YAML_FILES[@]}"; then
           echo "❌ FAILED: Use of ':latest' image tag is forbidden."
           exit 1
         else
@@ -32,50 +21,28 @@ steps:
         fi
 
         echo "--- Checking for 'AGENT_MODE=EXECUTE' ---"
-        AGENT_MODE_EXECUTE_FOUND=0
-        find "${WORKSPACE_ROOT}" -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | while read FILE_VAR;
-        do
-          # RISK: The `while ...; do ... done` is fed by a pipeline, so in bash it runs in a subshell.
-          #       Any changes to `AGENT_MODE_EXECUTE_FOUND` inside the loop will *not* propagate to the parent shell,
-          #       making the post-loop `if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]` check ineffective.
-          #       (This is more of a safety-gap than an early-failure cause, but it can hide real violations.)
-          if [ -f "$$FILE_VAR" ]; then
-            while read LINE_VAR;
-            do
-              # Check for literal 'AGENT_MODE=EXECUTE' or 'AGENT_MODE: EXECUTE'
-              if echo "$$LINE_VAR" | grep -q "AGENT_MODE=EXECUTE" || echo "$$LINE_VAR" | grep -q "AGENT_MODE: EXECUTE"; then
-                # Exclude the ALLOWED_AGENT_MODES definition itself
-                if ! echo "$$LINE_VAR" | grep -q "ALLOWED_AGENT_MODES"; then
-                  echo "❌ FAILED: AGENT_MODE must not be set to EXECUTE in committed code."
-                  echo "   File: $$FILE_VAR"
-                  echo "   Line: $$LINE_VAR"
-                  AGENT_MODE_EXECUTE_FOUND=1
-                  break # Exit inner loop
-                fi
-              fi
-            done < "$$FILE_VAR"
-          fi
-          if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]; then
-            break # Exit outer loop
-          fi
-        done
-
-        if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]; then
+        mapfile -t CODE_FILES < <(find . -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" -o -name "Dockerfile.*" \) ! -name "cloudbuild*")
+        if [ "${#CODE_FILES[@]}" -gt 0 ] && grep -nE "AGENT_MODE[[:space:]]*[:=][[:space:]]*(['\"])?EXECUTE\1" "${CODE_FILES[@]}" | grep -v "ALLOWED_AGENT_MODES"; then
+          echo "❌ FAILED: AGENT_MODE must not be set to EXECUTE in committed code."
           exit 1
         else
           echo "✅ PASSED: No instances of 'AGENT_MODE=EXECUTE' found."
         fi
 
         echo "--- Checking for scaled execution agents (replicas > 0) ---"
-        # RISK: Repo currently has no `./k8s/execution/` directory, so `find` will emit "No such file or directory" on stderr and return nonzero.
-        #       In an `if` condition, bash won't exit on that despite `set -e`, so this check becomes a no-op (and can look like a failure in logs).
-        # RISK: Same `xargs` empty-input caveat as above.
-        if find ./k8s/execution -name "*.yaml" -o -name "*.yml" | xargs grep -q "replicas:[[:space:]]*[1-9]"; then
+        mapfile -t EXEC_AGENT_MANIFESTS < <(grep -rl --include="*.yaml" --include="*.yml" "name: execution-agent" ./k8s 2>/dev/null || true)
+        SCALED_EXECUTION_AGENT=0
+        for MANIFEST in "${EXEC_AGENT_MANIFESTS[@]}"; do
+          if grep -nE "replicas:[[:space:]]*[1-9]" "$MANIFEST"; then
+            SCALED_EXECUTION_AGENT=1
+          fi
+        done
+
+        if [ "$SCALED_EXECUTION_AGENT" -eq 1 ]; then
           echo "❌ FAILED: Execution agent replicas must be 0 in committed code."
           exit 1
-        else
-          echo "✅ PASSED: No execution agents found with replicas > 0."
         fi
+        echo "✅ PASSED: No execution agents found with replicas > 0."
 
   - name: 'python:3.11-slim'
     id: 'Smoke check Python imports (pre-docker)'
