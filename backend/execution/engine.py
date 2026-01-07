@@ -123,8 +123,6 @@ class RiskConfig:
 
     max_position_qty: float = 100.0
     max_daily_trades: int = 50
-    kill_switch_env_var: str = "EXEC_KILL_SWITCH"
-    kill_switch_firestore_doc: str = "ops/execution_kill_switch"
     fail_open: bool = False  # default fail-closed for safety
 
     @staticmethod
@@ -150,10 +148,6 @@ class RiskConfig:
         return RiskConfig(
             max_position_qty=_float("EXEC_MAX_POSITION_QTY", 100.0),
             max_daily_trades=_int("EXEC_MAX_DAILY_TRADES", 50),
-            kill_switch_env_var=str(os.getenv("EXEC_KILL_SWITCH_ENV", "EXEC_KILL_SWITCH")),
-            kill_switch_firestore_doc=str(
-                os.getenv("EXEC_KILL_SWITCH_DOC", "ops/execution_kill_switch")
-            ),
             fail_open=_bool("EXEC_RISK_FAIL_OPEN", False),
         )
 
@@ -619,13 +613,13 @@ class RiskManager:
         return self._kill_switch_enabled()
 
     def _kill_switch_enabled(self) -> bool:
-        env_name = self._config.kill_switch_env_var
-        if str(get_env(env_name, "0")).strip().lower() in {"1", "true", "yes", "on"}:
+        # Standard global kill switch (env + optional file mount).
+        if is_kill_switch_enabled():
             return True
 
-        # Optional Firestore-backed kill switch.
+        # Optional Firestore-backed kill switch (legacy; keep for back-compat).
         try:
-            path = self._config.kill_switch_firestore_doc.strip().strip("/")
+            path = str(os.getenv("EXECUTION_HALTED_DOC") or os.getenv("EXEC_KILL_SWITCH_DOC") or "").strip().strip("/")
             if not path:
                 return False
             parts = path.split("/")
@@ -1000,8 +994,16 @@ class ExecutionEngine:
                 pass
             return ExecutionResult(status="dry_run", risk=risk, routing=routing_decision, message="dry_run_enabled")
 
-        # Authority boundary: only LIVE mode may place broker orders.
-        require_live_mode(action="place_order")
+        # Defense-in-depth: never place broker orders if the global kill switch is active,
+        # even if upstream risk checks were bypassed/misconfigured.
+        try:
+            require_live_mode(operation="broker order placement")
+        except ExecutionHaltedError:
+            enabled, source = get_kill_switch_state()
+            checks = list(risk.checks or [])
+            checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
+            halted_risk = RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
+            return ExecutionResult(status="rejected", risk=halted_risk, routing=routing_decision, message="kill_switch_enabled")
 
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None

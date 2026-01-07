@@ -19,7 +19,7 @@ from backend.execution.engine import (
     OrderIntent,
     RiskManager,
 )
-from backend.common.agent_boot import configure_startup_logging
+from backend.common.kill_switch import get_kill_switch_state
 from backend.common.vertex_ai import init_vertex_ai_or_log
 
 logger = logging.getLogger(__name__)
