@@ -1,3 +1,7 @@
+options:
+  env:
+    - WORKSPACE_ROOT=/workspace
+
 steps:
   # Diagnostic step (runs before anything else) to make early failures self-explanatory.
   - name: 'gcr.io/cloud-builders/gcloud'
@@ -45,8 +49,8 @@ steps:
     args: [
       'build',
       '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}',
-      '-f', 'backend/Dockerfile.marketdata-mcp-server',
-      '.'
+      '-f', '/workspace/backend/Dockerfile.marketdata-mcp-server',
+      '/workspace'
     ]
 
   - name: 'gcr.io/cloud-builders/bash'
@@ -56,7 +60,7 @@ steps:
       - -ceu
       - |
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
-        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.app
+        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.app
 
   # Build and push strategy-engine
   - name: 'gcr.io/cloud-builders/docker'
@@ -64,8 +68,8 @@ steps:
     args: [
       'build',
       '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}',
-      '-f', 'infra/Dockerfile.strategy_engine',
-      '.'
+      '-f', '/workspace/infra/Dockerfile.strategy_engine',
+      '/workspace'
     ]
 
   - name: 'gcr.io/cloud-builders/bash'
@@ -75,7 +79,7 @@ steps:
       - -ceu
       - |
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
-        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_engine.service
+        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.strategy_engine.service
 
   # Build and push strategy-runtime (used by gamma and whale strategies)
   - name: 'gcr.io/cloud-builders/docker'
@@ -83,8 +87,8 @@ steps:
     args: [
       'build',
       '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}',
-      '-f', 'backend/strategy_service/Dockerfile',
-      '.'
+      '-f', '/workspace/backend/strategy_service/Dockerfile',
+      '/workspace'
     ]
 
   - name: 'gcr.io/cloud-builders/bash'
@@ -94,4 +98,4 @@ steps:
       - -ceu
       - |
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
-        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
+        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.strategy_service.app
