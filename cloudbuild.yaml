@@ -3,15 +3,28 @@ options:
     - WORKSPACE_ROOT=/workspace
 
 steps:
-  - name: 'bash'
+  - name: 'bash' # RISK: In Cloud Build, `name` is a *container image*, not a shell.
+                 # RISK: `bash` likely resolves to Docker Hub `bash:latest` (implicit `:latest`), which can fail early due to:
+                 # - Docker Hub rate limits / unauthenticated pull restrictions
+                 # - org policies restricting external registries
+                 # - image not existing / tag drift (un-pinned)
+                 # This is the #1 likely reason the build fails before any docker build/push (IMAGES: -).
     id: 'Safety Guard'
-    entrypoint: 'bash'
+    entrypoint: 'bash' # RISK: Assumes the container image has `bash` in PATH; if `name: bash` pulls a minimal image, this can be "exec: bash: not found".
     args:
       - '-c'
       - |
         set -e
+        # NOTE: Working directory assumption: Cloud Build defaults to `/workspace` (repo root). All relative paths below assume that.
+        # RISK: If `dir:` is introduced later or a different builder changes CWD, `find .` and `./k8s/...` will scan the wrong tree.
+
         echo "--- Checking for ':latest' image tags ---"
-        if find "${WORKSPACE_ROOT}" -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -q "image:.*:latest"; then
+        # RISK: Depends on core utilities existing in the container (`find`, `grep`, `xargs`). If the `bash` image lacks these, this will fail immediately.
+        # RISK: `find . -name "*.yaml" -o -name "*.yml"` has no parentheses and no `-type f`; it may emit directories or unexpected matches in edge cases.
+        # RISK: `grep -v "cloudbuild"` filters by substring anywhere in the path; it may exclude more than intended if a directory/file contains "cloudbuild".
+        # RISK: `xargs grep ...` with *no input* can invoke `grep` with no args (exit 2). In bash, failures inside `if <pipeline>; then` don't trip `set -e`,
+        #       so this can silently turn the check into a no-op while still emitting confusing stderr.
+        if find . -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -q "image:.*:latest"; then
           echo "❌ FAILED: Use of ':latest' image tag is forbidden."
           exit 1
         else
@@ -22,6 +35,10 @@ steps:
         AGENT_MODE_EXECUTE_FOUND=0
         find "${WORKSPACE_ROOT}" -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | while read FILE_VAR;
         do
+          # RISK: The `while ...; do ... done` is fed by a pipeline, so in bash it runs in a subshell.
+          #       Any changes to `AGENT_MODE_EXECUTE_FOUND` inside the loop will *not* propagate to the parent shell,
+          #       making the post-loop `if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]` check ineffective.
+          #       (This is more of a safety-gap than an early-failure cause, but it can hide real violations.)
           if [ -f "$$FILE_VAR" ]; then
             while read LINE_VAR;
             do
@@ -50,12 +67,30 @@ steps:
         fi
 
         echo "--- Checking for scaled execution agents (replicas > 0) ---"
-        if find "${WORKSPACE_ROOT}/k8s/execution" -name "*.yaml" -o -name "*.yml" | xargs grep -q "replicas:[[:space:]]*[1-9]"; then
+        # RISK: Repo currently has no `./k8s/execution/` directory, so `find` will emit "No such file or directory" on stderr and return nonzero.
+        #       In an `if` condition, bash won't exit on that despite `set -e`, so this check becomes a no-op (and can look like a failure in logs).
+        # RISK: Same `xargs` empty-input caveat as above.
+        if find ./k8s/execution -name "*.yaml" -o -name "*.yml" | xargs grep -q "replicas:[[:space:]]*[1-9]"; then
           echo "❌ FAILED: Execution agent replicas must be 0 in committed code."
           exit 1
         else
           echo "✅ PASSED: No execution agents found with replicas > 0."
         fi
+
+  - name: 'python:3.11'
+    id: 'Smoke check Python imports (pre-docker)'
+    entrypoint: 'bash'
+    args:
+      - -ceu
+      - |
+        echo "--- Smoke check: import critical Python modules (no secrets) ---"
+        python --version
+        python -m pip install --upgrade pip
+        python -m pip install -r backend/requirements.txt
+        python scripts/smoke_check_imports.py || {
+          echo "❌ Import smoke check failed (see errors above)." >&2
+          exit 1
+        }
 
   # Build and push marketdata-mcp-server
   - name: 'gcr.io/cloud-builders/docker'
