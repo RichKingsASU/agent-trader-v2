@@ -1,0 +1,51 @@
+name: Deploy Ops Dashboard (Firebase Hosting)
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: "Firebase project id (default matches .firebaserc)"
+        required: false
+        default: "agenttrader-prod"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firebase-ops-dashboard-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build Ops Dashboard (ops-ui)
+        working-directory: frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f package.json ]; then
+            echo "ERROR: frontend/package.json not found; cannot build ops-ui." >&2
+            exit 1
+          fi
+          npm ci --no-audit --no-fund
+          npm -w ops-ui run build
+
+      - name: Deploy to Firebase Hosting (live)
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_AGENTTRADER_PROD }}
+          projectId: ${{ inputs.project_id }}
+          channelId: live
+

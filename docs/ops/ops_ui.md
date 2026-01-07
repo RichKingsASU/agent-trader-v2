@@ -37,6 +37,11 @@ This builds both:
 - `frontend/` (main UI)
 - `frontend/ops-ui/` (Ops UI)
 
+## Firebase Hosting deploy (optional)
+
+If you want to host Ops UI publicly via Firebase Hosting (instead of the cluster-internal nginx container), see:
+- `docs/ops/firebase_ops_dashboard_deploy.md`
+
 ## Container image (nginx static site)
 
 Build the Ops UI image from repo root:
