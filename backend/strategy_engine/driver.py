@@ -1,6 +1,5 @@
 import asyncio
-from datetime import date, datetime, timezone
-from datetime import timedelta
+from datetime import date
 import argparse
 import os
 
@@ -72,12 +71,63 @@ async def run_strategy(execute: bool):
         last_price = bars[0].close if bars else 0
         notional = last_price * decision.get("size", 0)
 
-        # Risk check
-        if not await can_place_trade(strategy_id, today, notional):
-            reason = "Risk limit exceeded."
-            await log_decision(strategy_id, symbol, action, reason, decision["signal_payload"], False)
-            print(f"  Decision: {action}, but trade blocked. Reason: {reason}")
-            continue
+    for symbol in config.STRATEGY_SYMBOLS:
+        with bind_correlation_id():
+            print(f"Processing symbol: {symbol}")
+
+            bars = await fetch_recent_bars(symbol, config.STRATEGY_BAR_LOOKBACK_MINUTES)
+            flow_events = await fetch_recent_options_flow(symbol, config.STRATEGY_FLOW_LOOKBACK_MINUTES)
+
+            decision = make_decision(bars, flow_events)
+            action = decision.get("action")
+
+            sig_ctx = intent_start(
+                "signal_produced",
+                "Produced strategy signal (may be flat).",
+                payload={
+                    "strategy_name": config.STRATEGY_NAME,
+                    "strategy_id": strategy_id,
+                    "symbol": symbol,
+                    "action": action,
+                    "reason": decision.get("reason"),
+                    "signal_payload": decision.get("signal_payload") or {},
+                },
+            )
+            intent_end(sig_ctx, "success")
+
+            if action == "flat":
+                await log_decision(strategy_id, symbol, "flat", decision["reason"], decision["signal_payload"], False)
+                print(f"  Decision: flat. Reason: {decision['reason']}")
+                continue
+
+            # Calculate notional
+            last_price = bars[0].close if bars else 0
+            notional = last_price * decision.get("size", 0)
+
+            # Risk check
+            risk_allowed = await can_place_trade(strategy_id, today, notional)
+            if not risk_allowed:
+                reason = "Risk limit exceeded."
+                proposal_ctx = intent_start(
+                    "order_proposal",
+                    "Would place order, but blocked by risk limits.",
+                    payload={
+                        "strategy_name": config.STRATEGY_NAME,
+                        "strategy_id": strategy_id,
+                        "symbol": symbol,
+                        "side": action,
+                        "size": decision.get("size", 0),
+                        "notional": notional,
+                        "reason": reason,
+                        "risk_allowed": False,
+                        "would_execute": False,
+                    },
+                )
+                intent_end(proposal_ctx, "success")
+
+                await log_decision(strategy_id, symbol, action, reason, decision["signal_payload"], False)
+                print(f"  Decision: {action}, but trade blocked. Reason: {reason}")
+                continue
             
         print(f"  Decision: {action}. Reason: {decision['reason']}")
 
@@ -121,40 +171,7 @@ async def run_strategy(execute: bool):
                 False,
             )
 
-    # If no clear decision point is hit in a given environment, this provides a
-    # safe way to validate formatting end-to-end without changing strategy math.
-    if (not emitted_any) and _truthy_env("EMIT_DEMO_PROPOSAL", False):
-        created_at_utc = datetime.now(timezone.utc)
-        ttl = timedelta(minutes=max(1, proposal_ttl_minutes))
-        for right in (OptionRight.CALL, OptionRight.PUT):
-            demo = OrderProposal(
-                created_at_utc=created_at_utc,
-                repo_id=repo_id,
-                agent_name="strategy-engine",
-                strategy_name=f"{config.STRATEGY_NAME}-demo",
-                strategy_version=os.getenv("STRATEGY_VERSION") or None,
-                correlation_id=correlation_id,
-                symbol="SPY",
-                asset_type=ProposalAssetType.OPTION,
-                option=ProposalOption(
-                    expiration=(created_at_utc.date() + timedelta(days=7)),
-                    right=right,
-                    strike=500.0,
-                    contract_symbol=None,
-                ),
-                side=ProposalSide.BUY,
-                quantity=1,
-                limit_price=1.23,
-                rationale=ProposalRationale(
-                    short_reason="Demo proposal (format verification only).",
-                    indicators={"demo": True},
-                ),
-                constraints=ProposalConstraints(
-                    valid_until_utc=(created_at_utc + ttl),
-                    requires_human_approval=True,
-                ),
-            )
-            emit_proposal(demo)
+    intent_end(cycle_ctx, "success")
 
 
 if __name__ == "__main__":
@@ -162,6 +179,14 @@ if __name__ == "__main__":
         agent_name="strategy-engine",
         intent="Run the strategy engine loop (fetch data, decide, and emit non-executing order proposals).",
     )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--execute",

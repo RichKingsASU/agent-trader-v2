@@ -1,5 +1,4 @@
-import logging
-
+import json
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import strategies, broker_accounts, paper_orders, trades, strategy_configs
@@ -9,7 +8,7 @@ from backend.common.agent_boot import configure_startup_logging
 from backend.strategies.registry.loader import load_all_configs
 
 app = FastAPI(title="AgentTrader Strategy Service")
-logger = logging.getLogger(__name__)
+install_fastapi_correlation_middleware(app)
 
 # Enable CORS for frontend
 app.add_middleware(
