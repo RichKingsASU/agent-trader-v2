@@ -1,7 +1,6 @@
 """
-vNEXT backend modules.
+vNEXT Python package.
 
-This package is intentionally small and interface-forward: new capabilities land
-here behind explicit contracts before integrating with production services.
+See `backend/vnext/GOVERNANCE.md` for cross-cutting governance rules.
 """
 
