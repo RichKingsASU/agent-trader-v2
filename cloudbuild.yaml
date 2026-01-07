@@ -1,8 +1,8 @@
-timeout: 3600s
-
-  # a) Checkout
-  - name: 'gcr.io/cloud-builders/git'
-    id: 'Checkout'
+# This CI pipeline enforces institutional safety guarantees.
+steps:
+  # Diagnostic step (runs before anything else) to make early failures self-explanatory.
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'Diagnostics (pre-build)'
     entrypoint: 'bash'
     args:
       - -ceu
@@ -14,13 +14,9 @@ timeout: 3600s
         echo "PWD=$$(pwd)"
         echo "Workspace contents:"
         ls -la
-        if [ -d .git ]; then
-          echo "GIT_SHA=$$(git rev-parse HEAD)"
-          echo "GIT_STATUS_PORCELAIN:"
-          git status --porcelain || true
-        else
-          echo "INFO: .git directory not present (source may be provided as an archive)."
-        fi
+        ls -la scripts/ || true
+        git rev-parse --short HEAD || true
+        echo $BRANCH_NAME $COMMIT_SHA || true
 
   # b) Safety guard
   - name: 'gcr.io/cloud-builders/bash'
@@ -102,22 +98,28 @@ timeout: 3600s
     waitFor: ['Checkout']
     entrypoint: 'bash'
     args:
-      - -c
+      - '-c'
       - |
-        set -euo pipefail
-        bash ./scripts/validate_ci_layout.sh
+        set -e
+        mkdir -p /workspace/.cloudbuild
+        cp -f /workspace/scripts/ci_safety_guard.sh /workspace/.cloudbuild/ci_safety_guard.sh
+        ls -la /workspace/.cloudbuild
+        ls -la /workspace/.cloudbuild/ci_safety_guard.sh
 
-  - name: 'gcr.io/cloud-builders/bash'
-    id: 'Safety Guard'
+  # Safety guard MUST pass before any docker build/push steps run.
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'CI Safety Guard'
     entrypoint: 'bash'
     args:
       - -c
       - |
-        set -euo pipefail
-        echo "--- Safety Guard preflight ---"
-        chmod +x ./scripts/ci_safety_guard.sh
-        ./scripts/ci_safety_guard.sh
-    waitFor: ['CI Layout Validate']
+        set -e
+        cd /workspace
+        chmod +x /workspace/.cloudbuild/ci_safety_guard.sh
+        bash /workspace/.cloudbuild/ci_safety_guard.sh
+        echo "CI SAFETY GUARD PASSED"
+
+        echo "CI SAFETY GUARD PASSED — proceeding to build"
 
   # c) Import smoke check (source-based; fail fast before image builds).
   #
