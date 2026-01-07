@@ -12,6 +12,7 @@ psycopg2-binary==2.9.9
 nats-py
 pandas
 pandas-ta==0.4.71b0
+exchange-calendars==4.6.0
 google-cloud-firestore
 firebase-admin
 google-genai

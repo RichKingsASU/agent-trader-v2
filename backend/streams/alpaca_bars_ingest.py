@@ -9,7 +9,7 @@ import requests
 T = TypeVar("T")
 
 from backend.streams.alpaca_env import load_alpaca_env
-from backend.common.timeutils import parse_alpaca_timestamp
+from backend.time.providers import normalize_alpaca_timestamp
 from backend.utils.session import get_market_session
 
 # --- Standard Header ---
@@ -84,7 +84,7 @@ def upsert_bars(conn, sym, bars) -> int:
     rows = []
     for b in bars:
         try:
-            ts = parse_alpaca_timestamp(b["t"])
+            ts = normalize_alpaca_timestamp(b["t"])
             session = get_market_session(ts)
             o, h, l, c, v = b.get("o"), b.get("h"), b.get("l"), b.get("c"), b.get("v")
             # public.market_data_1m has NOT NULL columns; skip incomplete bars.

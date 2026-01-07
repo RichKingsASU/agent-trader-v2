@@ -8,7 +8,7 @@ from psycopg2.extras import execute_values
 from tenacity import retry, wait_exponential, stop_after_attempt
 
 from backend.streams.alpaca_env import load_alpaca_env
-from backend.common.timeutils import parse_alpaca_timestamp
+from backend.time.providers import normalize_alpaca_timestamp
 from backend.utils.session import get_market_session
 
 # --- Standard Header ---
@@ -57,7 +57,7 @@ def upsert_bar(conn, sym, bar):
     if not bar:
         return 0
     try:
-        ts = parse_alpaca_timestamp(bar["t"])
+        ts = normalize_alpaca_timestamp(bar["t"])
         session = get_market_session(ts)
         row = (sym, ts, bar["o"], bar["h"], bar["l"], bar["c"], bar["v"], session)
     except (TypeError, ValueError) as e:

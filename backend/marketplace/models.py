@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Iterable, Literal, Mapping, Optional
+
+from backend.time.nyse_time import to_utc
 
 
 def _as_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    return to_utc(dt)
 
 
 MarketplaceStrategyStatus = Literal["draft", "published", "suspended", "retired"]
