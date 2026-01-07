@@ -3,19 +3,28 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi import Request
 from pydantic import BaseModel, Field
 
+from backend.common.agent_state_machine import (
+    AgentState,
+    AgentStateMachine,
+    read_agent_mode,
+    trading_allowed,
+)
 from backend.execution.engine import (
     AlpacaBroker,
     DryRunBroker,
     ExecutionEngine,
     ExecutionResult,
     OrderIntent,
+    RiskManager,
 )
-from backend.common.agent_mode import AgentModeError
+from backend.execution.marketdata_health import check_market_ingest_heartbeat
 from backend.common.vertex_ai import init_vertex_ai_or_log
 from backend.common.marketdata_health import MarketDataStaleError, assert_marketdata_fresh
 
@@ -54,7 +63,14 @@ class ExecuteIntentResponse(BaseModel):
     message: Optional[str] = None
 
 
-def _engine_from_env() -> ExecutionEngine:
+def _int_env(name: str, default: int) -> int:
+    v = os.getenv(name)
+    if v is None or str(v).strip() == "":
+        return int(default)
+    return int(v)
+
+
+def _build_engine_from_env() -> tuple[ExecutionEngine, RiskManager]:
     """
     Constructs the engine from env vars.
 
@@ -63,8 +79,9 @@ def _engine_from_env() -> ExecutionEngine:
     - On Cloud Run, attach a service account with Firestore permissions.
     """
     dry_run = _bool_env("EXEC_DRY_RUN", True)
+    risk = RiskManager()
     broker = DryRunBroker() if dry_run else AlpacaBroker()
-    return ExecutionEngine(broker=broker, broker_name="alpaca", dry_run=dry_run)
+    return (ExecutionEngine(broker=broker, broker_name="alpaca", dry_run=dry_run, risk=risk), risk)
 
 
 app = FastAPI(title="AgentTrader Execution Engine")
@@ -77,10 +94,90 @@ def _startup() -> None:
     except Exception as e:  # pragma: no cover
         logger.warning("Vertex AI validation skipped (non-fatal): %s", e)
 
+    # Initialize long-lived agent components once (instead of per-request):
+    # - execution engine (broker clients can keep connection pools)
+    # - risk manager (kill-switch checks)
+    # - explicit agent state machine
+    engine, risk = _build_engine_from_env()
+    app.state.engine = engine
+    app.state.risk = risk
+    app.state.agent_sm = AgentStateMachine(agent_id=str(os.getenv("EXEC_AGENT_ID") or "execution_engine"))
+
 
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {"status": "ok", "service": "execution-engine"}
+
+
+@app.get("/state")
+def state() -> dict[str, Any]:
+    """
+    Inspect execution-agent state machine and gating inputs.
+    """
+    sm: AgentStateMachine = app.state.agent_sm
+    risk: RiskManager = app.state.risk
+
+    tenant_id = str(os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip() or None
+    stale_s = _int_env("MARKETDATA_STALE_THRESHOLD_S", 120)
+    hb = check_market_ingest_heartbeat(tenant_id=tenant_id, stale_threshold_seconds=stale_s)
+    kill = risk.kill_switch_enabled()
+
+    # Update state based on latest signals (no-op if unchanged).
+    sm.on_kill_switch(enabled=kill, meta={"source": "state_endpoint"})
+    if not kill:
+        sm.on_marketdata(
+            is_stale=hb.is_stale,
+            meta={
+                "source": "state_endpoint",
+                "heartbeat_path": hb.path,
+                "heartbeat_age_seconds": hb.age_seconds,
+                "heartbeat_status": hb.status,
+            },
+        )
+
+    agent_mode = read_agent_mode()
+    allowed, reason = trading_allowed(state=sm.state, agent_mode=agent_mode, kill_switch_enabled=kill)
+    return {
+        "agent_id": sm.agent_id,
+        "state": sm.state.value,
+        "last_transition_at": sm.last_transition_at.isoformat(),
+        "error_count": sm.error_count,
+        "restart_not_before": sm.restart_not_before.isoformat() if sm.restart_not_before else None,
+        "last_error": sm.last_error,
+        "agent_mode": agent_mode,
+        "engine_dry_run": bool(getattr(app.state.engine, "dry_run", True)),
+        "kill_switch_enabled": kill,
+        "marketdata_heartbeat": {
+            "path": hb.path,
+            "exists": hb.exists,
+            "last_heartbeat_at": hb.last_heartbeat_at.isoformat() if hb.last_heartbeat_at else None,
+            "age_seconds": hb.age_seconds,
+            "is_stale": hb.is_stale,
+            "status": hb.status,
+            "stale_threshold_seconds": stale_s,
+        },
+        "live_trading_allowed": allowed,
+        "live_trading_block_reason": reason,
+    }
+
+
+@app.post("/recover")
+def recover(request: Request) -> dict[str, Any]:
+    """
+    Manual "recover => READY" transition.
+
+    If EXEC_AGENT_ADMIN_KEY is set, callers must provide matching header:
+      X-Exec-Agent-Key: <key>
+    """
+    required = str(os.getenv("EXEC_AGENT_ADMIN_KEY") or "").strip()
+    if required:
+        provided = str(request.headers.get("X-Exec-Agent-Key") or "").strip()
+        if provided != required:
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+    sm: AgentStateMachine = app.state.agent_sm
+    sm.recover(reason="manual_recover", meta={"source": "recover_endpoint"})
+    return {"status": "ok", "state": sm.state.value}
 
 
 @app.post("/execute", response_model=ExecuteIntentResponse)
@@ -106,6 +203,66 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
         metadata=req.metadata,
     )
 
+    # --- Update state machine inputs for this request ---
+    agent_mode = read_agent_mode()
+    tenant_id = str(req.metadata.get("tenant_id") or os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip() or None
+    stale_s = _int_env("MARKETDATA_STALE_THRESHOLD_S", 120)
+    hb = check_market_ingest_heartbeat(tenant_id=tenant_id, stale_threshold_seconds=stale_s)
+    kill = risk.kill_switch_enabled()
+
+    sm.on_kill_switch(enabled=kill, meta={"source": "execute_endpoint"})
+    if not kill:
+        sm.on_marketdata(
+            is_stale=hb.is_stale,
+            meta={
+                "source": "execute_endpoint",
+                "heartbeat_path": hb.path,
+                "heartbeat_age_seconds": hb.age_seconds,
+                "heartbeat_status": hb.status,
+            },
+        )
+
+    # If ERROR state has backoff active, refuse quickly with Retry-After semantics.
+    if sm.state == AgentState.ERROR and sm.in_backoff():
+        retry_after = None
+        if sm.restart_not_before:
+            now = datetime.now(timezone.utc)
+            retry_after = max(0, int((sm.restart_not_before - now).total_seconds()))
+        logger.warning(
+            "exec_agent.refuse_in_backoff %s",
+            json.dumps(
+                {
+                    "agent_id": sm.agent_id,
+                    "state": sm.state.value,
+                    "restart_not_before": sm.restart_not_before.isoformat() if sm.restart_not_before else None,
+                    "last_error": sm.last_error,
+                    "retry_after_s": retry_after,
+                }
+            ),
+        )
+        raise HTTPException(status_code=503, detail="agent_in_backoff")
+
+    # Enforce the "refuse live trading unless READY + LIVE + kill-switch off" policy.
+    # Note: dry-run execution (no broker routing) is allowed even when not LIVE.
+    if not engine.dry_run:
+        allowed, reason = trading_allowed(state=sm.state, agent_mode=agent_mode, kill_switch_enabled=kill)
+        if not allowed:
+            logger.warning(
+                "exec_agent.trade_refused %s",
+                json.dumps(
+                    {
+                        "agent_id": sm.agent_id,
+                        "state": sm.state.value,
+                        "agent_mode": agent_mode,
+                        "kill_switch_enabled": kill,
+                        "reason": reason,
+                        "marketdata_is_stale": hb.is_stale,
+                        "marketdata_age_seconds": hb.age_seconds,
+                    }
+                ),
+            )
+            raise HTTPException(status_code=409, detail={"refused": True, "reason": reason, "state": sm.state.value})
+
     try:
         result: ExecutionResult = engine.execute_intent(intent=intent)
     except AgentModeError as e:
@@ -113,6 +270,7 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
         raise HTTPException(status_code=409, detail={"error": "trading_refused", "reason": str(e)}) from e
     except Exception as e:
         logger.exception("exec_service.execute_failed: %s", e)
+        sm.on_unexpected_exception(exc=e, meta={"source": "execute_endpoint"})
         raise HTTPException(status_code=500, detail="execution_failed") from e
 
     # Always log an audit event (safe JSON; broker_order may contain ids, not secrets).
