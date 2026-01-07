@@ -1,20 +1,34 @@
 # Cloud Build configuration for Congressional Disclosure Ingestion service
 
 steps:
-  # Capture a deterministic UTC build timestamp for downstream steps.
   - name: gcr.io/cloud-builders/bash
+    id: 'Safety Guard'
     entrypoint: bash
     args:
-      - -ceu
+      - "-c"
       - |
+        set -euo pipefail
+        chmod +x ./scripts/ci_safety_guard.sh
+        ./scripts/ci_safety_guard.sh
+  # Capture a deterministic UTC build timestamp for downstream steps.
+  - name: gcr.io/cloud-builders/bash
+    id: 'capture-build-time'
+    entrypoint: bash
+    waitFor: ['Safety Guard']
+    args:
+      - -c
+      - |
+        set -euo pipefail
         date -u +%Y-%m-%dT%H:%M:%SZ > /workspace/.build_time_utc
 
   # Build the Docker image (deployment is handled via Kubernetes in us-east4).
   - name: gcr.io/cloud-builders/bash
     entrypoint: bash
+    waitFor: ['capture-build-time']
     args:
-      - -ceu
+      - -c
       - |
+        set -euo pipefail
         BUILD_TIME_UTC="$(cat /workspace/.build_time_utc)"
         GIT_SHA="${COMMIT_SHA:-$SHORT_SHA}"
         IMAGE_REF="gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA"
@@ -31,6 +45,7 @@ steps:
   # Build-time import gate: fail fast if entrypoint imports are broken.
   - name: gcr.io/cloud-builders/bash
     entrypoint: bash
+    waitFor: ['build-image']
     args:
       - "-c"
       - |
@@ -45,14 +60,17 @@ steps:
     args:
       - 'push'
       - 'gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA'
+    waitFor: ['import-gate']
     id: 'push-image-sha'
 
   # Deploy to Cloud Run
   - name: gcr.io/cloud-builders/bash
     entrypoint: bash
+    waitFor: ['push-image-sha']
     args:
-      - -ceu
+      - -c
       - |
+        set -euo pipefail
         BUILD_TIME_UTC="$(cat /workspace/.build_time_utc)"
         GIT_SHA="${COMMIT_SHA:-$SHORT_SHA}"
         IMAGE_REF="gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA"
