@@ -1,8 +1,6 @@
-from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
 
-from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
-
-_log_runtime_fingerprint(service="marketdata-mcp-server")
+_enforce_agent_mode_guard()
 
 import asyncio
 import os
