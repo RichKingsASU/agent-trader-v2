@@ -15,16 +15,9 @@ from fastapi.responses import Response
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.http_correlation import install_http_correlation
-from backend.common.ops_metrics import (
-    REGISTRY,
-    agent_start_total,
-    errors_total,
-    mark_activity,
-    update_marketdata_heartbeat_metrics,
-)
-
-from backend.observability.correlation import install_fastapi_correlation_middleware
+from backend.common.ops_metrics import REGISTRY, agent_start_total, errors_total, mark_activity, update_marketdata_heartbeat_metrics
 from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
+from backend.observability.correlation import install_fastapi_correlation_middleware
 
 app = FastAPI()
 install_fastapi_correlation_middleware(app)
@@ -43,7 +36,6 @@ def _identity() -> dict[str, Any]:
         "environment": os.getenv("ENVIRONMENT") or os.getenv("ENV") or None,
     }
 
-
 @app.on_event("startup")
 async def startup_event() -> None:
     configure_startup_logging(
@@ -54,7 +46,8 @@ async def startup_event() -> None:
     # Mark activity at startup so heartbeat_age_seconds starts at ~0.
     mark_activity("marketdata")
     app.state.shutting_down = False
-    app.state.is_ready = False
+    app.state.ready = False
+    app.state.ready_logged = False
     app.state.loop_heartbeat_monotonic = time.monotonic()
 
     async def _loop_heartbeat() -> None:
@@ -81,21 +74,17 @@ async def startup_event() -> None:
 
     stream_task.add_done_callback(_done_callback)
 
-    async def _mark_ready_when_streamer_ready() -> None:
-        try:
-            await app.state.streamer_ready_event.wait()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return
+    # Mark readiness once the background task is scheduled and the loop is running.
+    # NOTE: We avoid tying readiness to "market open" / tick arrival to prevent flapping.
+    await asyncio.sleep(0)
+    if stream_task.done():
+        # Don't claim readiness if the streamer failed immediately.
+        return
+    app.state.ready = True
+    if not bool(getattr(app.state, "ready_logged", False)):
+        app.state.ready_logged = True
+        print("SERVICE_READY: marketdata-mcp-server", flush=True)
 
-        if getattr(app.state, "shutting_down", False):
-            return
-
-        app.state.is_ready = True
-        print(f"SERVICE_READY: {_service_name()}", flush=True)
-
-    app.state.ready_task = asyncio.create_task(_mark_ready_when_streamer_ready())
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
@@ -126,31 +115,21 @@ async def shutdown_event() -> None:
         except Exception:
             pass
 
+
 @app.get("/")
-async def read_root():
+async def read_root() -> dict[str, Any]:
     return {"message": "Alpaca Market Streamer is running"}
 
-@app.get("/healthz")
-async def healthz() -> dict[str, Any]:
-    # Process is alive (no external dependencies).
-    return {"status": "ok"}
-
-
 @app.get("/health")
-async def health_check():
+async def health_check() -> dict[str, Any]:
     # Back-compat endpoint (intentionally does NOT gate readiness).
     return {"status": "healthy", "service_id": "agenttrader-prod-streamer"}
 
-@app.get("/readyz")
-async def readyz(response: Response) -> dict[str, Any]:
-    # Dependencies initialized (background streamer scheduled).
-    ready = bool(getattr(app.state, "is_ready", False))
-    shutting_down = bool(getattr(app.state, "shutting_down", False))
-    stream_task: asyncio.Task | None = getattr(app.state, "stream_task", None)
-    stream_ok = stream_task is not None and (not stream_task.done())
-    ok = ready and stream_ok and (not shutting_down)
-    response.status_code = 200 if ok else 503
-    return {"status": "ok" if ok else "not_ready"}
+
+@app.get("/healthz")
+async def healthz() -> dict[str, Any]:
+    # Process is alive (do not gate on external dependencies).
+    return {"status": "ok", "service": _service_name(), "identity": _identity()}
 
 
 @app.get("/livez")
@@ -166,6 +145,24 @@ async def livez(response: Response) -> dict[str, Any]:
     ok = loop_ok and (not shutting_down) and stream_ok
     response.status_code = 200 if ok else 503
     return {"status": "ok" if ok else ("stream_dead" if not stream_ok else "wedged")}
+
+
+@app.get("/readyz")
+async def readyz(response: Response) -> dict[str, Any]:
+    # Dependencies initialized (background streamer scheduled and still alive).
+    ready = bool(getattr(app.state, "ready", False))
+    shutting_down = bool(getattr(app.state, "shutting_down", False))
+    stream_task: asyncio.Task | None = getattr(app.state, "stream_task", None)
+    stream_ok = stream_task is not None and (not stream_task.done())
+    ok = ready and stream_ok and (not shutting_down)
+    response.status_code = 200 if ok else 503
+    return {
+        "status": "ok" if ok else "not_ready",
+        "service": _service_name(),
+        "identity": _identity(),
+        "ready": bool(ready),
+        "stream_task_alive": bool(stream_ok),
+    }
 
 
 @app.get("/heartbeat")
