@@ -1,3 +1,6 @@
+from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
+
+_enforce_agent_mode_guard()
 
 import datetime as dt
 import json

@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 import psycopg2
 from alpaca.data.live.stock import StockDataStream
@@ -16,10 +17,14 @@ from backend.common.ops_metrics import (
     marketdata_ticks_total,
     mark_activity,
 )
+from backend.ingestion.rate_limit import Backoff
 from backend.observability.logger import intent_end, intent_start, log_event
 
 LAST_MARKETDATA_TS_UTC: datetime | None = None
 LAST_MARKETDATA_SOURCE: str = "alpaca_quotes_streamer"
+_BACKOFF: Backoff | None = None
+_RESET_BACKOFF_ON_FIRST_QUOTE: bool = False
+_RETRY_WINDOW_STARTED_M: float | None = None
 
 
 def get_last_marketdata_ts() -> datetime | None:
@@ -74,6 +79,16 @@ async def quote_data_handler(data):
     # Consider each quote/tick as a heartbeat signal for marketdata freshness.
     marketdata_ticks_total.inc(1.0)
     mark_activity("marketdata")
+    # If we successfully receive data after a (re)connect, reset the reconnect backoff.
+    global _RESET_BACKOFF_ON_FIRST_QUOTE, _BACKOFF, _RETRY_WINDOW_STARTED_M
+    if _RESET_BACKOFF_ON_FIRST_QUOTE and _BACKOFF is not None:
+        try:
+            _BACKOFF.reset()
+            _RETRY_WINDOW_STARTED_M = None
+            log_event("reconnect_recovered", level="INFO", component="marketdata-mcp-server", source=LAST_MARKETDATA_SOURCE)
+        except Exception:
+            pass
+        _RESET_BACKOFF_ON_FIRST_QUOTE = False
     try:
         _mark_marketdata_seen(getattr(data, "timestamp", None))
     except Exception:
@@ -142,40 +157,117 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
     service to mark readiness once subscriptions are configured.
     """
     alpaca = load_alpaca_env()
-    wss_client = StockDataStream(alpaca.key_id, alpaca.secret_key, feed=DataFeed.IEX)
     symbols = _symbols_from_env()
-    
+
     logging.info(f"Subscribing to quotes for: {symbols}")
     if not symbols:
         raise RuntimeError("ALPACA_SYMBOLS resolved to empty list")
-    wss_client.subscribe_quotes(quote_data_handler, *symbols)
 
-    # Readiness: subscriptions configured and stream loop about to run.
-    if ready_event is not None:
+    # Reconnect policy (exponential backoff with jitter).
+    backoff_base_s = float(os.getenv("RECONNECT_BACKOFF_BASE_S") or "1")
+    backoff_max_s = float(os.getenv("RECONNECT_BACKOFF_MAX_S") or "60")
+    max_retry_window_s = float(os.getenv("RECONNECT_MAX_RETRY_WINDOW_S") or "900")
+
+    backoff = Backoff(base_seconds=backoff_base_s, max_seconds=backoff_max_s)
+    global _BACKOFF, _RESET_BACKOFF_ON_FIRST_QUOTE
+    _BACKOFF = backoff
+    global _RETRY_WINDOW_STARTED_M
+
+    while True:
+        wss_client: StockDataStream | None = None
         try:
-            ready_event.set()
-        except Exception:
-            # Best-effort; readiness is also reflected by the parent health server.
-            pass
-    
-    try:
-        await wss_client.run()
-    except asyncio.CancelledError:
-        # Allow graceful shutdown when the parent service receives SIGTERM.
-        try:
-            wss_client.stop()
-        except Exception:
-            pass
-        raise
-    except Exception as e:
-        errors_total.inc(labels={"component": "marketdata-mcp-server"})
-        logging.error(f"Streamer crashed: {type(e).__name__}: {e}")
-        raise
-    finally:
-        try:
-            wss_client.stop()
-        except Exception:
-            pass
+            wss_client = StockDataStream(alpaca.key_id, alpaca.secret_key, feed=DataFeed.IEX)
+            _RESET_BACKOFF_ON_FIRST_QUOTE = True
+            wss_client.subscribe_quotes(quote_data_handler, *symbols)
+
+            # Readiness: subscriptions configured and stream loop about to run (first connect only).
+            if ready_event is not None and (not ready_event.is_set()):
+                try:
+                    ready_event.set()
+                except Exception:
+                    pass
+
+            log_event(
+                "subscription_connect_attempt",
+                level="INFO",
+                component="marketdata-mcp-server",
+                source=LAST_MARKETDATA_SOURCE,
+                symbols_count=len(symbols),
+                backoff_attempt=backoff.attempt,
+            )
+            await wss_client.run()
+
+            # If the stream ends without raising, treat it as a disconnect and re-connect
+            # with backoff to prevent tight restart loops.
+            sleep_s = backoff.next_sleep()
+            if _RETRY_WINDOW_STARTED_M is None:
+                _RETRY_WINDOW_STARTED_M = time.monotonic()
+            log_event(
+                "subscription_disconnected",
+                level="WARNING",
+                component="marketdata-mcp-server",
+                source=LAST_MARKETDATA_SOURCE,
+                status="ended",
+                sleep_s=sleep_s,
+                backoff_attempt=backoff.attempt,
+            )
+            if _RETRY_WINDOW_STARTED_M is not None and (time.monotonic() - _RETRY_WINDOW_STARTED_M) > max_retry_window_s:
+                log_event(
+                    "subscription_reconnect_giveup",
+                    level="ERROR",
+                    component="marketdata-mcp-server",
+                    source=LAST_MARKETDATA_SOURCE,
+                    status="max_retry_window_exceeded",
+                    max_retry_window_s=max_retry_window_s,
+                    backoff_attempt=backoff.attempt,
+                )
+                raise RuntimeError("Reconnect max retry window exceeded")
+            await asyncio.sleep(sleep_s)
+        except asyncio.CancelledError:
+            # Allow graceful shutdown when the parent service receives SIGTERM.
+            try:
+                if wss_client is not None:
+                    wss_client.stop()
+            except Exception:
+                pass
+            raise
+        except Exception as e:
+            errors_total.inc(labels={"component": "marketdata-mcp-server"})
+            sleep_s = backoff.next_sleep()
+            if _RETRY_WINDOW_STARTED_M is None:
+                _RETRY_WINDOW_STARTED_M = time.monotonic()
+            logging.error(f"Streamer error (will reconnect): {type(e).__name__}: {e}")
+            log_event(
+                "subscription_disconnected",
+                level="ERROR",
+                component="marketdata-mcp-server",
+                source=LAST_MARKETDATA_SOURCE,
+                status="error",
+                error=f"{type(e).__name__}: {e}",
+                sleep_s=sleep_s,
+                backoff_attempt=backoff.attempt,
+            )
+            if _RETRY_WINDOW_STARTED_M is not None and (time.monotonic() - _RETRY_WINDOW_STARTED_M) > max_retry_window_s:
+                log_event(
+                    "subscription_reconnect_giveup",
+                    level="ERROR",
+                    component="marketdata-mcp-server",
+                    source=LAST_MARKETDATA_SOURCE,
+                    status="max_retry_window_exceeded",
+                    max_retry_window_s=max_retry_window_s,
+                    backoff_attempt=backoff.attempt,
+                )
+                raise
+            await asyncio.sleep(sleep_s)
+        finally:
+            try:
+                if wss_client is not None:
+                    wss_client.stop()
+            except Exception:
+                pass
+            # If we got at least one quote, quote handler resets backoff.attempt to 0.
+            if backoff.attempt == 0:
+                _RETRY_WINDOW_STARTED_M = None
 
 if __name__ == "__main__":
     try:

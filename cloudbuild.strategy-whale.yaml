@@ -1,6 +1,6 @@
 steps:
-- name: gcr.io/cloud-builders/bash
-  entrypoint: bash
+- name: gcr.io/cloud-builders/docker
+  id: 'Build strategy-whale'
   args:
     [
       "build",
@@ -10,5 +10,14 @@ steps:
       "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-whale:${SHORT_SHA}",
       ".",
     ]
+
+- name: 'gcr.io/cloud-builders/bash'
+  id: 'Import gate strategy-whale'
+  entrypoint: 'bash'
+  args:
+    - -ceu
+    - |
+      IMAGE_REF="us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-whale:${SHORT_SHA}"
+      sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
 images:
 - "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-whale:${SHORT_SHA}"

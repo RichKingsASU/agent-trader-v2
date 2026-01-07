@@ -5,7 +5,11 @@ _log_runtime_fingerprint(service="stream-bridge")
 import asyncio
 import json
 import logging
-import signal
+
+from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
+
+_enforce_agent_mode_guard()
+
 from .config import load_config
 from .firestore_writer import FirestoreWriter
 from .streams.price_stream_client import PriceStreamClient
@@ -14,12 +18,14 @@ from .streams.news_stream_client import NewsStreamClient
 from .streams.account_updates_client import AccountUpdatesClient
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.observability.build_fingerprint import get_build_fingerprint
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 async def main():
+    enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="stream-bridge",
         intent="Bridge upstream streams into Firestore (price, options flow, news, account updates).",

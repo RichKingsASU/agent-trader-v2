@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
 
-_log_runtime_fingerprint(service="market-ingest")
+_enforce_agent_mode_guard()
 
 import asyncio
 import json
@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.ingestion.market_data_ingest import (
@@ -87,6 +88,8 @@ async def _startup() -> None:
     """
     level = os.getenv("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+    enforce_agent_mode_guard()
 
     configure_startup_logging(
         agent_name="market-ingest-service",

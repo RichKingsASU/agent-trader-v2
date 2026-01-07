@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from backend.common.config_contract import validate_or_exit as _validate_or_exit
+
+# Fail-fast env contract validation (must run before other backend imports).
+_validate_or_exit("strategy-engine")
+
 from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
 
-_log_runtime_fingerprint(service="strategy-engine")
+_enforce_agent_mode_guard()
 
 import asyncio
 import os
@@ -31,6 +36,7 @@ def _identity() -> dict[str, Any]:
 
 @app.on_event("startup")
 async def _startup() -> None:
+    enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="strategy-engine",
         intent="Serve strategy-engine health endpoints and run strategy cycles with fail-closed safety gating.",

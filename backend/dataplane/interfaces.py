@@ -60,3 +60,30 @@ class ProposalStore(ABC):
     @abstractmethod
     def query_proposals(self, **filters: Any) -> list[dict[str, Any]]: ...
 
+
+class NewsFeaturesProvider(ABC):
+    """
+    Read-only interface for accessing *precomputed* news-derived features.
+
+    Why this exists:
+    - Strategies should remain deterministic and side-effect free.
+    - Strategies must not perform network I/O to fetch news (backtests + sandbox).
+    - Callers can inject a mock/snapshot provider for backtests.
+
+    Contract:
+    - Implementations must return a *read-only* sequence of mapping-like rows.
+    - Rows should be ordered with the most-recent entries first (descending by timestamp).
+    - The returned rows should be safe to cache and re-use by the caller.
+
+    Expected row shape (recommended; not enforced):
+      {
+        "ts": <datetime|iso-str>,
+        "symbol": <str>,
+        "features": { ... numeric / categorical features ... },
+        "source": <str|None>,
+      }
+    """
+
+    @abstractmethod
+    def get_recent_news_features(self, symbol: str, lookback_minutes: int) -> Sequence[Mapping[str, Any]]: ...
+

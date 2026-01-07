@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
 
-_log_runtime_fingerprint(service="mission-control")
+_enforce_agent_mode_guard()
 
 import asyncio
 import os
@@ -370,6 +370,7 @@ def _agent_detail(cfg: AgentConfig, st: Optional[AgentRuntimeStatus]) -> dict[st
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    enforce_agent_mode_guard()
     agents_path = os.getenv("AGENTS_CONFIG_PATH", "/app/configs/agents/agents.yaml")
     poll_interval_s = float(os.getenv("POLL_INTERVAL_SECONDS", "10"))
     per_agent_timeout_s = float(os.getenv("PER_AGENT_TIMEOUT_SECONDS", "1.5"))

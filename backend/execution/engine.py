@@ -11,9 +11,13 @@ from typing import Any, Optional, Protocol, runtime_checkable
 import requests
 
 from backend.common.env import get_env
-from backend.common.agent_mode import AgentModeError, require_live_mode as require_agent_live_mode
-from backend.common.kill_switch import ExecutionHaltedError, get_kill_switch_state, is_kill_switch_enabled
-from backend.common.runtime_execution_prevention import fatal_if_execution_reached
+from backend.common.agent_mode import require_live_mode as require_trading_live_mode
+from backend.common.kill_switch import (
+    ExecutionHaltedError,
+    get_kill_switch_state,
+    is_kill_switch_enabled,
+    require_live_mode as require_kill_switch_off,
+)
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.streams.alpaca_env import load_alpaca_env
 
@@ -1029,9 +1033,13 @@ class ExecutionEngine:
                 pass
             return ExecutionResult(status="dry_run", risk=risk, routing=routing_decision, message="dry_run_enabled")
 
-        # Defense-in-depth: never place broker orders if the global kill switch is active,
-        # even if upstream risk checks were bypassed/misconfigured.
-        if is_kill_switch_enabled():
+        # Defense-in-depth: do not place broker orders unless explicitly authorized.
+        # - Trading authority: AGENT_MODE must be LIVE (fail-closed; raises AgentModeError).
+        # - Kill switch: must be OFF (convert to a rejected result for callers).
+        require_trading_live_mode(action="broker order placement")
+        try:
+            require_kill_switch_off(operation="broker order placement")
+        except ExecutionHaltedError:
             enabled, source = get_kill_switch_state()
             checks = list(risk.checks or [])
             checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
@@ -1042,29 +1050,6 @@ class ExecutionEngine:
                 routing=routing_decision,
                 message="kill_switch_enabled",
             )
-
-        # Authority boundary: even attempting a broker-side action requires explicit LIVE mode.
-        # (This is separate from kill switch.)
-        require_agent_live_mode(action="place_order")
-
-        # Absolute safety boundary: runtime execution must be impossible even if misconfigured.
-        fatal_if_execution_reached(
-            operation="execution_engine.place_order",
-            explicit_message=(
-                "Runtime execution is forbidden in agent-trader-v2. "
-                "ExecutionEngine reached the broker placement branch; aborting before broker call."
-            ),
-            context={
-                "broker_name": self._broker_name,
-                "symbol": intent.symbol,
-                "side": intent.side,
-                "qty": intent.qty,
-                "client_intent_id": intent.client_intent_id,
-                "strategy_id": intent.strategy_id,
-                "broker_account_id": intent.broker_account_id,
-                "asset_class": intent.asset_class,
-            },
-        )
 
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None

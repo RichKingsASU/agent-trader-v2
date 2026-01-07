@@ -17,7 +17,7 @@ The agent refuses to start unless **all** are true (strict, case-sensitive):
 - `REPO_ID == "agent-trader-v2"`
 - `AGENT_NAME == "execution-agent"`
 - `AGENT_ROLE == "execution"`
-- `AGENT_MODE == "EXECUTE"`
+- `AGENT_MODE == "OBSERVE"`
 - `EXECUTION_AGENT_ENABLED == "true"`
 - `BROKER_EXECUTION_ENABLED == "false"` (**must be present and must be false**)
 
