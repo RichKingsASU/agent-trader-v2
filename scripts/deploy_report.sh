@@ -5,6 +5,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${ROOT_DIR}/deploy_logs"
 OUT_FILE="${OUT_DIR}/health_report.md"
 
+# TODO(ops-status): Prefer service `/ops/status` sampling in this report.
+# A minimal helper exists at `scripts/report_v2_deploy.py` (fetch_ops_status).
+# Integration is deferred until this report has a stable way to discover/resolve
+# in-cluster service URLs without long-lived port-forwards.
+
 # Non-interactive / no pagers
 export KUBECTL_PAGER=""
 export PAGER=cat
