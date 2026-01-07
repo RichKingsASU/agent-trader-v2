@@ -1,7 +1,7 @@
 """
-vNEXT packages.
+vNEXT namespace: forward-looking interfaces and contracts.
 
-This package is reserved for forward-looking, interface-first designs.
-Implementations should be added only when governance requirements are met.
+This package is intentionally light-weight. It defines governance-first interfaces
+that allow future implementations without implicitly authorizing data collection.
 """
 
