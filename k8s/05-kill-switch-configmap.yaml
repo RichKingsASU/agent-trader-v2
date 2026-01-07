@@ -7,5 +7,6 @@ data:
   # Global kill switch:
   # - "0" (default): execution allowed (subject to other risk rules)
   # - "1": execution halted (all execution agents refuse trading)
-  EXECUTION_HALTED: "0"
+  # Security posture for k8s manifests in this repo: default to HALTED.
+  EXECUTION_HALTED: "1"
 
