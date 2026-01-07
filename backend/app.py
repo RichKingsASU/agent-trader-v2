@@ -2,8 +2,8 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import Response
 import asyncio
-import sys
 import os
+from datetime import datetime, timezone
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.ops_metrics import (
@@ -14,6 +14,7 @@ from backend.common.ops_metrics import (
     update_marketdata_heartbeat_metrics,
 )
 
+from backend.common.marketdata_heartbeat import snapshot
 from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
 
 app = FastAPI()

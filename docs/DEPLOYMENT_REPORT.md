@@ -2,6 +2,13 @@
 
 This repo includes a non-interactive deployment report generator that snapshots the current Kubernetes state into a single markdown file (pods, deployments, rollouts, images, warning events, and suggested scale-ups).
 
+## AgentTrader v2: “Where are my workloads?” report (GKE)
+
+For the AgentTrader v2 trading floor, use the dedicated v2 report generator:
+- **Wrapper**: `./scripts/report_v2_deploy.sh`
+- **Outputs**: `audit_artifacts/deploy_report.md` and `audit_artifacts/deploy_report.json`
+- **Docs**: `docs/ops/reporting.md`
+
 ### Requirements
 
 - `kubectl` installed and authenticated to the target cluster

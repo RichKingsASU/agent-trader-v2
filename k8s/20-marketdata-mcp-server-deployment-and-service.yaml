@@ -6,6 +6,11 @@ metadata:
   labels:
     app: marketdata-mcp-server
     git_sha: a2466ec
+    app.kubernetes.io/name: agenttrader
+    app.kubernetes.io/part-of: agent-trader-v2
+    app.kubernetes.io/component: mcp
+    app.kubernetes.io/instance: marketdata-mcp-server
+    version: v2
 spec:
   replicas: 1
   selector:
@@ -16,8 +21,14 @@ spec:
       labels:
         app: marketdata-mcp-server
         git_sha: a2466ec
+        app.kubernetes.io/name: agenttrader
+        app.kubernetes.io/part-of: agent-trader-v2
+        app.kubernetes.io/component: mcp
+        app.kubernetes.io/instance: marketdata-mcp-server
+        version: v2
     spec:
-      serviceAccountName: trading-floor-sa
+      # Workload Identity (KSA->GSA) is wired via k8s/serviceaccounts/marketdata-mcp-server-ksa.yaml
+      serviceAccountName: marketdata-mcp-server-ksa
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -35,16 +46,18 @@ spec:
                 key: EXECUTION_HALTED
           - name: EXECUTION_HALTED_FILE
             value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
-          - name: APCA_API_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: trader-secrets
-                key: APCA_API_KEY_ID
-          - name: FIREBASE_KEY
-            valueFrom:
-              secretKeyRef:
-                name: trader-secrets
-                key: FIREBASE_KEY
+          # Secrets: do NOT inject plaintext or Secret refs in manifests.
+          # Future wiring uses Secret Manager + CSI mounts under /var/run/secrets/agenttrader (see k8s/secrets/).
+          - name: DRY_RUN
+            value: "1"
+          - name: ALPACA_API_KEY
+            value: ""
+          - name: ALPACA_SECRET_KEY
+            value: ""
+          - name: ALPACA_API_KEY_FILE
+            value: /var/run/secrets/agenttrader/marketdata/alpaca_api_key
+          - name: ALPACA_SECRET_KEY_FILE
+            value: /var/run/secrets/agenttrader/marketdata/alpaca_secret_key
         volumeMounts:
           - name: kill-switch
             mountPath: /etc/agenttrader/kill-switch
@@ -68,6 +81,12 @@ kind: Service
 metadata:
   name: marketdata-mcp-server
   namespace: trading-floor
+  labels:
+    app.kubernetes.io/name: agenttrader
+    app.kubernetes.io/part-of: agent-trader-v2
+    app.kubernetes.io/component: mcp
+    app.kubernetes.io/instance: marketdata-mcp-server
+    version: v2
 spec:
   selector:
     app: marketdata-mcp-server

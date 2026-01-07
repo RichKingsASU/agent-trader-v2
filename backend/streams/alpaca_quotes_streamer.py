@@ -1,8 +1,8 @@
 import os
 import asyncio
 import logging
-import psycopg2
 from datetime import datetime, timezone
+import psycopg2
 from alpaca.data.live.stock import StockDataStream
 from alpaca.data.enums import DataFeed
 
@@ -17,17 +17,8 @@ from backend.common.ops_metrics import (
     mark_activity,
 )
 
-try:
-    alpaca = load_alpaca_env()
-    API_KEY = alpaca.key_id
-    SECRET_KEY = alpaca.secret_key
-    DB_URL = os.getenv("DATABASE_URL")
-    if not DB_URL:
-        raise KeyError("DATABASE_URL")
-    SYMBOLS = [s.strip() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ").split(",") if s.strip()]
-except KeyError as e:
-    logging.error(f"FATAL: Missing required environment variable: {e}")
-    exit(1)
+def _symbols_from_env() -> list[str]:
+    return [s.strip() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ").split(",") if s.strip()]
 
 async def quote_data_handler(data):
     """Handler for incoming quote data."""
@@ -35,10 +26,21 @@ async def quote_data_handler(data):
     marketdata_ticks_total.inc(1.0)
     mark_activity("marketdata")
     logging.info(f"Received quote for {data.symbol}: Bid={data.bid_price}, Ask={data.ask_price}")
+
+    # Heartbeat producer: update whenever we receive a live quote event.
+    # Prefer the provider timestamp if present; fall back to "now".
+    provider_ts = getattr(data, "timestamp", None)
+    if isinstance(provider_ts, datetime):
+        update_last_tick(provider_ts)
+    else:
+        update_last_tick()
     
     try:
         session = get_market_session(datetime.now(timezone.utc))
-        with psycopg2.connect(DB_URL) as conn:
+        db_url = os.getenv("DATABASE_URL")
+        if not db_url:
+            raise RuntimeError("Missing required env var: DATABASE_URL")
+        with psycopg2.connect(db_url) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -62,10 +64,14 @@ async def quote_data_handler(data):
 
 async def main():
     """Main function to start the quote streamer."""
-    wss_client = StockDataStream(API_KEY, SECRET_KEY, feed=DataFeed.IEX)
+    alpaca = load_alpaca_env()
+    wss_client = StockDataStream(alpaca.key_id, alpaca.secret_key, feed=DataFeed.IEX)
+    symbols = _symbols_from_env()
     
-    logging.info(f"Subscribing to quotes for: {SYMBOLS}")
-    wss_client.subscribe_quotes(quote_data_handler, *SYMBOLS)
+    logging.info(f"Subscribing to quotes for: {symbols}")
+    if not symbols:
+        raise RuntimeError("ALPACA_SYMBOLS resolved to empty list")
+    wss_client.subscribe_quotes(quote_data_handler, *symbols)
     
     try:
         await wss_client.run()
