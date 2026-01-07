@@ -98,6 +98,10 @@ async def run_strategy(execute: bool):
 
 
 if __name__ == "__main__":
+    configure_startup_logging(
+        agent_name="strategy-engine",
+        intent="Run the strategy engine loop (fetch data, decide, and optionally execute paper trades).",
+    )
     parser = argparse.ArgumentParser()
     parser.add_argument("--execute", action="store_true", help="Actually place paper trades.")
     args = parser.parse_args()

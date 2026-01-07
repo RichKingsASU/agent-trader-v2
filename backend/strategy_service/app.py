@@ -2,12 +2,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import strategies, broker_accounts, paper_orders, trades
 
+from backend.common.agent_boot import configure_startup_logging
+
 app = FastAPI(title="AgentTrader Strategy Service")
 
-# Used by Kubernetes readiness/liveness probes.
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
+# Startup identity/intent log (single JSON line).
+@app.on_event("startup")
+def _startup() -> None:
+    configure_startup_logging(
+        agent_name="strategy-service",
+        intent="Serve strategy management APIs (strategies, broker accounts, paper orders, trades).",
+    )
 
 # Enable CORS for frontend
 app.add_middleware(

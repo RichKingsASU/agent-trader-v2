@@ -29,6 +29,9 @@ spec:
       containers:
         - name: market-ingest
           image: REPLACE_ME_IMAGE
+          env:
+            - name: GIT_SHA
+              value: REPLACE_ME_GIT_SHA
           command: ["uvicorn"]
           args:
             - backend.ingestion.market_data_ingest_service:app

@@ -8,7 +8,8 @@ PROJECT_ID=$(gcloud config get-value project)
 JOB_NAME="strategy-engine-job"
 SCHEDULER_NAME="strategy-engine-scheduler"
 REGION="us-central1"
-IMAGE_URI="gcr.io/${PROJECT_ID}/${JOB_NAME}"
+GIT_SHA="${GIT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+IMAGE_URI="gcr.io/${PROJECT_ID}/${JOB_NAME}:${GIT_SHA}"
 SERVICE_ACCOUNT="my-run-sa@${PROJECT_ID}.iam.gserviceaccount.com"
 
 # Marketdata health contract (override as needed for your environment)
