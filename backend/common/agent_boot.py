@@ -1,16 +1,14 @@
 """
-Universal agent identity + intent logging.
+Universal agent identity + intent logging (v2).
 
-This module intentionally logs only a small, explicit allowlist of fields and
-never echoes arbitrary environment variables (to avoid leaking secrets).
+Back-compat wrapper used by multiple services; delegates to the institutional
+`backend.observability.*` modules.
 """
 
 from __future__ import annotations
 
-import json
-import os
-from datetime import datetime, timezone
-from typing import Any, Optional
+import platform
+from typing import Any
 
 from backend.common.audit_logging import configure_audit_log_enrichment, set_correlation_id
 
@@ -113,17 +111,32 @@ def _get_workload() -> Optional[str]:
 
 def configure_startup_logging(agent_name: str, intent: str) -> None:
     """
-    Emit a single JSON line describing this agent's identity and intent.
+    Emit a startup "identity banner" intent log.
 
-    Required fields:
-    - ts, agent_name, intent, git_sha, agent_mode, environment
-    Optional fields (included when available):
-    - service, workload
-
-    Safety:
-    - Only logs explicit allowlisted values (does not dump env)
-    - Never raises
+    Notes:
+    - Identity is sourced from env vars (REPO_ID/AGENT_NAME/AGENT_ROLE/AGENT_MODE).
+    - This function will fail fast if identity env vars are missing/invalid.
+    - `agent_name` argument is retained only for back-compat; mismatches are logged.
     """
+    ident = require_identity_env()
+    if agent_name and ident.get("agent_name") and agent_name != ident["agent_name"]:
+        log_event(
+            "agent_identity_mismatch",
+            level="WARNING",
+            expected_agent_name=ident["agent_name"],
+            configured_agent_name=agent_name,
+        )
+
+    extra: dict[str, Any] = {
+        "agent_version": ident.get("agent_version"),
+        "python_version": platform.python_version(),
+        "platform": _safe_platform(),
+        "runtime": get_runtime_metadata(),
+    }
+    log_agent_start_banner(summary=intent, extra=extra)
+
+
+def _safe_platform() -> str:
     try:
         # Make agent identity available for all log lines (best-effort).
         if not (os.getenv("AGENT_NAME") or "").strip():
@@ -153,6 +166,5 @@ def configure_startup_logging(agent_name: str, intent: str) -> None:
         # Single-line JSON to stdout for container log collectors.
         print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
     except Exception:
-        # Never break startup for logging.
-        return
+        return "unknown"
 

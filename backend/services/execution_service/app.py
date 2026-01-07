@@ -10,7 +10,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi import Request
 from pydantic import BaseModel, Field
 
-from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
+from backend.common.agent_state_machine import (
+    AgentState,
+    AgentStateMachine,
+    read_agent_mode,
+    trading_allowed,
+)
+from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.execution.engine import (
     AlpacaBroker,
     DryRunBroker,
@@ -21,7 +27,7 @@ from backend.execution.engine import (
 )
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.vertex_ai import init_vertex_ai_or_log
-from backend.common.marketdata_health import MarketDataStaleError, assert_marketdata_fresh
+from backend.observability.correlation import install_fastapi_correlation_middleware
 
 logger = logging.getLogger(__name__)
 
@@ -80,25 +86,19 @@ def _build_engine_from_env() -> tuple[ExecutionEngine, RiskManager]:
 
 
 app = FastAPI(title="AgentTrader Execution Engine")
+install_fastapi_correlation_middleware(app)
 
 @app.on_event("startup")
 def _startup() -> None:
-    # Emit a replay-safe startup marker for post-mortem timelines.
+    configure_startup_logging(
+        agent_name="execution-engine",
+        intent="Serve the execution API; validate config and execute broker order intents.",
+    )
     try:
-        set_replay_context(agent_name=os.getenv("AGENT_NAME") or "execution-engine")
-        logger.info(
-            "%s",
-            dumps_replay_event(
-                build_replay_event(
-                    event="startup",
-                    component="backend.services.execution_service.app",
-                    data={
-                        "service": "execution-engine",
-                        "dry_run_default": _bool_env("EXEC_DRY_RUN", True),
-                        "log_level": os.getenv("LOG_LEVEL", "INFO"),
-                    },
-                )
-            ),
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
         )
     except Exception:
         pass
@@ -120,7 +120,13 @@ def _startup() -> None:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "service": "execution-engine"}
+    return {"status": "ok", "service": "execution-engine", **get_build_fingerprint()}
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, Any]:
+    # Alias for institutional conventions.
+    return health()
 
 
 @app.get("/state")

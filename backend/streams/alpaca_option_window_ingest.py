@@ -52,6 +52,7 @@ DATA_BASE = "https://data.alpaca.markets"
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.env import get_env
+from backend.observability.build_fingerprint import get_build_fingerprint
 
 # Keep consistent with other backend/streams scripts
 from backend.streams.alpaca_env import load_alpaca_env
@@ -531,6 +532,14 @@ def main() -> int:
         agent_name="options-window-ingest",
         intent="Ingest an option snapshot window around ATM and upsert to Postgres.",
     )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
 
     cfg = load_config()
     db_url = os.getenv("DATABASE_URL")

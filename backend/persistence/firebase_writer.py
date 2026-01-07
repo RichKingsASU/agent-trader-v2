@@ -8,10 +8,11 @@ from typing import Any, Iterable
 from google.api_core import exceptions as gexc
 
 from backend.persistence.firebase_client import get_firestore_client
+from backend.time.nyse_time import parse_ts, utc_now
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utc_now()
 
 
 def _coerce_timestamp(value: Any) -> datetime:
@@ -20,36 +21,11 @@ def _coerce_timestamp(value: Any) -> datetime:
     """
     if value is None:
         return _utc_now()
-
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
-
-    if isinstance(value, (int, float)):
-        # Heuristic: treat very large values as epoch millis.
-        seconds = float(value) / 1000.0 if float(value) > 1e12 else float(value)
-        return datetime.fromtimestamp(seconds, tz=timezone.utc)
-
-    if isinstance(value, str):
-        s = value.strip()
-        # datetime.fromisoformat doesn't accept "Z"
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(s)
-        except ValueError:
-            # Fallback: treat as epoch millis/seconds string
-            try:
-                return _coerce_timestamp(float(s))
-            except Exception as e:
-                raise ValueError(f"Invalid timestamp string: {value!r}") from e
-
-        if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-
-    raise TypeError(f"Unsupported timestamp type: {type(value).__name__}")
+    try:
+        return parse_ts(value)
+    except Exception:
+        # Firestore should always receive a timestamp; fail-safe to now.
+        return _utc_now()
 
 
 _TRANSIENT_EXCEPTIONS: tuple[type[BaseException], ...] = (

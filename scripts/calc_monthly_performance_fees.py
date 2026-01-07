@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, Mapping, Optional
 
 from google.cloud import firestore  # type: ignore
@@ -12,6 +12,7 @@ from backend.marketplace.fees import compute_monthly_performance_fee, parse_reve
 from backend.marketplace.performance import month_period_utc
 from backend.marketplace.schema import TenantPaths, monthly_fee_id_for_subscription, monthly_perf_id
 from backend.persistence.firebase_client import get_firestore_client
+from backend.time.nyse_time import to_utc
 
 
 def _parse_yyyy_mm(value: str) -> tuple[int, int]:
@@ -23,9 +24,7 @@ def _parse_yyyy_mm(value: str) -> tuple[int, int]:
 
 
 def _to_firestore_ts(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    return to_utc(dt)
 
 
 def _resolve_uid(d: Mapping[str, Any]) -> Optional[str]:

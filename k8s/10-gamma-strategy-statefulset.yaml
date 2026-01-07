@@ -4,11 +4,12 @@ metadata:
   name: gamma-strategy
   namespace: trading-floor
   labels:
-    app.kubernetes.io/name: agenttrader
+    agenttrader.dev/repo_id: agent-trader-v2
     app.kubernetes.io/part-of: agent-trader-v2
-    app.kubernetes.io/component: strategy
-    app.kubernetes.io/instance: gamma-strategy
-    version: v2
+    app.kubernetes.io/version: 54afffe
+  annotations:
+    agenttrader.dev/git_sha: "__GIT_SHA__"
+    agenttrader.dev/build_id: "__BUILD_ID__"
 spec:
   serviceName: "gamma-strategy"
   replicas: 1
@@ -19,12 +20,13 @@ spec:
     metadata:
       labels:
         strategy: gamma
-        git_sha: a2466ec
-        app.kubernetes.io/name: agenttrader
+        agenttrader.dev/repo_id: agent-trader-v2
         app.kubernetes.io/part-of: agent-trader-v2
-        app.kubernetes.io/component: strategy
-        app.kubernetes.io/instance: gamma-strategy
-        version: v2
+        app.kubernetes.io/version: 54afffe
+        git_sha: 54afffe
+      annotations:
+        agenttrader.dev/git_sha: "__GIT_SHA__"
+        agenttrader.dev/build_id: "__BUILD_ID__"
     spec:
       priorityClassName: high-priority
       # Workload Identity (KSA->GSA) is wired via k8s/serviceaccounts/strategy-engine-ksa.yaml
@@ -39,7 +41,15 @@ spec:
         - containerPort: 8080
           name: http
         env:
-          - name: EXECUTION_HALTED
+          - name: REPO_ID
+            value: "agent-trader-v2"
+          - name: AGENT_NAME
+            value: "strategy-engine"
+          - name: AGENT_ROLE
+            value: "strategy_eval"
+          - name: AGENT_MODE
+            value: "OFF"
+          - name: GIT_SHA
             valueFrom:
               configMapKeyRef:
                 name: agenttrader-kill-switch
