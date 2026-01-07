@@ -194,3 +194,11 @@ npm run build
 ```
 
 Firebase initialization is centralized in `frontend/src/firebase.ts`.
+
+## vNEXT: repo-wide non-invasive confirmation
+
+A repo-wide scan shows **no vNEXT-labeled runtime code** (outside vendored dependencies), so vNEXT introduces:
+- no imports from live-trading execution code
+- no side effects
+- no background threads
+- no network calls
