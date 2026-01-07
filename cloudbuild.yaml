@@ -42,7 +42,28 @@ steps:
 
         echo "CI SAFETY GUARD PASSED — proceeding to build"
 
-        echo "=== CI SAFETY GUARD PASSED ==="
+  # c) Import smoke check (source-based; fail fast before image builds).
+  #
+  # We intentionally install from a pinned lock file for deterministic results.
+  # The smoke check here is scoped to the entrypoints built in this pipeline.
+  - name: 'python:3.12-slim'
+    id: 'Import smoke check'
+    waitFor: ['Safety Guard']
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        echo "--- Import smoke check (source) ---"
+        python -V
+        python -m pip --version || python -m ensurepip
+        python -m pip install --no-cache-dir --upgrade pip
+        python -m pip install --no-cache-dir -r backend/strategy_service/requirements.lock
+        python ./scripts/smoke_check_imports.py \
+          --no-defaults \
+          --module backend.app \
+          --module backend.strategy_engine.service \
+          --module backend.strategy_service.app
 
   # ------------------------------------------------------------
   # PHASE 2: BUILD STRATEGY ENGINE

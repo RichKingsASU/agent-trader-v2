@@ -35,68 +35,68 @@ spec:
         runAsNonRoot: true
         runAsUser: 10001
       containers:
-      - name: gamma-strategy-container
-        image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:54afffe
-        ports:
-        - containerPort: 8080
-          name: http
-        startupProbe:
-          httpGet:
-            path: /healthz
-            port: http
-          periodSeconds: 2
-          timeoutSeconds: 2
-          failureThreshold: 30
-        readinessProbe:
-          httpGet:
-            path: /readyz
-            port: http
-          initialDelaySeconds: 5
-          periodSeconds: 10
-          timeoutSeconds: 2
-          failureThreshold: 6
-        livenessProbe:
-          httpGet:
-            path: /livez
-            port: http
-          initialDelaySeconds: 10
-          periodSeconds: 20
-          timeoutSeconds: 2
-          failureThreshold: 3
-        env:
-          - name: REPO_ID
-            value: "agent-trader-v2"
-          - name: AGENT_NAME
-            value: "strategy-engine"
-          - name: AGENT_ROLE
-            value: "strategy_eval"
-          - name: AGENT_MODE
-            value: "EVAL"
-          - name: SERVICE_NAME
-            value: "gamma-strategy"
-          - name: GIT_SHA
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.labels['app.kubernetes.io/commit']
-          - name: IMAGE_TAG
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.labels['app.kubernetes.io/version']
-          - name: EXECUTION_HALTED
-            valueFrom:
-              configMapKeyRef:
-                name: agenttrader-kill-switch
-                key: EXECUTION_HALTED
-          - name: EXECUTION_HALTED_FILE
-            value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
-        volumeMounts:
-          - name: kill-switch
-            mountPath: /etc/agenttrader/kill-switch
-            readOnly: true
-        resources:
-          requests:
-            cpu: 100m
-            memory: 256Mi
+        - name: gamma-strategy-container
+          image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:54afffe
+          ports:
+            - containerPort: 8080
+              name: http
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          env:
+            - name: REPO_ID
+              value: "agent-trader-v2"
+            - name: AGENT_NAME
+              value: "strategy-engine"
+            - name: AGENT_ROLE
+              value: "strategy_eval"
+            - name: AGENT_MODE
+              value: "EVAL"
+            - name: SERVICE_NAME
+              value: "gamma-strategy"
+            - name: GIT_SHA
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app.kubernetes.io/commit']
+            - name: IMAGE_TAG
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app.kubernetes.io/version']
+            - name: EXECUTION_HALTED
+              valueFrom:
+                configMapKeyRef:
+                  name: agenttrader-kill-switch
+                  key: EXECUTION_HALTED
+            - name: EXECUTION_HALTED_FILE
+              value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
+          volumeMounts:
+            - name: kill-switch
+              mountPath: /etc/agenttrader/kill-switch
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
       volumes:
         - name: kill-switch
           configMap:
