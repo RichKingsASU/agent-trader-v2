@@ -18,12 +18,12 @@ google-genai
 python-dotenv
 nats-py
 pandas
-PyYAML==6.0.2
+pyyaml
 
 # Optional DB drivers (Postgres)
 psycopg[binary]
 asyncpg==0.29.0
 psycopg2-binary==2.9.9
 
-# Testing
-pytest==8.3.4
+# Repo blueprint generator (k8s/cloudbuild YAML parsing)
+PyYAML>=6.0.2
