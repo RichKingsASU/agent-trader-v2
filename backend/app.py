@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.http_correlation import install_http_correlation
 from backend.common.ops_metrics import (
     REGISTRY,
     agent_start_total,
@@ -14,6 +15,8 @@ from backend.common.ops_metrics import (
     mark_activity,
     update_marketdata_heartbeat_metrics,
 )
+
+from backend.observability.correlation import install_fastapi_correlation_middleware
 
 from backend.common.marketdata_heartbeat import snapshot
 from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
@@ -102,6 +105,26 @@ install_http_correlation(app, service="marketdata-mcp-server")
 @app.get("/")
 async def read_root():
     return {"message": "Alpaca Market Streamer is running"}
+
+@app.get("/livez")
+async def livez() -> dict[str, Any]:
+    # Liveness should not flap on kill-switch or stale marketdata.
+    return {"status": "alive", "identity": _identity()}
+
+
+@app.get("/healthz")
+async def healthz() -> dict[str, Any]:
+    # Health is best-effort; readiness uses /readyz.
+    _, payload = _status_payload()
+    return payload
+
+
+@app.get("/readyz")
+async def readyz() -> dict[str, Any]:
+    # Readiness should not trigger restarts; expose state in payload instead.
+    _, payload = _status_payload()
+    return payload
+
 
 @app.get("/health")
 async def health_check():
