@@ -26,83 +26,114 @@ steps:
         /workspace/scripts/ci_safety_guard.sh
         echo "✅ SAFETY GUARD PASS"
 
-        echo "CI SAFETY GUARD PASSED — proceeding to build"
+        # ----------------------------
+        # Rule 3: Execution agents must not be scaled
+        # ----------------------------
+        echo "--- Rule: execution agents replicas must be 0 ---"
+        if [ -d "./k8s/execution" ]; then
+          if grep -R "replicas:[[:space:]]*[1-9]" ./k8s/execution; then
+            echo "❌ FAILED: Execution agents must have replicas: 0."
+            exit 1
+          else
+            echo "✅ PASSED: Execution agents not scaled."
+          fi
+        else
+          echo "No execution manifests present (PASS)"
+        fi
+        echo "✅ PASSED: No execution agents found with replicas > 0."
 
-  # c) Import smoke check (source-based; fail fast before image builds).
-  #
-  # We intentionally install from a pinned lock file for deterministic results.
-  # The smoke check here is scoped to the entrypoints built in this pipeline.
-  - name: 'python:3.12-slim'
-    id: 'Import smoke check'
-    waitFor: ['Safety Guard']
+  - name: 'gcr.io/cloud-builders/bash'
+    id: 'PHASE 4: docker build'
+    waitFor: ['PHASE 2: safety guard']
     entrypoint: 'bash'
     args:
       - -ceu
       - |
-        echo "================================================================"
-        echo "PHASE 3: import smoke"
-        echo "================================================================"
-        echo "--- Import smoke check (source) ---"
-        python -V
-        python -m pip --version || python -m ensurepip
-        python -m pip install --no-cache-dir --upgrade pip
-        python -m pip install --no-cache-dir -r backend/strategy_service/requirements.lock
-        python ./scripts/smoke_check_imports.py \
-          --no-defaults \
-          --module backend.app \
-          --module backend.strategy_engine.service \
-          --module backend.strategy_service.app
+        set -euo pipefail
+        echo "===== PHASE 4: docker build ====="
 
   # d) Docker build(s) (serialized; each build is immediately gated).
   #
   # NOTE: The "import gate" runs inside the built image (docker run) to validate
   # runtime imports using the image's own dependency set.
 
-  - name: 'gcr.io/cloud-builders/bash'
-    id: 'PHASE 4: docker build'
-    waitFor: ['Import smoke check']
-    entrypoint: 'bash'
-    args:
-      - -ceu
-      - |
-        echo "================================================================"
-        echo "PHASE 4: docker build"
-        echo "================================================================"
-
   # Build marketdata-mcp-server
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Build marketdata-mcp-server'
     waitFor: ['PHASE 4: docker build']
-    args: [
-      'build',
-      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}',
-      '-f', '/workspace/backend/Dockerfile.marketdata-mcp-server',
-      '/workspace'
-    ]
+    entrypoint: 'bash'
+    args:
+      - -ceu
+      - |
+        set -euo pipefail
+        IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}"
+        echo "docker build tag=${IMAGE_TAG}"
+        docker build -t "${IMAGE_TAG}" -f backend/Dockerfile.marketdata-mcp-server .
 
   - name: 'gcr.io/cloud-builders/bash'
-    id: 'Import gate marketdata-mcp-server'
+    id: 'PHASE 3: import smoke'
     waitFor: ['Build marketdata-mcp-server']
     entrypoint: 'bash'
     args:
-      - build
-      - -t
-      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
-      - -f
-      - infra/Dockerfile.strategy_engine
-      - .
+      - -ceu
+      - |
+        set -euo pipefail
+        echo "===== PHASE 3: import smoke ====="
 
-  - id: Push strategy-engine
-    name: gcr.io/cloud-builders/docker
+  - name: 'gcr.io/cloud-builders/bash'
+    id: 'Import gate marketdata-mcp-server'
+    waitFor: ['PHASE 3: import smoke']
+    entrypoint: 'bash'
     args:
-      - push
-      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
+      - "-c"
+      - |
+        set -euo pipefail
+        IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.app
 
-  # ------------------------------------------------------------
-  # PHASE 3: BUILD MARKETDATA MCP SERVER
-  # ------------------------------------------------------------
-  - id: Build marketdata-mcp-server
-    name: gcr.io/cloud-builders/docker
+  # Build strategy-engine
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Build strategy-engine'
+    waitFor: ['Import gate marketdata-mcp-server']
+    entrypoint: 'bash'
+    args:
+      - -ceu
+      - |
+        set -euo pipefail
+        IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}"
+        echo "docker build tag=${IMAGE_TAG}"
+        docker build -t "${IMAGE_TAG}" -f infra/Dockerfile.strategy_engine .
+
+  - name: 'gcr.io/cloud-builders/bash'
+    id: 'Import gate strategy-engine'
+    waitFor: ['Build strategy-engine']
+    entrypoint: 'bash'
+    args:
+      - "-c"
+      - |
+        set -euo pipefail
+        IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_engine.service
+
+  # Build strategy-runtime (used by gamma and whale strategies)
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Build strategy-runtime'
+    waitFor: ['Import gate strategy-engine']
+    entrypoint: 'bash'
+    args:
+      - -ceu
+      - |
+        set -euo pipefail
+        IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}"
+        echo "docker build tag=${IMAGE_TAG}"
+        docker build -t "${IMAGE_TAG}" -f backend/strategy_service/Dockerfile .
+
+  - name: 'gcr.io/cloud-builders/bash'
+    id: 'Import gate strategy-runtime'
+    waitFor: ['Build strategy-runtime']
+    entrypoint: 'bash'
     args:
       - "-c"
       - |
@@ -110,7 +141,6 @@ steps:
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
         sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
 
-  # e) Docker push(es) (serialized; publish only after all gates pass).
   - name: 'gcr.io/cloud-builders/bash'
     id: 'PHASE 5: docker push'
     waitFor: ['Import gate strategy-runtime']
@@ -118,26 +148,38 @@ steps:
     args:
       - -ceu
       - |
-        echo "================================================================"
-        echo "PHASE 5: docker push"
-        echo "================================================================"
+        set -euo pipefail
+        echo "===== PHASE 5: docker push ====="
 
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Push marketdata-mcp-server'
     waitFor: ['PHASE 5: docker push']
-    args: [
-      'push',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
-    ]
+    entrypoint: 'bash'
+    args:
+      - -ceu
+      - |
+        set -euo pipefail
+        IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}"
+        docker push "${IMAGE_TAG}"
 
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Push strategy-engine'
     waitFor: ['Push marketdata-mcp-server']
-    args: [
-      'push',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
-    ]
+    entrypoint: 'bash'
+    args:
+      - -ceu
+      - |
+        set -euo pipefail
+        IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}"
+        docker push "${IMAGE_TAG}"
 
-images:
-  - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
-  - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Push strategy-runtime'
+    waitFor: ['Push strategy-engine']
+    entrypoint: 'bash'
+    args:
+      - -ceu
+      - |
+        set -euo pipefail
+        IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}"
+        docker push "${IMAGE_TAG}"
