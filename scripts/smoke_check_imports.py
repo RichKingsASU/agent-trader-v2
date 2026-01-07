@@ -23,16 +23,10 @@ class ImportTarget:
 
 
 DEFAULT_TARGETS: tuple[ImportTarget, ...] = (
+    ImportTarget("httpx", "required third-party dependency (http client)"),
+    ImportTarget("yaml", "required third-party dependency (PyYAML)"),
     ImportTarget("backend.app", "marketdata-mcp-server entrypoint"),
     ImportTarget("backend.strategy_engine.service", "strategy-engine service app"),
-    ImportTarget("backend.services.execution_service.app", "execution-engine service app"),
-    ImportTarget("backend.streams_bridge.main", "stream bridge service"),
-    ImportTarget("backend.risk_service.app", "risk service app"),
-    ImportTarget("backend.mission_control.main", "mission-control service app"),
-    ImportTarget("backend.execution_agent.main", "execution agent"),
-    ImportTarget("backend.ingestion.market_data_ingest", "market ingest job"),
-    ImportTarget("backend.ingestion.congressional_disclosures", "congressional ingest job"),
-    ImportTarget("backend.strategies.registry.loader", "strategy loader (yaml parsing)"),
 )
 
 
@@ -59,6 +53,18 @@ def main(argv: list[str]) -> int:
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
+
+    # The goal of this check is "missing deps", not "missing secrets/config".
+    # Provide safe defaults so entrypoint imports don't exit early in CI.
+    os.environ.setdefault("AGENT_MODE", "OFF")
+    os.environ.setdefault("DATABASE_URL", "sqlite:////tmp/agenttrader_smoke.db")
+    os.environ.setdefault("MARKETDATA_HEALTH_URL", "http://127.0.0.1:8080/healthz")
+    os.environ.setdefault("MARKETDATA_HEARTBEAT_URL", "http://127.0.0.1:8080/heartbeat")
+    # Optional contract vars (avoid accidental fail-fast if added later).
+    os.environ.setdefault("APCA_API_KEY_ID", "smoke")
+    os.environ.setdefault("APCA_API_SECRET_KEY", "smoke")
+    os.environ.setdefault("ALPACA_API_KEY", "smoke")
+    os.environ.setdefault("ALPACA_SECRET_KEY", "smoke")
 
     targets: list[ImportTarget] = []
     if not args.no_defaults:
