@@ -1,13 +1,19 @@
 import uvicorn
-from fastapi import FastAPI, Response
+from fastapi import FastAPI
+from fastapi.responses import Response
 import asyncio
 import os
 from datetime import datetime, timezone
 from typing import Any
 
 from backend.common.agent_boot import configure_startup_logging
-from backend.common.kill_switch import get_kill_switch_state
-from backend.common.http_correlation import install_http_correlation
+from backend.common.ops_metrics import (
+    REGISTRY,
+    agent_start_total,
+    errors_total,
+    mark_activity,
+    update_marketdata_heartbeat_metrics,
+)
 
 from backend.common.marketdata_heartbeat import snapshot
 from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
@@ -75,12 +81,21 @@ async def startup_event():
         agent_name="marketdata-mcp-server",
         intent="Serve marketdata MCP endpoints and run the Alpaca streamer background task.",
     )
-    enabled, source = get_kill_switch_state()
-    if enabled:
-        # Non-execution service: keep serving, but make it visible.
-        print(f"kill_switch_active enabled=true source={source}", flush=True)
+    agent_start_total.inc(labels={"component": "marketdata-mcp-server"})
+    # Mark activity at startup so heartbeat_age_seconds starts at ~0.
+    mark_activity("marketdata")
     print("Starting Alpaca streamer...")
-    asyncio.create_task(alpaca_streamer_main())
+    task = asyncio.create_task(alpaca_streamer_main())
+
+    def _done_callback(t: asyncio.Task) -> None:
+        try:
+            t.result()
+        except Exception as e:  # pragma: no cover
+            # Surface background streamer failures (and count them) instead of failing silently.
+            errors_total.inc(labels={"component": "marketdata-mcp-server"})
+            print(f"[marketdata-mcp-server] alpaca_streamer_task_failed: {type(e).__name__}: {e}", flush=True)
+
+    task.add_done_callback(_done_callback)
 
 install_http_correlation(app, service="marketdata-mcp-server")
 
@@ -97,61 +112,29 @@ async def health_check():
 @app.get("/heartbeat")
 async def heartbeat(response: Response) -> dict[str, Any]:
     """
-    Marketdata freshness contract for downstream strategy evaluation loops.
+    Lightweight ops endpoint for SLOs and quick checks.
     """
-    kill = load_kill_switch()
-    threshold = load_stale_threshold_seconds()
-    last_ts = get_last_marketdata_ts()
-    now = datetime.now(timezone.utc)
-
-    stale = True
-    age_s: float | None = None
-    if last_ts is not None:
-        ts = last_ts.replace(tzinfo=timezone.utc) if last_ts.tzinfo is None else last_ts.astimezone(timezone.utc)
-        age_s = (now - ts).total_seconds()
-        stale = age_s > float(threshold)
-
-    status = "stale" if stale else "fresh"
-    # Heartbeat should be readable even when kill-switch is enabled.
-    response.status_code = 200
+    stale_s = float(os.getenv("MARKETDATA_STALE_THRESHOLD_S", "120"))
+    hb = update_marketdata_heartbeat_metrics(stale_threshold_s=stale_s)
     return {
-        "last_marketdata_ts": last_ts.isoformat() if last_ts else None,
-        "source": LAST_MARKETDATA_SOURCE,
-        "stale_threshold_seconds": threshold,
-        "status": status,
-        "age_seconds": age_s,
-        "kill_switch": bool(kill),
+        "status": "ok",
+        "service": "marketdata-mcp-server",
+        "heartbeat": hb,
     }
 
 
-@app.get("/healthz")
-async def healthz(response: Response) -> dict[str, Any]:
+@app.get("/metrics")
+async def metrics():
     """
-    Unified health status.
-    - HTTP 200 only when status == ok
-    - HTTP 503 when status == degraded or halted
+    Prometheus text exposition format.
     """
-    status, payload = _status_payload()
-    response.status_code = 200 if status == "ok" else 503
-    return payload
-
-
-@app.get("/readyz")
-async def readyz(response: Response) -> dict[str, Any]:
-    """
-    Readiness: only ready when status == ok.
-    """
-    status, payload = _status_payload()
-    response.status_code = 200 if status == "ok" else 503
-    return payload
-
-
-@app.get("/livez")
-async def livez() -> dict[str, Any]:
-    """
-    Liveness: process is alive (never fails due to market being halted/closed).
-    """
-    return {"status": "alive", "identity": _identity()}
+    stale_s = float(os.getenv("MARKETDATA_STALE_THRESHOLD_S", "120"))
+    # Update derived heartbeat metrics right before rendering.
+    update_marketdata_heartbeat_metrics(stale_threshold_s=stale_s)
+    return Response(
+        content=REGISTRY.render_prometheus_text(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))

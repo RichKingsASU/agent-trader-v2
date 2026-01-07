@@ -11,7 +11,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.utils.session import get_market_session
-from backend.observability.logger import intent_start, intent_end, log_event
+from backend.common.ops_metrics import (
+    errors_total,
+    marketdata_ticks_total,
+    mark_activity,
+)
 
 LAST_MARKETDATA_TS_UTC: datetime | None = None
 LAST_MARKETDATA_SOURCE: str = "alpaca_quotes_streamer"
@@ -51,7 +55,9 @@ _batch_count = 0
 
 async def quote_data_handler(data):
     """Handler for incoming quote data."""
-    _mark_marketdata_seen()
+    # Consider each quote/tick as a heartbeat signal for marketdata freshness.
+    marketdata_ticks_total.inc(1.0)
+    mark_activity("marketdata")
     logging.info(f"Received quote for {data.symbol}: Bid={data.bid_price}, Ask={data.ask_price}")
 
     # Intent point: data batch received (rate-limited; avoid per-tick spam).
@@ -99,6 +105,7 @@ async def quote_data_handler(data):
                 )
                 intent_end(emit_ctx, "success")
     except psycopg2.Error as e:
+        errors_total.inc(labels={"component": "marketdata-mcp-server"})
         logging.error(f"Database error while handling quote for {data.symbol}: {e}")
         if emit_ctx is None:
             emit_ctx = intent_start(
@@ -110,22 +117,20 @@ async def quote_data_handler(data):
 
 async def main():
     """Main function to start the quote streamer."""
-    # Intent point: startup / connect attempt.
-    startup_ctx = intent_start(
-        "subscription_connect_attempt",
-        "Initialize Alpaca StockDataStream and subscribe to quote symbols.",
-        payload={"feed": "IEX", "symbols": SYMBOLS, "symbols_count": len(SYMBOLS)},
-    )
+    alpaca = load_alpaca_env()
+    wss_client = StockDataStream(alpaca.key_id, alpaca.secret_key, feed=DataFeed.IEX)
+    symbols = _symbols_from_env()
+    
+    logging.info(f"Subscribing to quotes for: {symbols}")
+    if not symbols:
+        raise RuntimeError("ALPACA_SYMBOLS resolved to empty list")
+    wss_client.subscribe_quotes(quote_data_handler, *symbols)
+    
     try:
-        wss_client = StockDataStream(API_KEY, SECRET_KEY, feed=DataFeed.IEX)
-
-        logging.info(f"Subscribing to quotes for: {SYMBOLS}")
-        wss_client.subscribe_quotes(quote_data_handler, *SYMBOLS)
-        intent_end(startup_ctx, "success")
-
         await wss_client.run()
     except Exception as e:
-        intent_end(startup_ctx, "failure", error=e)
+        errors_total.inc(labels={"component": "marketdata-mcp-server"})
+        logging.error(f"Streamer crashed: {type(e).__name__}: {e}")
         raise
 
 if __name__ == "__main__":

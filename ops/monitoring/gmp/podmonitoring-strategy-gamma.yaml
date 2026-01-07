@@ -1,0 +1,13 @@
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: gamma-strategy
+spec:
+  selector:
+    matchLabels:
+      strategy: gamma
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+
