@@ -1,29 +1,21 @@
-# vNEXT Explainability (Narrative Schema)
+# vNEXT Explainability (Schema Only)
 
-This package defines **data-only narrative explanations** for decisions.
+This package defines the **narrative schema** used to explain decisions in vNEXT.
 
-## Promotion requirement
+## Governance
 
-**Explainability is mandatory for promotion.**
+- **Explainability is mandatory for promotion**: a decision/output is not eligible for promotion unless it includes a complete `DecisionNarrative`.
+- **LLM is optional; deterministic is preferred**: narratives should be generated deterministically whenever possible (rule-based, trace-based, template-based). LLMs may be used only as an *augmentation layer* and must not be required for core correctness.
 
-Any decision artifact that is promoted beyond purely observational workflows must have a `DecisionNarrative` available that includes:
-- a short human-readable summary
-- a concrete list of contributing factors with evidence references
-- an explicit confidence statement (including uncertainties)
+## What this package contains
 
-## Deterministic-first policy
+- `DecisionNarrative`: the canonical explanation record for a single decision.
+- `ContributingFactors`: a structured list of drivers (and explicit exclusions).
+- `ConfidenceStatement`: bounded confidence with rationale and limitations.
+- `DecisionExplainer`: interface exposing `explain_decision(decision_id) -> DecisionNarrative`.
 
-- **Deterministic is preferred**: explanations should be reproducible from persisted/logged inputs.
-- **LLM is optional**: a language model may be used to improve readability, but it must not be the sole source of truth.
-  - Any LLM-produced prose must be grounded in deterministic factor/evidence fields.
-  - The underlying factor attribution and confidence metadata must remain auditable.
+## What this package intentionally does *not* contain
 
-## Contents
-
-- `interfaces.py`
-  - `DecisionNarrative`
-  - `ContributingFactors`
-  - `ConfidenceStatement`
-  - `DecisionExplainer` (provider protocol)
-  - `explain_decision(decision_id)` (contract-only stub)
+- No I/O, storage clients, network calls, broker/execution coupling, or runtime dependencies on LLM services.
+- No implementation of `DecisionExplainer` (schema only).
 
