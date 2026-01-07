@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from backend.ledger.models import LedgerTrade
 from backend.ledger.pnl import compute_pnl_fifo
+from backend.time.nyse_time import to_utc
 
 
 @dataclass(frozen=True)
@@ -52,9 +53,7 @@ class TradeAnalytics:
 
 def _as_utc(dt: datetime) -> datetime:
     """Convert datetime to UTC"""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    return to_utc(dt)
 
 
 def compute_daily_pnl(

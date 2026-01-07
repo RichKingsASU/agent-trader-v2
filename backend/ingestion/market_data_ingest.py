@@ -16,6 +16,7 @@ from backend.ingestion.firebase_writer import FirebaseWriter, FirestorePaths
 from backend.ingestion.rate_limit import Backoff, TokenBucket
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.common.agent_boot import configure_startup_logging
+from backend.observability.build_fingerprint import get_build_fingerprint
 
 
 def _utc_now() -> datetime:
@@ -528,6 +529,14 @@ async def _amain() -> int:
         agent_name="market-data-ingest",
         intent="Continuously ingest stock quotes from Alpaca and write latest snapshots to Firestore.",
     )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
     cfg = load_config_from_env()
     ingestor = MarketDataIngestor(cfg)
 

@@ -18,6 +18,7 @@ google-genai
 python-dotenv
 nats-py
 pandas
+exchange-calendars==4.6.0
 
 # Optional DB drivers (Postgres)
 psycopg[binary]
