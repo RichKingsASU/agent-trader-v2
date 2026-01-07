@@ -166,12 +166,7 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Build marketdata-mcp-server'
     waitFor: ['PHASE 4: docker build']
-    args: [
-      'build',
-      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}',
-      '-f', '/workspace/backend/Dockerfile.marketdata-mcp-server',
-      '/workspace'
-    ]
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}', '-f', '/workspace/backend/Dockerfile.marketdata-mcp-server', '/workspace']
 
   - name: 'gcr.io/cloud-builders/bash'
     id: 'Import gate marketdata-mcp-server'
@@ -218,18 +213,12 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Push marketdata-mcp-server'
     waitFor: ['PHASE 5: docker push']
-    args: [
-      'push',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
-    ]
+    args: ['push', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}']
 
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Push strategy-engine'
     waitFor: ['Push marketdata-mcp-server']
-    args: [
-      'push',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
-    ]
+    args: ['push', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}']
 
 images:
   - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}

@@ -22,7 +22,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Blockers: banned vendor refs + secret patterns
+      - name: "Blockers: banned vendor refs + secret patterns"
         shell: bash
         run: |
           set -euo pipefail

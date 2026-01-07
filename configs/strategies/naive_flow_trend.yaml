@@ -20,6 +20,6 @@ version:
 
 approvals:
   requires_human_approval: true
-  approved_by: null
-  approved_at_utc: null
+  approved_by:
+  approved_at_utc:
 

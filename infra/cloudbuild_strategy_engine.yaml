@@ -1,4 +1,3 @@
-
 steps:
   - name: gcr.io/cloud-builders/bash
     id: 'Safety Guard'
