@@ -19,8 +19,8 @@ steps:
         set -euo pipefail
 
         echo "=== CI SAFETY GUARD START ==="
-        ROOT="$(pwd)"
-        echo "Repo root: $ROOT"
+        ROOT="$$(pwd)"
+        echo "Repo root: $$ROOT"
 
         # ----------------------------
         # Rule 1: No :latest images
