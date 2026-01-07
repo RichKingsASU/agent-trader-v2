@@ -1,5 +1,11 @@
-from __future__ import annotations
+from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
 
+_log_runtime_fingerprint(service="marketdata-mcp-server")
+del _log_runtime_fingerprint
+
+import uvicorn
+from fastapi import FastAPI
+from fastapi.responses import Response
 import asyncio
 import os
 import time
