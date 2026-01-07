@@ -1,15 +1,21 @@
 """
-vNEXT Explainability — Narrative schema (contracts only).
+vNEXT Explainability (schema-only)
 
-This package defines data-only narrative explanations for decisions.
-
-See `backend/vnext/GOVERNANCE.md` for cross-cutting invariants.
+This package defines the narrative schema used to explain decisions produced elsewhere in vNEXT.
+It intentionally contains no business logic, I/O, or LLM integrations.
 """
 
-from .interfaces import (  # noqa: F401
+from .interfaces import DecisionExplainer
+from .schema import (
     ConfidenceStatement,
     ContributingFactors,
     DecisionNarrative,
-    explain_decision,
 )
+
+__all__ = [
+    "ConfidenceStatement",
+    "ContributingFactors",
+    "DecisionExplainer",
+    "DecisionNarrative",
+]
 
