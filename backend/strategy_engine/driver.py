@@ -17,11 +17,53 @@ from .risk import (
 )
 from .strategies.naive_flow_trend import make_decision
 
-def _truthy_env(name: str, default: bool = False) -> bool:
-    v = os.getenv(name)
-    if v is None:
-        return default
-    return str(v).strip().lower() in {"1", "true", "yes", "on"}
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_iso_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    if isinstance(value, str):
+        s = value.strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(s)
+            return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+        except Exception:
+            return None
+    return None
+
+
+async def _fetch_marketdata_heartbeat() -> dict[str, Any]:
+    """
+    Fetches the marketdata heartbeat from marketdata-mcp-server.
+    Fail-closed: errors are surfaced via missing last_marketdata_ts.
+    """
+    url = str(os.getenv("MARKETDATA_HEARTBEAT_URL") or "http://marketdata-mcp-server/heartbeat").strip()
+    timeout_s = float(os.getenv("MARKETDATA_HEARTBEAT_TIMEOUT_S") or "1.5")
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            resp = await client.get(url)
+            # Even if global kill-switch is enabled, heartbeat should be readable (200).
+            data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+            return {"ok": resp.status_code == 200, "url": url, "status_code": resp.status_code, "data": data}
+    except Exception as e:
+        return {"ok": False, "url": url, "error": str(e), "data": {}}
+
+
+def _log_intent(event: dict[str, Any]) -> None:
+    try:
+        print(json.dumps(event, separators=(",", ":"), ensure_ascii=False))
+    except Exception:
+        # Best-effort, never crash strategy loop on logging.
+        pass
 
 
 async def run_strategy(execute: bool):
@@ -177,7 +219,7 @@ async def run_strategy(execute: bool):
 if __name__ == "__main__":
     configure_startup_logging(
         agent_name="strategy-engine",
-        intent="Run the strategy engine loop (fetch data, decide, and emit non-executing order proposals).",
+        intent="Run the strategy engine loop (fetch data, decide); enforce global kill-switch and stale-marketdata gating.",
     )
     try:
         fp = get_build_fingerprint()

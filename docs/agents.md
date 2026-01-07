@@ -6,7 +6,53 @@ AgentTrader v2 services emit **structured JSON logs** to stdout (Cloud Logging f
 - **Correlation**: how events relate (`correlation_id`, propagated via headers where applicable)
 - **Intent logs**: why actions happened (replay-friendly `intent_*` schema)
 
-## Agent Identity contract (required env vars)
+## Safety Model (Global Kill-Switch + Health Contracts)
+
+AgentTrader v2 is **fail-closed by default**. If anything is missing, unknown, or unparseable, the system defaults to **halted**.
+
+### Global kill-switch
+
+- **Single source of truth**: `ConfigMap` `agenttrader-safety` (namespace `trading-floor`)
+  - `KILL_SWITCH`: `"true"` / `"false"`
+  - `STALE_THRESHOLD_SECONDS`: `"30"` default
+- **Fail-closed default**: if config is missing/unparseable ⇒ `KILL_SWITCH=true` (halted)
+- **Behavior**:
+  - When `KILL_SWITCH=true`, all safety evaluation reports **halted** and strategies **skip cycles**.
+
+### Stale marketdata gating
+
+- `marketdata-mcp-server` exposes:
+  - `GET /heartbeat` ⇒ returns `last_marketdata_ts` and freshness (`fresh`/`stale`)
+  - `GET /healthz` ⇒ unified health status (`ok`/`degraded`/`halted`)
+- `strategy-engine`:
+  - Fetches `GET http://marketdata-mcp-server/heartbeat` at the start of each cycle
+  - If marketdata is **missing** or **stale**, it emits an intent log `intent_type="strategy_cycle_skipped"` and does **no strategy evaluation**
+
+### Health statuses
+
+- **`ok`**: safe to run strategy cycles (kill-switch off and marketdata fresh)
+- **`degraded`** (marketdata only): service is up but marketdata is stale/missing
+- **`halted`**: kill-switch enabled OR stale/missing marketdata gating prevents strategy cycles
+
+Health endpoint HTTP semantics:
+- `GET /readyz` and `GET /healthz` return **200 only when `status=="ok"`**, else **503**
+- `GET /livez` returns **200 whenever the process is alive** (never flaps due to market closure)
+
+## How to flip the kill-switch (Kubernetes)
+
+Edit the ConfigMap:
+
+```bash
+kubectl -n trading-floor edit configmap agenttrader-safety
+```
+
+Set:
+- `KILL_SWITCH: "true"` to halt strategy cycles
+- `KILL_SWITCH: "false"` to allow strategy cycles (still gated on marketdata freshness)
+
+If the ConfigMap is mounted as a volume, changes are reflected on disk automatically; the services also re-read config values during request handling / cycle preflight.
+
+## Required fields
 
 All runtimes must set:
 

@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: strategy-engine
+  namespace: trading-floor
+  labels:
+    app: strategy-engine
+    git_sha: a2466ec
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: strategy-engine
+  template:
+    metadata:
+      labels:
+        app: strategy-engine
+        git_sha: a2466ec
+    spec:
+      serviceAccountName: trading-floor-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: strategy-engine
+          image: us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-engine:54afffe
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: GIT_SHA
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['git_sha']
+            - name: WORKLOAD
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app']
+            - name: AGENTTRADER_SAFETY_DIR
+              value: "/etc/agenttrader-safety"
+            - name: MARKETDATA_HEARTBEAT_URL
+              value: "http://marketdata-mcp-server/heartbeat"
+            - name: STRATEGY_CYCLE_SECONDS
+              value: "30"
+          volumeMounts:
+            - name: agenttrader-safety
+              mountPath: /etc/agenttrader-safety
+              readOnly: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: 1
+              memory: 1Gi
+              ephemeral-storage: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - name: agenttrader-safety
+          configMap:
+            name: agenttrader-safety
+      priorityClassName: high-priority
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: strategy-engine
+  namespace: trading-floor
+spec:
+  selector:
+    app: strategy-engine
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+

@@ -13,14 +13,45 @@ from backend.streams.alpaca_env import load_alpaca_env
 from backend.utils.session import get_market_session
 from backend.observability.logger import intent_start, intent_end, log_event
 
-def _symbols_from_env() -> list[str]:
-    return [s.strip() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ").split(",") if s.strip()]
+LAST_MARKETDATA_TS_UTC: datetime | None = None
+LAST_MARKETDATA_SOURCE: str = "alpaca_quotes_streamer"
+
+
+def get_last_marketdata_ts() -> datetime | None:
+    return LAST_MARKETDATA_TS_UTC
+
+
+def _mark_marketdata_seen(ts: datetime | None = None) -> None:
+    """
+    Updates the in-process marketdata freshness marker.
+    This is intentionally lightweight and best-effort.
+    """
+    global LAST_MARKETDATA_TS_UTC
+    if ts is None:
+        ts = datetime.now(timezone.utc)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    LAST_MARKETDATA_TS_UTC = ts.astimezone(timezone.utc)
+
+
+try:
+    alpaca = load_alpaca_env()
+    API_KEY = alpaca.key_id
+    SECRET_KEY = alpaca.secret_key
+    DB_URL = os.getenv("DATABASE_URL")
+    if not DB_URL:
+        raise KeyError("DATABASE_URL")
+    SYMBOLS = [s.strip() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ").split(",") if s.strip()]
+except KeyError as e:
+    logging.error(f"FATAL: Missing required environment variable: {e}")
+    exit(1)
 
 _batch_last_log_ts = 0.0
 _batch_count = 0
 
 async def quote_data_handler(data):
     """Handler for incoming quote data."""
+    _mark_marketdata_seen()
     logging.info(f"Received quote for {data.symbol}: Bid={data.bid_price}, Ask={data.ask_price}")
 
     # Intent point: data batch received (rate-limited; avoid per-tick spam).
