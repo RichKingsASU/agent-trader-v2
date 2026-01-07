@@ -1,5 +1,15 @@
 steps:
 - name: gcr.io/cloud-builders/bash
+  id: 'Safety Guard'
+  entrypoint: bash
+  args:
+    - "-c"
+    - |
+      set -euo pipefail
+      chmod +x ./scripts/ci_safety_guard.sh
+      ./scripts/ci_safety_guard.sh
+- name: gcr.io/cloud-builders/bash
+  waitFor: ['Safety Guard']
   entrypoint: bash
   args:
     - "-c"

@@ -11,227 +11,166 @@
 set -euo pipefail
 
 # --- Repo Root (run from any working directory) ---
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo /workspace)"
-cd "$ROOT"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo /workspace)"
+cd "${REPO_ROOT}"
 
-# --- Configuration ---
-FAIL_FLAG=0
-SUCCESS_COUNT=0
-CHECK_COUNT=3
+DRY_RUN=0
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-K8S_DIR="${REPO_ROOT}/k8s"
-INFRA_DIR="${REPO_ROOT}/infra"
-
-# --- Helper Functions ---
 usage() {
-    cat <<'EOF'
-Usage: ci_safety_guard.sh [--dry-run] [--help]
+  cat <<'EOF'
+Usage: scripts/ci_safety_guard.sh [--dry-run] [--help]
 
 Options:
-  --dry-run   Run checks and print violations, but exit 0 (for local debugging).
+  --dry-run   Print violations but exit 0 (local debugging).
   --help      Show this help text.
 EOF
 }
 
-log() {
-    # shellcheck disable=SC2145
-    echo "$@"
+fatal() {
+  echo "ERROR: $*" >&2
+  exit 2
 }
 
 fail() {
-    local reason="$1"
-    if [ "${DRY_RUN}" -eq 1 ]; then
-        echo "DRY-RUN: would fail: ${reason}" >&2
-        FAIL_FLAG=1
-        return 0
-    fi
-    echo "ERROR: ${reason}" >&2
-    exit 1
+  local msg="$1"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "DRY-RUN: would fail: ${msg}" >&2
+    return 0
+  fi
+  echo "❌ FAILED: ${msg}" >&2
+  exit 1
 }
 
-print_header() {
-    echo "--- $1 ---"
+header() {
+  echo "--- $1 ---"
 }
 
-print_success() {
-    echo "PASSED: $1"
-    SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+pass() {
+  echo "✅ PASSED: $1"
 }
 
-print_failure() {
-    local message="$1"
-    local file="$2"
-    local lines="$3"
+# Run grep against an explicit file list, interpreting exit codes robustly:
+# - 0 => policy violation (FAIL)
+# - 1 => PASS (no matches)
+# - 2 => grep/runtime error (FAIL; print diagnostics)
+run_grep_check() {
+  local check_name="$1"
+  local fail_message="$2"
+  local grep_pattern="$3"
+  shift 3
+  local -a files=( "$@" )
 
-    echo "FAILED: ${message}" >&2
-    echo "  File: ${file}" >&2
-    echo "  Match:" >&2
-    echo "${lines}" >&2
-    fail "${message} (${file})"
+  header "${check_name}"
+  echo "Files scanned: ${#files[@]}"
+  if ((${#files[@]} == 0)); then
+    pass "No files to scan."
+    return 0
+  fi
+
+  set +e
+  local out
+  out="$(grep -nH -E "${grep_pattern}" -- "${files[@]}" 2>&1)"
+  local rc=$?
+  set -e
+
+  if [[ ${rc} -eq 0 ]]; then
+    echo "${out}" >&2
+    fail "${fail_message}"
+  elif [[ ${rc} -eq 1 ]]; then
+    pass "No matches found."
+    return 0
+  else
+    echo "${out}" >&2
+    fail "grep error while running: ${check_name}"
+  fi
 }
 
-# --- Checks ---
-
-# 1) Check for ':latest' image tags in K8s/infra manifests
-check_for_latest_tag() {
-    local rule_name="No ':latest' image tags"
-    local remediation_hint="Pin images to an immutable tag (e.g. version or digest) instead of ':latest'."
-    print_header "Checking for ':latest' image tags"
-    local search_dirs=()
-    [ -d "${K8S_DIR}" ] && search_dirs+=("${K8S_DIR}")
-    [ -d "${INFRA_DIR}" ] && search_dirs+=("${INFRA_DIR}")
-
-    local -a search_paths=()
-    [[ -d "k8s" ]] && search_paths+=("k8s")
-    [[ -d "infra" ]] && search_paths+=("infra")
-
-    local found=0
-    if [[ ${#search_paths[@]} -gt 0 ]]; then
-        while IFS= read -r file; do
-            [[ -z "${file}" ]] && continue
-            while IFS= read -r match; do
-                [[ -z "${match}" ]] && continue
-                found=1
-                local line_no="${match%%:*}"
-                local line_text="${match#*:}"
-                print_failure "${rule_name}" "${file}" "${line_no}" "${remediation_hint}" "${line_text}"
-            done < <(grep -n "image:.*:latest" "${file}" 2>/dev/null || true)
-        done < <(grep -r -l "image:.*:latest" "${search_paths[@]}" 2>/dev/null || true)
-    fi
-
-    local latest_files=""
-    latest_files="$(grep -R -l -E "image:.*:latest" "${search_dirs[@]}" 2>/dev/null || true)"
-    if [ -z "${latest_files}" ]; then
-        print_success "No ':latest' image tags found."
-        return 0
-    fi
-
-    while IFS= read -r file; do
-        [ -z "${file}" ] && continue
-        local lines=""
-        lines="$(grep -n -E "image:.*:latest" "${file}" 2>/dev/null || true)"
-        print_failure "Use of ':latest' image tag is forbidden." "${file}" "${lines}"
-    done <<< "${latest_files}"
+list_files() {
+  local root="$1"
+  shift
+  local -a find_args=( "$@" )
+  if [[ ! -d "${root}" ]]; then
+    return 0
+  fi
+  # shellcheck disable=SC2016
+  find "${root}" "${find_args[@]}" -print0
 }
 
-# 2) Check for AGENT_MODE set to EXECUTE
-check_for_execute_mode() {
-    local rule_name="No 'AGENT_MODE=EXECUTE' in committed code"
-    local remediation_hint="Remove the setting or change to a safe mode (e.g. DRY_RUN/SIMULATE) and pass EXECUTE only via runtime config."
-    print_header "Checking for 'AGENT_MODE=EXECUTE'"
-    # Scan only manifest/config locations to avoid false positives in docs/tests/scripts.
-    local scan_dirs=()
-    [ -d "${K8S_DIR}" ] && scan_dirs+=("${K8S_DIR}")
-    [ -d "${INFRA_DIR}" ] && scan_dirs+=("${INFRA_DIR}")
-    [ -d "${REPO_ROOT}/config" ] && scan_dirs+=("${REPO_ROOT}/config")
-    [ -d "${REPO_ROOT}/configs" ] && scan_dirs+=("${REPO_ROOT}/configs")
+main() {
+  while (($#)); do
+    case "$1" in
+      --dry-run) DRY_RUN=1 ;;
+      --help|-h) usage; exit 0 ;;
+      *) fatal "unknown arg: $1" ;;
+    esac
+    shift
+  done
 
-    if [ "${#scan_dirs[@]}" -eq 0 ]; then
-        print_success "No manifest/config directories found; skipping AGENT_MODE scan."
-        return 0
-    fi
+  echo "Running AgentTrader v2 CI Safety Guard..."
+  echo "Repo root: ${REPO_ROOT}"
 
-    local found=0
-    # Exclude this script itself from the search
-    while IFS= read -r file; do
-        [[ -z "${file}" ]] && continue
-        while IFS= read -r match; do
-            [[ -z "${match}" ]] && continue
-            found=1
-            local line_no="${match%%:*}"
-            local line_text="${match#*:}"
-            print_failure "${rule_name}" "${file}" "${line_no}" "${remediation_hint}" "${line_text}"
-        done < <(grep -n -i "AGENT_MODE.*EXECUTE" "${file}" 2>/dev/null || true)
-    done < <(grep -r -i -l "AGENT_MODE.*EXECUTE" "." --exclude-dir=".git" --exclude="ci_safety_guard.sh" 2>/dev/null || true)
+  # 1) No ':latest' image tags in YAML (exclude cloudbuild yamls)
+  local -a yaml_files=()
+  mapfile -d '' -t yaml_files < <(
+    find "${REPO_ROOT}" -type f \( -name "*.yaml" -o -name "*.yml" \) \
+      -not -path "*/.git/*" \
+      -not -name "cloudbuild*.yaml" \
+      -not -name "cloudbuild*.yml" \
+      -print0
+  )
+  run_grep_check \
+    "Rule: forbid ':latest' image tags" \
+    "Use of ':latest' image tag is forbidden (pin to immutable tag or digest)." \
+    '^[[:space:]]*image:[[:space:]]*[^#[:space:]]+:latest([[:space:]]|$)' \
+    "${yaml_files[@]}"
 
-    if [[ "${found}" -eq 0 ]]; then
-        print_success "No instances of 'AGENT_MODE=EXECUTE' found."
-        return 0
-    fi
+  # 2) No AGENT_MODE=EXECUTE in committed manifests/config
+  local -a scan_dirs=()
+  [[ -d "${REPO_ROOT}/k8s" ]] && scan_dirs+=("${REPO_ROOT}/k8s")
+  [[ -d "${REPO_ROOT}/infra" ]] && scan_dirs+=("${REPO_ROOT}/infra")
+  [[ -d "${REPO_ROOT}/config" ]] && scan_dirs+=("${REPO_ROOT}/config")
+  [[ -d "${REPO_ROOT}/configs" ]] && scan_dirs+=("${REPO_ROOT}/configs")
 
-    while IFS= read -r file; do
-        [ -z "${file}" ] && continue
-        local lines=""
-        lines="$(grep -n -i -E "AGENT_MODE[[:space:]]*[:=][[:space:]]*EXECUTE" "${file}" 2>/dev/null || true)"
-        print_failure "'AGENT_MODE' must not be set to 'EXECUTE' in committed manifests/config." "${file}" "${lines}"
-    done <<< "${execute_files}"
-}
+  local -a config_files=()
+  if ((${#scan_dirs[@]} > 0)); then
+    mapfile -d '' -t config_files < <(
+      find "${scan_dirs[@]}" -type f \
+        \( -name "*.yaml" -o -name "*.yml" -o -name "*.env" -o -name "*.sh" -o -name "*.py" -o -name "Dockerfile" \) \
+        -not -path "*/.git/*" \
+        -not -name "cloudbuild*.yaml" \
+        -not -name "cloudbuild*.yml" \
+        -print0
+    )
+  fi
+  run_grep_check \
+    "Rule: forbid AGENT_MODE=EXECUTE" \
+    "AGENT_MODE must not be set to EXECUTE in committed manifests/config." \
+    'AGENT_MODE[[:space:]]*[:=][[:space:]]*["'\'']?EXECUTE["'\'']?' \
+    "${config_files[@]}"
 
-# 3) Check for execution agent replicas > 0
-check_for_scaled_executors() {
-    local rule_name="Execution agent replicas must be 0"
-    local remediation_hint="Set replicas to 0 in committed manifests; scale via runtime tooling (e.g. HPA/override) when needed."
-    print_header "Checking for scaled execution agents (replicas > 0)"
-    if [ ! -d "${K8S_DIR}" ]; then
-        print_success "No k8s/ directory found; skipping executor replica scan."
-        return 0
-    fi
+  # 3) Execution agent must not be scaled in committed manifests (replicas > 0)
+  local -a execution_agent_manifests=()
+  if [[ -d "${REPO_ROOT}/k8s" ]]; then
+    while IFS= read -r -d '' f; do
+      case "${f}" in
+        *execution-agent*|*execution_agent*)
+          execution_agent_manifests+=( "${f}" )
+          ;;
+      esac
+    done < <(
+      find "${REPO_ROOT}/k8s" -type f \( -name "*.yaml" -o -name "*.yml" \) \
+        -not -path "*/.git/*" \
+        -print0
+    )
+  fi
+  run_grep_check \
+    "Rule: forbid scaled execution-agent replicas" \
+    "Execution agent replicas must be 0 in committed manifests." \
+    '^[[:space:]]*replicas:[[:space:]]*[1-9]' \
+    "${execution_agent_manifests[@]}"
 
-    # Find files that look like executor manifests, then check replicas
-    if [[ -d "k8s" ]]; then
-        while IFS= read -r -d '' file; do
-            # This grep pattern finds "replicas:" followed by any number (not zero)
-            if grep -q "replicas: *[1-9]" "${file}" 2>/dev/null; then
-                while IFS= read -r match; do
-                    [[ -z "${match}" ]] && continue
-                    found_scaled=1
-                    local line_no="${match%%:*}"
-                    local line_text="${match#*:}"
-                    print_failure "${rule_name}" "${file}" "${line_no}" "${remediation_hint}" "${line_text}"
-                done < <(grep -n "replicas: *[1-9]" "${file}" 2>/dev/null || true)
-            fi
-        done < <(find "k8s" -type f \( -name "*-executor.yaml" -o -name "*-trader.yaml" \) -print0 2>/dev/null || true)
-    fi
-
-    if [ -z "${execution_manifests}" ]; then
-        print_success "No executor/trader manifests found; skipping replica check."
-        return 0
-    fi
-
-    while IFS= read -r file; do
-        [ -z "${file}" ] && continue
-        # This grep pattern finds "replicas:" followed by any number (not zero)
-        if grep -q -E "replicas:[[:space:]]*[1-9]" "${file}" 2>/dev/null; then
-            local lines=""
-            lines="$(grep -n -E "replicas:[[:space:]]*[1-9]" "${file}" 2>/dev/null || true)"
-            print_failure "Execution agent replicas must be 0 in committed code." "${file}" "${lines}"
-        fi
-    done <<< "${execution_manifests}"
-
-    print_success "No execution agents found with replicas > 0."
-}
-
-# --- Main Execution ---
-echo "Running AgentTrader v2 CI Safety Guard..."
-echo "Repo root: ${ROOT}"
-echo ""
-
-check_for_latest_tag
-echo ""
-check_for_execute_mode
-echo ""
-check_for_scaled_executors
-echo ""
-
-# --- Final Result ---
-print_header "Result"
-if [[ "$FAIL_FLAG" -ne 0 ]]; then
-    echo "🔴 Safety guard failed. Found critical violations."
-    echo "   Please review the errors above and correct the identified files."
-    exit 1
-else
-    if [[ "$SUCCESS_COUNT" -eq "$CHECK_COUNT" ]]; then
-        echo "🟢 All $CHECK_COUNT safety checks passed successfully."
-        echo "CI SAFETY GUARD PASSED"
-        exit 0
-    else
-        echo "🟡 Warning: Not all checks passed, but no failures detected. Please review output."
-        exit 1 # Fail safe if success count doesn't match
-    fi
-
-    echo "SUCCESS: All ${CHECK_COUNT} safety checks passed."
+  header "Result"
+  pass "CI safety guard passed."
 }
 
 main "$@"
