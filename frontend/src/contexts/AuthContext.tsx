@@ -12,6 +12,10 @@ import { onSnapshot } from "firebase/firestore";
 
 import { auth, db } from "../firebase";
 import { tenantDoc } from "@/lib/tenancy/firestore";
+import { isOperatorEmail } from "@/lib/auth/operatorAccess";
+
+const ENABLE_PROFILE_DOC =
+  ((import.meta.env.VITE_ENABLE_FIRESTORE_PROFILE as string | undefined) ?? "false").trim().toLowerCase() === "true";
 
 export interface UserProfile {
   display_name?: string | null;
@@ -27,6 +31,8 @@ interface AuthContextType {
   tenantId: string | null;
   profile: UserProfile | null;
   loading: boolean;
+  isOperator: boolean;
+  authError: string | null;
   login: () => Promise<void>;
   logout: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -39,25 +45,46 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [tenantId, setTenantId] = useState<string | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isOperator, setIsOperator] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
+      setLoading(true);
+      setAuthError(null);
 
       if (!user) {
+        setUser(null);
         setTenantId(null);
         setProfile(null);
+        setIsOperator(false);
         setLoading(false);
         return;
       }
 
       (async () => {
+        // Operator-only access: enforce allowlist based on email/domain.
+        if (!isOperatorEmail(user.email)) {
+          setAuthError("This account is not authorized to access this dashboard.");
+          setUser(null);
+          setTenantId(null);
+          setProfile(null);
+          setIsOperator(false);
+          setLoading(false);
+          await signOut(auth);
+          return;
+        }
+
+        setUser(user);
+        setIsOperator(true);
         const token = await getIdTokenResult(user);
         const claim = (token.claims as any)?.tenant_id ?? (token.claims as any)?.tenantId ?? null;
         setTenantId(typeof claim === "string" && claim.trim() ? claim.trim() : null);
         setLoading(false);
       })().catch((err) => {
         console.error("Failed to load tenant_id from token claims:", err);
+        setUser(user);
+        setIsOperator(isOperatorEmail(user.email));
         setTenantId(null);
         setProfile(null);
         setLoading(false);
@@ -68,6 +95,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Keep a live profile doc in context (tenant-scoped).
   useEffect(() => {
+    if (!ENABLE_PROFILE_DOC) {
+      setProfile(null);
+      return;
+    }
+
     if (!user || !tenantId) {
       setProfile(null);
       return;
@@ -96,7 +128,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, tenantId, profile, loading, login, logout, signOut: logout }}>
+    <AuthContext.Provider
+      value={{ user, tenantId, profile, loading, isOperator, authError, login, logout, signOut: logout }}
+    >
       {!loading && children}
     </AuthContext.Provider>
   );

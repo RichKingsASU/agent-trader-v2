@@ -9,15 +9,18 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, Mail, Lock, AlertCircle } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { allowSignup, isOperatorEmail, getOperatorAccessPolicy } from "@/lib/auth/operatorAccess";
 
 export default function Auth() {
   const navigate = useNavigate();
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, authError } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const signupEnabled = allowSignup();
+  const operatorPolicy = getOperatorAccessPolicy();
 
   // Redirect if already logged in
   useEffect(() => {
@@ -43,6 +46,11 @@ export default function Auth() {
     setError(null);
     
     if (!validateInputs()) return;
+
+    if (!isOperatorEmail(email)) {
+      setError("Not authorized: this email is not on the operator allowlist.");
+      return;
+    }
     
     setLoading(true);
     const auth = getAuth();
@@ -62,6 +70,16 @@ export default function Auth() {
     setMessage(null);
     
     if (!validateInputs()) return;
+
+    if (!signupEnabled) {
+      setError("Account creation is disabled. Ask an operator to provision your account.");
+      return;
+    }
+
+    if (!isOperatorEmail(email)) {
+      setError("Not authorized: this email is not on the operator allowlist.");
+      return;
+    }
     
     setLoading(true);
     const auth = getAuth();
@@ -106,9 +124,9 @@ export default function Auth() {
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="signin" className="w-full">
-            <TabsList className="grid w-full grid-cols-2 mb-6">
+            <TabsList className={`grid w-full ${signupEnabled ? "grid-cols-2" : "grid-cols-1"} mb-6`}>
               <TabsTrigger value="signin">Sign In</TabsTrigger>
-              <TabsTrigger value="signup">Sign Up</TabsTrigger>
+              {signupEnabled ? <TabsTrigger value="signup">Sign Up</TabsTrigger> : null}
             </TabsList>
 
             {error && (
@@ -117,6 +135,22 @@ export default function Auth() {
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
+
+            {authError && !error && (
+              <Alert variant="destructive" className="mb-4">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{authError}</AlertDescription>
+              </Alert>
+            )}
+
+            {operatorPolicy.enabled ? (
+              <Alert className="mb-4 border-primary/50 bg-primary/10">
+                <Mail className="h-4 w-4" />
+                <AlertDescription>
+                  Operator-only access is enabled. Sign in with an allowlisted email.
+                </AlertDescription>
+              </Alert>
+            ) : null}
 
             {message && (
               <Alert className="mb-4 border-primary/50 bg-primary/10">
