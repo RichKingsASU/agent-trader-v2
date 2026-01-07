@@ -64,6 +64,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Deployment report script smoke test (no cluster required)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/report_v2_deploy.py --skip-health --output-dir audit_artifacts_ci
+          test -f audit_artifacts_ci/deploy_report.md
+          test -f audit_artifacts_ci/deploy_report.json
+
       - name: Backend compile check
         run: python -m compileall backend
 
