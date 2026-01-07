@@ -122,4 +122,7 @@ if __name__ == "__main__":
     parser.add_argument("--execute", action="store_true", help="Actually place paper trades.")
     args = parser.parse_args()
 
-    asyncio.run(run_strategy(args.execute))
+    try:
+        asyncio.run(run_strategy(args.execute))
+    except MarketDataStaleError:
+        raise SystemExit(2)
