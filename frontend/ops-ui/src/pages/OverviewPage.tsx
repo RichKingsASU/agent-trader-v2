@@ -5,6 +5,7 @@ import type { Agent, Event, MissionControlAgentsResponse, MissionControlEventsRe
 import { Badge } from "@/components/Badge";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { usePolling } from "@/hooks/usePolling";
+import { agentCriticality, agentKind, agentLastPollAt, agentName, agentOpsState } from "@/utils/agents";
 import { formatAgeMs, formatIso, parseTimestamp } from "@/utils/time";
 
 function unpackAgents(payload: MissionControlAgentsResponse): Agent[] {
@@ -15,31 +16,8 @@ function unpackEvents(payload: MissionControlEventsResponse): Event[] {
   return Array.isArray(payload) ? payload : payload.events || [];
 }
 
-function normalizeState(raw: unknown): OpsState {
-  if (typeof raw !== "string") return "UNKNOWN";
-  const s = raw.toUpperCase();
-  if (s === "OK") return "OK";
-  if (s === "DEGRADED") return "DEGRADED";
-  if (s === "HALTED") return "HALTED";
-  if (s === "OFFLINE") return "OFFLINE";
-  return "UNKNOWN";
-}
-
-function getAgentState(agent: Agent): OpsState {
-  const direct = normalizeState(agent.state);
-  if (direct !== "UNKNOWN") return direct;
-  const fromOps = (agent.ops_status as Record<string, unknown> | undefined)?.state;
-  const fromStatus = (agent as unknown as { status?: Record<string, unknown> }).status?.state;
-  return normalizeState(fromOps ?? fromStatus);
-}
-
 function getAgentLastUpdated(agent: Agent): Date | null {
-  return (
-    parseTimestamp(agent.last_updated) ||
-    parseTimestamp(agent.heartbeat_ts) ||
-    parseTimestamp((agent as unknown as { lastUpdate?: unknown }).lastUpdate) ||
-    null
-  );
+  return agentLastPollAt(agent) || parseTimestamp(agent.heartbeat_ts) || null;
 }
 
 function getEventTs(e: Event): Date | null {
@@ -48,7 +26,7 @@ function getEventTs(e: Event): Date | null {
 
 function countStates(agents: Agent[]) {
   const counts: Record<OpsState, number> = { OK: 0, DEGRADED: 0, HALTED: 0, OFFLINE: 0, UNKNOWN: 0 };
-  for (const a of agents) counts[getAgentState(a)]++;
+  for (const a of agents) counts[agentOpsState(a)]++;
   return counts;
 }
 
@@ -113,10 +91,10 @@ export function OverviewPage() {
             <tr>
               <th>Name</th>
               <th className="hide-sm">Kind</th>
+              <th className="hide-sm">Criticality</th>
               <th>State</th>
-              <th>Summary</th>
-              <th className="hide-sm">Last updated</th>
-              <th>Heartbeat age</th>
+              <th className="hide-sm">Last poll</th>
+              <th>Poll age</th>
             </tr>
           </thead>
           <tbody>
@@ -129,23 +107,23 @@ export function OverviewPage() {
             ) : (
               agents
                 .slice()
-                .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+                .sort((a, b) => agentName(a).localeCompare(agentName(b)))
                 .map((a) => {
-                  const st = getAgentState(a);
-                  const isExpectedOffline = st === "OFFLINE" && String(a.name) === "execution-agent";
+                  const st = agentOpsState(a);
+                  const isExpectedOffline = st === "OFFLINE" && agentName(a) === "execution-agent";
                   const shownState = isExpectedOffline ? "OFFLINE (expected)" : st;
                   const last = getAgentLastUpdated(a);
                   const age = last ? Date.now() - last.getTime() : null;
                   return (
-                    <tr key={String(a.name)}>
+                    <tr key={agentName(a) || JSON.stringify(a)}>
                       <td className="mono">
-                        <Link to={`/agents/${encodeURIComponent(String(a.name))}`}>{String(a.name)}</Link>
+                        <Link to={`/agents/${encodeURIComponent(agentName(a))}`}>{agentName(a) || "—"}</Link>
                       </td>
-                      <td className="hide-sm muted">{a.kind ? String(a.kind) : "—"}</td>
+                      <td className="hide-sm muted">{agentKind(a)}</td>
+                      <td className="hide-sm muted">{agentCriticality(a)}</td>
                       <td>
                         <Badge state={st}>{shownState}</Badge>
                       </td>
-                      <td className="muted">{a.summary ? String(a.summary) : "—"}</td>
                       <td className="hide-sm mono">{formatIso(last)}</td>
                       <td className="mono">{formatAgeMs(age)}</td>
                     </tr>

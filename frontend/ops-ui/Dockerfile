@@ -5,17 +5,15 @@ WORKDIR /app
 # Copy the frontend workspace (root + ops-ui).
 COPY frontend/package.json frontend/package.json
 COPY frontend/package-lock.json frontend/package-lock.json
-COPY frontend/tsconfig.json frontend/tsconfig.json
-COPY frontend/tsconfig.node.json frontend/tsconfig.node.json
-COPY frontend/vite.config.ts frontend/vite.config.ts
-COPY frontend/index.html frontend/index.html
-COPY frontend/postcss.config.js frontend/postcss.config.js
-COPY frontend/tailwind.config.ts frontend/tailwind.config.ts
 COPY frontend/eslint.config.js frontend/eslint.config.js
-COPY frontend/public frontend/public
-COPY frontend/src frontend/src
-
-COPY frontend/ops-ui frontend/ops-ui
+COPY frontend/ops-ui/package.json frontend/ops-ui/package.json
+COPY frontend/ops-ui/tsconfig.json frontend/ops-ui/tsconfig.json
+COPY frontend/ops-ui/vite.config.ts frontend/ops-ui/vite.config.ts
+COPY frontend/ops-ui/index.html frontend/ops-ui/index.html
+COPY frontend/ops-ui/public frontend/ops-ui/public
+COPY frontend/ops-ui/src frontend/ops-ui/src
+COPY frontend/ops-ui/nginx.conf frontend/ops-ui/nginx.conf
+COPY frontend/ops-ui/docker-entrypoint.d frontend/ops-ui/docker-entrypoint.d
 
 WORKDIR /app/frontend
 

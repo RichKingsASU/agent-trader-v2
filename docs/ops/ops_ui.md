@@ -29,13 +29,13 @@ VITE_MISSION_CONTROL_BASE_URL="http://localhost:8081" npm run dev
 
 ```bash
 cd frontend
-npm ci
 npm run build
 ```
 
-This builds both:
-- `frontend/` (main UI)
-- `frontend/ops-ui/` (Ops UI)
+This builds the canonical ops dashboard:
+- `frontend/ops-ui/`
+
+Note: the previous Lovable/trading UI has been removed from the build to keep Ops UI as the single canonical dashboard.
 
 ## Container image (nginx static site)
 

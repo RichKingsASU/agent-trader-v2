@@ -1,4 +1,10 @@
-import type { DeployReportResponse, MissionControlAgentsResponse, MissionControlEventsResponse } from "@/api/types";
+import type {
+  AgentDetailResponse,
+  DeployReportResponse,
+  MissionControlAgentsResponse,
+  MissionControlEventsResponse,
+  SafetyResponse,
+} from "@/api/types";
 
 type ApiResult<T> =
   | { ok: true; data: T; status: number }
@@ -79,6 +85,8 @@ export async function getText(path: string, timeoutMs = 7000): Promise<ApiResult
 
 export const missionControlApi = {
   listAgents: () => getJson<MissionControlAgentsResponse>("/api/v1/agents"),
+  getAgent: (agentName: string) => getJson<AgentDetailResponse>(`/api/v1/agents/${encodeURIComponent(agentName)}`),
+  getSafety: () => getJson<SafetyResponse>("/api/v1/safety"),
   listRecentEvents: () => getJson<MissionControlEventsResponse>("/api/v1/events/recent"),
   getLatestDeployReport: () => getText("/api/v1/reports/deploy/latest"),
   getBaseUrl,

@@ -20,6 +20,12 @@ export function Layout({ children }: PropsWithChildren) {
             <NavLink to="/" className={navClassName}>
               Overview
             </NavLink>
+            <NavLink to="/safety" className={navClassName}>
+              Safety
+            </NavLink>
+            <NavLink to="/metrics" className={navClassName}>
+              Metrics
+            </NavLink>
             <NavLink to="/reports/deploy" className={navClassName}>
               Deploy report
             </NavLink>

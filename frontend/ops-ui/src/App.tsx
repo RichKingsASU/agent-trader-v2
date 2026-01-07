@@ -3,6 +3,8 @@ import { Layout } from "@/components/Layout";
 import { OverviewPage } from "@/pages/OverviewPage";
 import { AgentDetailPage } from "@/pages/AgentDetailPage";
 import { DeployReportPage } from "@/pages/DeployReportPage";
+import { SafetyPage } from "@/pages/SafetyPage";
+import { MetricsPage } from "@/pages/MetricsPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 
 export function App() {
@@ -11,6 +13,8 @@ export function App() {
       <Layout>
         <Routes>
           <Route path="/" element={<OverviewPage />} />
+          <Route path="/safety" element={<SafetyPage />} />
+          <Route path="/metrics" element={<MetricsPage />} />
           <Route path="/agents/:name" element={<AgentDetailPage />} />
           <Route path="/reports/deploy" element={<DeployReportPage />} />
           <Route path="*" element={<NotFoundPage />} />
