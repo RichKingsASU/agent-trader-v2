@@ -87,8 +87,13 @@ steps:
         if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]; then
           exit 1
         else
-          echo "✅ PASSED: No instances of 'AGENT_MODE=EXECUTE' found."
-        fi
+          set +e
+          AGENT_MODE_MATCHES="$(
+            grep -nH -e "AGENT_MODE=EXECUTE" -e "AGENT_MODE: EXECUTE" -- "${AGENT_MODE_FILES[@]}" 2>&1 \
+              | grep -v "ALLOWED_AGENT_MODES"
+          )"
+          GREP_RC=$?
+          set -e
 
         echo "--- Checking for scaled execution agents (replicas > 0) ---"
         REPLICAS_MATCH="$(find ./k8s/execution -name "*.yaml" -o -name "*.yml" | xargs grep -nH "replicas:[[:space:]]*[1-9]" 2>/dev/null | head -n 1 || true)"
