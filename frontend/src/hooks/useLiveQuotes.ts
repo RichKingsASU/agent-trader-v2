@@ -24,8 +24,9 @@ export interface UseLiveQuotesOptions {
 }
 
 export interface UseLiveQuotesReturn {
-  quotes: LiveQuote[];
-  quotesBySymbol: LiveQuotesBySymbol;
+  // Market quotes (live_quotes)
+  quotes: ReturnType<typeof useMarketLiveQuotes>["quotes"];
+  quotesBySymbol: ReturnType<typeof useMarketLiveQuotes>["quotesBySymbol"];
   loading: boolean;
   error: string | null;
   status: LiveStatus;

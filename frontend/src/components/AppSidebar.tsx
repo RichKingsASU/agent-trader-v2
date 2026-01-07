@@ -2,6 +2,7 @@ import {
   LayoutDashboard, 
   LineChart, 
   Monitor, 
+  TrendingUp,
   Wrench, 
   FlaskConical, 
   Database,

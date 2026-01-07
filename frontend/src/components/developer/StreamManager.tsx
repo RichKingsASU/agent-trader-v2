@@ -63,7 +63,9 @@ export const StreamManager = () => {
       news: 'News Feed',
       level2: 'Level 2 Depth',
       trades: 'Trades Feed',
-      account: 'Account Updates'
+      account: 'Account Updates',
+      quotes: 'Quotes Stream',
+      other: 'Other Stream',
     };
 
     const streamId = `${streamType}-${exchange}-${Date.now()}`;

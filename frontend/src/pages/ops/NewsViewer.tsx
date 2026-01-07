@@ -12,6 +12,15 @@ import { formatDistanceToNow, format } from 'date-fns';
 const SOURCES = ['benzinga', 'alpaca', 'polygon', 'finnhub'];
 const LIMITS = [50, 100, 200, 500];
 
+function coerceDate(value: unknown): Date {
+  if (value instanceof Date) return value;
+  if (value && typeof value === 'object' && typeof (value as any).toDate === 'function') {
+    const d = (value as any).toDate();
+    if (d instanceof Date) return d;
+  }
+  return new Date(value as any);
+}
+
 function SentimentBadge({ sentiment }: { sentiment: string | null }) {
   if (!sentiment) return <Badge variant="secondary">-</Badge>;
   
@@ -179,9 +188,9 @@ export default function NewsViewer() {
                         {event.importance ?? '-'}
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {format(new Date(event.received_at), 'HH:mm:ss')}
+                        {format(coerceDate(event.received_at), 'HH:mm:ss')}
                         <br />
-                        <span>{formatDistanceToNow(new Date(event.received_at), { addSuffix: true })}</span>
+                        <span>{formatDistanceToNow(coerceDate(event.received_at), { addSuffix: true })}</span>
                       </TableCell>
                       <TableCell>
                         {event.url && (

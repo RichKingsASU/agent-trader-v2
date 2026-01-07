@@ -25,9 +25,6 @@ import Analytics from "./pages/Analytics";
 import WhaleFlow from "./pages/WhaleFlow";
 import BacktestDashboard from "./pages/BacktestDashboard";
 
-import LovableDashboardPage from "./pages/lovable/DashboardPage";
-import LovableDeveloperPage from "./pages/lovable/DeveloperPage";
-
 import OpsLayout from "./pages/ops/OpsLayout";
 import OpsOverview from "./pages/ops/OpsOverview";
 import OptionsExplorer from "./pages/ops/OptionsExplorer";
