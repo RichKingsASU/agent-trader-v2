@@ -16,7 +16,8 @@ spec:
         git_sha: a2466ec
     spec:
       priorityClassName: high-priority
-      serviceAccountName: trading-floor-sa
+      # Workload Identity (KSA->GSA) is wired via k8s/serviceaccounts/strategy-engine-ksa.yaml
+      serviceAccountName: strategy-engine-ksa
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
