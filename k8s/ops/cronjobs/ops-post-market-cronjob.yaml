@@ -77,7 +77,8 @@ spec:
           containers:
             - name: ops-post-market
               # Includes kubectl; suitable for read-only cluster snapshots.
-              image: bitnami/kubectl:latest
+              # IMPORTANT (production lock): never use :latest in locked manifests.
+              image: bitnami/kubectl:1.29.0
               command: ["/bin/sh", "-c"]
               args:
                 - |

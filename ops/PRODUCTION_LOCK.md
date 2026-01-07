@@ -2,9 +2,9 @@
 
 ## Lock metadata
 
-- **lock_timestamp_utc**: 2026-01-07T01:14:27Z
+- **lock_timestamp_utc**: 2026-01-07T03:22:14Z
 - **repo_id**: RichKingsASU/agent-trader-v2
-- **git_sha**: 0922f0200658729dd3b583cad65cd859752f2cee
+- **git_sha**: 905431ef49581f2fdea937598b1f0b59044d0f2d
 - **build_id**: N/A (not provided in this lock)
 - **clusters_targeted**:
   - **Kubernetes (GKE)**: `trading-floor` namespace (see `k8s/`)
@@ -12,11 +12,11 @@
 
 ## Non-negotiable safety statements (locked)
 
-- **Execution is DISABLED**.
+- **Execution is DISABLED**
   - **Kubernetes default**: `k8s/05-kill-switch-configmap.yaml` sets `EXECUTION_HALTED: "1"` (HALTED).
-- **AGENT_MODE defaults OFF**.
+- **AGENT_MODE defaults OFF**
   - No repository manifests may set `AGENT_MODE=EXECUTE`.
-- **Kill-switch defaults SAFE**.
+- **Kill-switch defaults SAFE**
   - “SAFE” = **HALTED** (`EXECUTION_HALTED="1"`). Any change away from HALTED requires a controlled unlock.
 
 ## Locked components (baseline scope)
@@ -30,8 +30,8 @@ These components are frozen as the v2 operational baseline.
   - k8s statefulsets: `k8s/10-gamma-strategy-statefulset.yaml`, `k8s/11-whale-strategy-statefulset.yaml`
   - runtime: `backend/` (strategy runtime container references are pinned in k8s manifests)
 - **execution-agent (disabled)**
-  - **No execution agent workload is deployed by default** (only identity wiring exists under `k8s/serviceaccounts/`).
-  - Kill-switch default is **HALTED**.
+  - k8s deployment exists but is **scaled to 0** by default: `k8s/30-execution-agent-deployment.yaml`
+  - Kill-switch default is **HALTED**: `k8s/05-kill-switch-configmap.yaml`
 - **mission-control**
   - operational control-plane docs + runbooks in `docs/` (no production deployment changes allowed without unlock)
 - **ops-ui**
@@ -62,7 +62,7 @@ These components are frozen as the v2 operational baseline.
 
 - **Readiness report** (current timestamp, git sha, environment scope)
 - **Audit index** (artifact listing + hashes/paths)
-- **Approval template filled** (human sign-offs captured in-repo)
+- **Approval template filled** (human sign-offs captured in-repo, see `ops/templates/`)
 
 ### Required steps (the only allowed process)
 
