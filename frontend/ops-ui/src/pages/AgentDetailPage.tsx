@@ -1,30 +1,19 @@
 import * as React from "react";
 import { Link, useParams } from "react-router-dom";
 import { missionControlApi } from "@/api/client";
-import type { Agent, Event, MissionControlAgentsResponse, MissionControlEventsResponse } from "@/api/types";
+import type { Agent, Event, MissionControlEventsResponse } from "@/api/types";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { JsonBlock } from "@/components/JsonBlock";
 import { usePolling } from "@/hooks/usePolling";
 import { formatIso, parseTimestamp } from "@/utils/time";
-
-function unpackAgents(payload: MissionControlAgentsResponse): Agent[] {
-  return Array.isArray(payload) ? payload : payload.agents || [];
-}
 
 function unpackEvents(payload: MissionControlEventsResponse): Event[] {
   return Array.isArray(payload) ? payload : payload.events || [];
 }
 
 function getAgentBuildFingerprint(agent: Agent): string {
-  const direct = agent.build_fingerprint;
-  const build = agent.build || {};
-  const fromBuild =
-    (build as Record<string, unknown>).fingerprint ||
-    (build as Record<string, unknown>).git_sha ||
-    (build as Record<string, unknown>).commit ||
-    (build as Record<string, unknown>).version ||
-    (build as Record<string, unknown>).image;
-  return direct || (fromBuild ? String(fromBuild) : "—");
+  const ops = agent.ops_status;
+  return ops?.git_sha || ops?.build_id || "—";
 }
 
 function getEventTs(e: Event): Date | null {
@@ -41,8 +30,10 @@ export function AgentDetailPage() {
   const name = params.name ? decodeURIComponent(params.name) : "";
 
   const agentsLoader = React.useCallback(async () => {
-    const res = await missionControlApi.listAgents();
-    return res.ok ? ({ ok: true, data: unpackAgents(res.data) } as const) : ({ ok: false, error: res.error } as const);
+    const res = await missionControlApi.getOpsStatus();
+    return res.ok
+      ? ({ ok: true, data: res.data.agents } as const)
+      : ({ ok: false, error: res.error } as const);
   }, []);
 
   const eventsLoader = React.useCallback(async () => {
@@ -56,7 +47,7 @@ export function AgentDetailPage() {
   const anyError = agentsPoll.error || eventsPoll.error;
   const lastRefreshed = agentsPoll.lastRefreshed || eventsPoll.lastRefreshed;
 
-  const agent = (agentsPoll.data || []).find((a) => String(a.name) === name) || null;
+  const agent = (agentsPoll.data || []).find((a) => String(a.agent_name) === name) || null;
   const recentForAgent = (eventsPoll.data || [])
     .filter((e) => eventAgentName(e) === name)
     .slice(0, 50);
@@ -84,7 +75,7 @@ export function AgentDetailPage() {
             <tbody>
               <tr>
                 <th style={{ width: 220 }}>Name</th>
-                <td className="mono">{String(agent.name)}</td>
+                <td className="mono">{String(agent.agent_name)}</td>
               </tr>
               <tr>
                 <th>Kind</th>
@@ -104,7 +95,7 @@ export function AgentDetailPage() {
         <div className="muted" style={{ marginBottom: 10 }}>
           Sensitive keys (token/secret/api_key/password) are redacted client-side.
         </div>
-        {agent ? <JsonBlock value={agent.ops_status ?? (agent as unknown as { status?: unknown }).status ?? agent} /> : <div />}
+        {agent ? <JsonBlock value={agent.raw_ops_status_redacted ?? agent.ops_status ?? agent} /> : <div />}
       </div>
 
       <div className="card" style={{ gridColumn: "span 12" }}>

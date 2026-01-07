@@ -10,6 +10,7 @@
   --ok: #0f766e;
   --degraded: #b45309;
   --halted: #92400e;
+  --market_closed: #1d4ed8;
   --offline: #4b5563;
   --unknown: #374151;
 }
@@ -146,6 +147,10 @@ a:hover {
 .badge.halted {
   color: var(--halted);
   border-color: rgba(146, 64, 14, 0.25);
+}
+.badge.market_closed {
+  color: var(--market_closed);
+  border-color: rgba(29, 78, 216, 0.25);
 }
 .badge.offline {
   color: var(--offline);

@@ -11,13 +11,19 @@ import os
 import time
 from typing import Any
 
+from datetime import datetime, timezone
+
 from fastapi import FastAPI
+from fastapi.responses import Response
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.observability.ops_json_logger import OpsLogger
+from backend.common.kill_switch import get_kill_switch_state
+from backend.common.ops_metrics import REGISTRY
+from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 from backend.ingestion.market_data_ingest import (
     MarketDataIngestor,
     load_config_from_env,
@@ -42,6 +48,10 @@ async def health() -> dict[str, Any]:
 async def healthz() -> dict[str, Any]:
     # Alias for institutional conventions.
     return await health()
+
+@app.get("/ops/health")
+async def ops_health() -> dict[str, Any]:
+    return {"status": "ok", "service": "market-ingest", "ts": datetime.now(timezone.utc).isoformat()}
 
 
 @app.get("/readyz")
@@ -176,4 +186,37 @@ async def _shutdown() -> None:
             await loop_task
         except Exception:
             pass
+
+
+@app.get("/ops/status")
+async def ops_status() -> dict[str, Any]:
+    """
+    Stable ops status contract.
+    """
+    kill, _source = get_kill_switch_state()
+    st = build_ops_status(
+        service_name="market-ingest",
+        service_kind="ingest",
+        agent_identity=AgentIdentity(
+            agent_name=str(os.getenv("AGENT_NAME") or "market-ingest"),
+            agent_role=str(os.getenv("AGENT_ROLE") or "ingest"),
+            agent_mode=str(os.getenv("AGENT_MODE") or "SERVICE"),
+        ),
+        git_sha=os.getenv("GIT_SHA") or os.getenv("K_REVISION") or None,
+        build_id=os.getenv("BUILD_ID") or None,
+        kill_switch=bool(kill),
+        heartbeat_ttl_seconds=int(os.getenv("OPS_HEARTBEAT_TTL_S") or "60"),
+        endpoints=EndpointsBlock(healthz="/healthz", heartbeat=None, metrics="/metrics"),
+    )
+    return st.model_dump()
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    return Response(content=REGISTRY.render_prometheus_text(), media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+@app.get("/ops/metrics")
+async def ops_metrics() -> Response:
+    return await metrics()
 

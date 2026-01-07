@@ -12,6 +12,7 @@ export default defineConfig(({ mode }) => ({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "@ops-contract": path.resolve(__dirname, "./shared/ops-api-contract/src"),
     },
   },
 }));

@@ -8,6 +8,7 @@ from backend.common.freshness import check_freshness, stale_after_for_bar_interv
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.ops_http_server import OpsHttpServer
 from backend.common.ops_log import log_json
+from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 from backend.common.ops_metrics import (
     agent_start_total,
     errors_total,
@@ -39,12 +40,21 @@ def _status_payload() -> dict[str, object]:
         age = activity_age_seconds("strategy-engine")
     except Exception:
         age = None
-    return {
-        "kill_switch_enabled": bool(enabled),
-        "kill_switch_source": source,
-        "last_cycle_at": _last_cycle_at_iso,
-        "last_cycle_age_seconds": age,
-    }
+    st = build_ops_status(
+        service_name="strategy-engine",
+        service_kind="strategy",
+        agent_identity=AgentIdentity(
+            agent_name=str(os.getenv("AGENT_NAME") or "strategy-engine"),
+            agent_role=str(os.getenv("AGENT_ROLE") or "strategy"),
+            agent_mode=str(os.getenv("AGENT_MODE") or "OBSERVE"),
+        ),
+        git_sha=os.getenv("GIT_SHA") or os.getenv("GITHUB_SHA") or None,
+        build_id=os.getenv("BUILD_ID") or None,
+        kill_switch=bool(enabled),
+        heartbeat_ttl_seconds=int(os.getenv("OPS_HEARTBEAT_TTL_S") or "60"),
+        endpoints=EndpointsBlock(healthz="/healthz", heartbeat=None, metrics="/metrics"),
+    )
+    return st.model_dump()
 
 
 async def run_strategy(execute: bool):

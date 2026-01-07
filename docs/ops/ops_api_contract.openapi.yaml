@@ -1,0 +1,143 @@
+openapi: 3.0.3
+info:
+  title: AgentTrader v2 Ops API (read-only)
+  version: 0.1.0
+  description: >
+    Stable, read-only ops contract for the ops-dashboard UI and scrapers.
+
+    Notes:
+    - Mission Control aggregates downstream agent `/ops/status` into a single UI-facing `/ops/status`.
+    - Downstream services also expose `/ops/status`, `/ops/health`, and `/ops/metrics` individually.
+servers:
+  - url: http://agenttrader-mission-control
+paths:
+  /ops/health:
+    get:
+      summary: Mission Control ops health (stable)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpsHealthResponse"
+  /ops/status:
+    get:
+      summary: Aggregated ops status (stable UI contract)
+      parameters:
+        - name: refresh
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+          description: If true, poll agents before returning.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissionControlOpsStatusResponse"
+  /ops/metrics:
+    get:
+      summary: Prometheus metrics (read-only)
+      responses:
+        "200":
+          description: Prometheus text exposition format
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  schemas:
+    OpsState:
+      type: string
+      enum: [OK, DEGRADED, HALTED, MARKET_CLOSED, OFFLINE, UNKNOWN]
+    EndpointResult:
+      type: object
+      additionalProperties: false
+      properties:
+        ok: { type: boolean }
+        status_code: { type: integer, nullable: true }
+        latency_ms: { type: integer, nullable: true }
+        error: { type: string, nullable: true }
+      required: [ok, status_code, latency_ms, error]
+    OpsHealthResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [ok] }
+        service: { type: string }
+        ts: { type: string }
+      required: [status, service, ts]
+    MissionControlKillSwitch:
+      type: object
+      additionalProperties: false
+      properties:
+        execution_halted: { type: boolean }
+        source: { type: string, nullable: true }
+      required: [execution_halted, source]
+    MissionControlAgentOps:
+      type: object
+      additionalProperties: false
+      properties:
+        agent_name: { type: string }
+        kind: { type: string, enum: [marketdata, strategy, execution, ingest] }
+        criticality: { type: string, enum: [critical, important, optional] }
+        service_dns: { type: string }
+        expected_endpoints:
+          type: array
+          items: { type: string }
+        online: { type: boolean, nullable: true }
+        last_poll_at: { type: string, nullable: true }
+        endpoints:
+          type: object
+          additionalProperties: false
+          properties:
+            healthz: { $ref: "#/components/schemas/EndpointResult", nullable: true }
+            ops_status: { $ref: "#/components/schemas/EndpointResult", nullable: true }
+            heartbeat: { $ref: "#/components/schemas/EndpointResult", nullable: true }
+          required: [healthz, ops_status, heartbeat]
+        ops_status:
+          description: Best-effort validated downstream `OpsStatus` contract, if available.
+          type: object
+          nullable: true
+        ops:
+          type: object
+          additionalProperties: false
+          properties:
+            state: { $ref: "#/components/schemas/OpsState" }
+            summary: { type: string }
+            reason_codes:
+              type: array
+              items: { type: string }
+            last_updated_utc: { type: string, nullable: true }
+          required: [state, summary, reason_codes, last_updated_utc]
+        raw_ops_status_redacted:
+          description: Redacted downstream payload for drill-down debugging.
+          nullable: true
+      required:
+        - agent_name
+        - kind
+        - criticality
+        - service_dns
+        - expected_endpoints
+        - online
+        - last_poll_at
+        - endpoints
+        - ops_status
+        - ops
+        - raw_ops_status_redacted
+    MissionControlOpsStatusResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        ts: { type: string }
+        kill_switch: { $ref: "#/components/schemas/MissionControlKillSwitch" }
+        last_poll_cycle_at: { type: string, nullable: true }
+        agents:
+          type: array
+          items: { $ref: "#/components/schemas/MissionControlAgentOps" }
+      required: [ts, kill_switch, last_poll_cycle_at, agents]
+
