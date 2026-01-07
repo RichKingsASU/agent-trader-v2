@@ -11,6 +11,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.utils.session import get_market_session
+from backend.common.ops_metrics import (
+    errors_total,
+    marketdata_ticks_total,
+    mark_activity,
+)
 
 try:
     alpaca = load_alpaca_env()
@@ -26,6 +31,9 @@ except KeyError as e:
 
 async def quote_data_handler(data):
     """Handler for incoming quote data."""
+    # Consider each quote/tick as a heartbeat signal for marketdata freshness.
+    marketdata_ticks_total.inc(1.0)
+    mark_activity("marketdata")
     logging.info(f"Received quote for {data.symbol}: Bid={data.bid_price}, Ask={data.ask_price}")
     
     try:
@@ -49,6 +57,7 @@ async def quote_data_handler(data):
                     (data.symbol, data.bid_price, data.bid_size, data.ask_price, data.ask_size, session)
                 )
     except psycopg2.Error as e:
+        errors_total.inc(labels={"component": "marketdata-mcp-server"})
         logging.error(f"Database error while handling quote for {data.symbol}: {e}")
 
 async def main():
@@ -58,7 +67,12 @@ async def main():
     logging.info(f"Subscribing to quotes for: {SYMBOLS}")
     wss_client.subscribe_quotes(quote_data_handler, *SYMBOLS)
     
-    await wss_client.run()
+    try:
+        await wss_client.run()
+    except Exception as e:
+        errors_total.inc(labels={"component": "marketdata-mcp-server"})
+        logging.error(f"Streamer crashed: {type(e).__name__}: {e}")
+        raise
 
 if __name__ == "__main__":
     try:
