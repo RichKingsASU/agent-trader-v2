@@ -21,6 +21,7 @@ from backend.execution.engine import (
 )
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.vertex_ai import init_vertex_ai_or_log
+from backend.common.marketdata_health import MarketDataStaleError, assert_marketdata_fresh
 
 logger = logging.getLogger(__name__)
 
