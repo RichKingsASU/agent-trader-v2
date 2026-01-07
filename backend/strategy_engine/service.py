@@ -20,6 +20,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, Response
@@ -34,6 +35,31 @@ from .driver import run_strategy
 app = FastAPI(title="AgentTrader Strategy Engine")
 install_fastapi_correlation_middleware(app)
 install_app_heartbeat(app, service_name="strategy-engine")
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return int(str(raw).strip())
+
+
+def _write_text_atomic(path: str, content: str) -> None:
+    """
+    Best-effort atomic write (same filesystem).
+
+    Constraint: local-only (no DB/network/broker).
+    """
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def _identity() -> dict[str, Any]:
@@ -107,7 +133,7 @@ async def _current_state() -> tuple[str, dict[str, Any]]:
 
 @app.on_event("startup")
 async def _startup() -> None:
-    enforce_agent_mode_guard()
+    agent_mode = enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="strategy-engine",
         intent="Serve strategy-engine health endpoints and run strategy cycles with fail-closed safety gating.",
@@ -118,6 +144,28 @@ async def _startup() -> None:
     app.state.ready = False
     app.state.ready_logged = False
     app.state.loop_heartbeat_monotonic = time.monotonic()
+
+    # OBSERVE-mode heartbeat (local-only; no DB/network/broker interaction).
+    # Goal: prove the bot is alive without trading.
+    if agent_mode == "OBSERVE":
+        interval_s = max(1, _env_int("OBSERVE_HEARTBEAT_INTERVAL_S", 15))
+        path = os.getenv("OBSERVE_HEARTBEAT_PATH") or "/tmp/agenttrader_observe_heartbeat_strategy_engine.txt"
+
+        async def _observe_heartbeat() -> None:
+            while not getattr(app.state, "shutting_down", False):
+                ts = _utc_now_iso()
+                print(
+                    f"OBSERVE_HEARTBEAT: EXECUTION DISABLED service=strategy-engine ts={ts} interval_s={interval_s} path={path}",
+                    flush=True,
+                )
+                try:
+                    _write_text_atomic(path, f"{ts}\nEXECUTION DISABLED\n")
+                except Exception:
+                    # Best-effort; never crash due to /tmp issues.
+                    pass
+                await asyncio.sleep(float(interval_s))
+
+        app.state.observe_task = asyncio.create_task(_observe_heartbeat())
 
     async def _loop_heartbeat() -> None:
         last_ops_log = 0.0
@@ -201,8 +249,9 @@ async def _shutdown() -> None:
     cycle_task: asyncio.Task | None = getattr(app.state, "cycle_task", None)
     loop_task: asyncio.Task | None = getattr(app.state, "loop_task", None)
     init_task: asyncio.Task | None = getattr(app.state, "init_task", None)
+    observe_task: asyncio.Task | None = getattr(app.state, "observe_task", None)
 
-    for t in (cycle_task, loop_task, init_task):
+    for t in (cycle_task, loop_task, init_task, observe_task):
         if t is None:
             continue
         try:
@@ -210,7 +259,7 @@ async def _shutdown() -> None:
         except Exception:
             pass
 
-    tasks = [t for t in (cycle_task, loop_task, init_task) if t is not None]
+    tasks = [t for t in (cycle_task, loop_task, init_task, observe_task) if t is not None]
     if not tasks:
         return
     try:
