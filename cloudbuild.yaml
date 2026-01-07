@@ -30,6 +30,14 @@ steps:
 
   # b) Safety guard
   - name: 'gcr.io/cloud-builders/bash'
+    id: 'CI Layout Validate'
+    entrypoint: 'bash'
+    args:
+      - -ceu
+      - |
+        bash ./scripts/validate_ci_layout.sh
+
+  - name: 'bash'
     id: 'Safety Guard'
     waitFor: ['Checkout']
     entrypoint: 'bash'
