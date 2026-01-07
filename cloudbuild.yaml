@@ -1,3 +1,7 @@
+options:
+  env:
+    - WORKSPACE_ROOT=/workspace
+
 steps:
   - name: 'bash'
     id: 'Safety Guard'
@@ -7,7 +11,7 @@ steps:
       - |
         set -e
         echo "--- Checking for ':latest' image tags ---"
-        if find . -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -q "image:.*:latest"; then
+        if find "${WORKSPACE_ROOT}" -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -q "image:.*:latest"; then
           echo "❌ FAILED: Use of ':latest' image tag is forbidden."
           exit 1
         else
@@ -16,7 +20,7 @@ steps:
 
         echo "--- Checking for 'AGENT_MODE=EXECUTE' ---"
         AGENT_MODE_EXECUTE_FOUND=0
-        find . -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | while read FILE_VAR;
+        find "${WORKSPACE_ROOT}" -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | while read FILE_VAR;
         do
           if [ -f "$$FILE_VAR" ]; then
             while read LINE_VAR;
@@ -46,7 +50,7 @@ steps:
         fi
 
         echo "--- Checking for scaled execution agents (replicas > 0) ---"
-        if find ./k8s/execution -name "*.yaml" -o -name "*.yml" | xargs grep -q "replicas:[[:space:]]*[1-9]"; then
+        if find "${WORKSPACE_ROOT}/k8s/execution" -name "*.yaml" -o -name "*.yml" | xargs grep -q "replicas:[[:space:]]*[1-9]"; then
           echo "❌ FAILED: Execution agent replicas must be 0 in committed code."
           exit 1
         else
@@ -59,8 +63,8 @@ steps:
     args: [
       'build',
       '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}',
-      '-f', 'backend/Dockerfile.marketdata-mcp-server',
-      '.'
+      '-f', '/workspace/backend/Dockerfile.marketdata-mcp-server',
+      '/workspace'
     ]
 
   - name: 'gcr.io/cloud-builders/bash'
@@ -70,7 +74,7 @@ steps:
       - -ceu
       - |
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
-        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.app
+        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.app
 
   # Build and push strategy-engine
   - name: 'gcr.io/cloud-builders/docker'
@@ -78,8 +82,8 @@ steps:
     args: [
       'build',
       '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}',
-      '-f', 'infra/Dockerfile.strategy_engine',
-      '.'
+      '-f', '/workspace/infra/Dockerfile.strategy_engine',
+      '/workspace'
     ]
 
   - name: 'gcr.io/cloud-builders/bash'
@@ -89,7 +93,7 @@ steps:
       - -ceu
       - |
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
-        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_engine.service
+        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.strategy_engine.service
 
   # Build and push strategy-runtime (used by gamma and whale strategies)
   - name: 'gcr.io/cloud-builders/docker'
@@ -97,8 +101,8 @@ steps:
     args: [
       'build',
       '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}',
-      '-f', 'backend/strategy_service/Dockerfile',
-      '.'
+      '-f', '/workspace/backend/strategy_service/Dockerfile',
+      '/workspace'
     ]
 
   - name: 'gcr.io/cloud-builders/bash'
@@ -108,4 +112,4 @@ steps:
       - -ceu
       - |
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
-        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
+        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.strategy_service.app
