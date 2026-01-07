@@ -15,6 +15,7 @@ from backend.execution.engine import (
     ExecutionResult,
     OrderIntent,
 )
+from backend.common.agent_mode import AgentModeError
 from backend.common.vertex_ai import init_vertex_ai_or_log
 from backend.common.marketdata_health import MarketDataStaleError, assert_marketdata_fresh
 
@@ -107,6 +108,9 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
 
     try:
         result: ExecutionResult = engine.execute_intent(intent=intent)
+    except AgentModeError as e:
+        logger.warning("exec_service.trading_refused: %s", e)
+        raise HTTPException(status_code=409, detail={"error": "trading_refused", "reason": str(e)}) from e
     except Exception as e:
         logger.exception("exec_service.execute_failed: %s", e)
         raise HTTPException(status_code=500, detail="execution_failed") from e

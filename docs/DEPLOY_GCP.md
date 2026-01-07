@@ -278,3 +278,11 @@ export SCHEDULER_SA_EMAIL="agenttrader-scheduler@${PROJECT_ID}.iam.gserviceaccou
   - request count / latency (execution-engine)
   - container restarts and instance uptime (market-ingest)
 
+---
+
+## Kubernetes: automated deployment health report (optional)
+
+If you deploy any components on Kubernetes (e.g., via the manifests under `k8s/`), you can generate a single markdown deployment report (pods, deployments, rollouts, images, warning events).
+
+See `docs/DEPLOYMENT_REPORT.md`.
+

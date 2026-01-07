@@ -11,7 +11,7 @@ alpaca-py==0.43.2
 psycopg2-binary==2.9.9
 nats-py
 pandas
-pandas-ta==0.3.14b0
+pandas-ta==0.4.71b0
 google-cloud-firestore
 firebase-admin
 google-genai

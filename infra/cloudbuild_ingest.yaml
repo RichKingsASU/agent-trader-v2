@@ -1,5 +1,13 @@
 steps:
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-f', 'infra/Dockerfile.ingest', '-t', 'gcr.io/$PROJECT_ID/agenttrader-alpaca-ingest', '.']
+    args:
+      [
+        'build',
+        '-f', 'infra/Dockerfile.ingest',
+        '-t', 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/agenttrader-alpaca-ingest:${SHORT_SHA}',
+        '-t', 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/agenttrader-alpaca-ingest:latest',
+        '.'
+      ]
 images:
-  - 'gcr.io/$PROJECT_ID/agenttrader-alpaca-ingest'
+  - 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/agenttrader-alpaca-ingest:${SHORT_SHA}'
+  - 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/agenttrader-alpaca-ingest:latest'
