@@ -1,6 +1,6 @@
 import asyncio
-import subprocess
-from datetime import date
+from datetime import date, datetime, timezone
+from datetime import timedelta
 import argparse
 import json
 
@@ -11,12 +11,17 @@ from .config import config
 from .models import fetch_recent_bars, fetch_recent_options_flow
 from .risk import (
     get_or_create_strategy_definition,
-    get_or_create_today_state,
     can_place_trade,
-    record_trade,
     log_decision,
 )
 from .strategies.naive_flow_trend import make_decision
+
+def _truthy_env(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
+
 
 async def run_strategy(execute: bool):
     """
@@ -31,8 +36,12 @@ async def run_strategy(execute: bool):
 
     strategy_id = await get_or_create_strategy_definition(config.STRATEGY_NAME)
     today = date.today()
+    correlation_id = os.getenv("CORRELATION_ID") or uuid4().hex
+    repo_id = os.getenv("REPO_ID") or "RichKingsASU/agent-trader-v2"
+    proposal_ttl_minutes = int(os.getenv("PROPOSAL_TTL_MINUTES") or "5")
     
     print(f"Running strategy '{config.STRATEGY_NAME}' for {today}...")
+    emitted_any = False
 
     for symbol in config.STRATEGY_SYMBOLS:
         print(f"Processing symbol: {symbol}")
@@ -61,32 +70,44 @@ async def run_strategy(execute: bool):
             
         print(f"  Decision: {action}. Reason: {decision['reason']}")
 
-        if execute:
-            print(f"  Executing {action} order for 1 {symbol}...")
-            # Call the existing paper trade script
-            process = subprocess.run(
-                [
-                    "python",
-                    "backend/streams/manual_paper_trade.py",
-                    symbol,
-                    action,
-                    str(decision.get("size", 1)),
-                ],
-                capture_output=True,
-                text=True,
-            )
-            print(f"   manual_paper_trade.py stdout: {process.stdout}")
-            print(f"   manual_paper_trade.py stderr: {process.stderr}")
+        # Emit a non-executing, auditable proposal at the "would trade" decision point.
+        side = ProposalSide.BUY if str(action).lower() == "buy" else ProposalSide.SELL
+        created_at_utc = datetime.now(timezone.utc)
+        proposal = OrderProposal(
+            created_at_utc=created_at_utc,
+            repo_id=repo_id,
+            agent_name="strategy-engine",
+            strategy_name=config.STRATEGY_NAME,
+            strategy_version=os.getenv("STRATEGY_VERSION") or None,
+            correlation_id=correlation_id,
+            symbol=symbol,
+            asset_type=ProposalAssetType.EQUITY,
+            option=None,
+            side=side,
+            quantity=int(decision.get("size", 1) or 1),
+            limit_price=None,
+            rationale=ProposalRationale(
+                short_reason=str(decision.get("reason") or "").strip() or "Strategy decision",
+                indicators=decision.get("signal_payload", {}) or {},
+            ),
+            constraints=ProposalConstraints(
+                valid_until_utc=(created_at_utc + timedelta(minutes=max(1, proposal_ttl_minutes))),
+                requires_human_approval=True,
+            ),
+        )
+        emit_proposal(proposal)
+        emitted_any = True
 
-            # Record the trade
-            await record_trade(strategy_id, today, notional)
+        if execute:
+            # Intentionally non-executing: strategy-engine emits proposals only.
+            print("  Execution is disabled in strategy-engine; proposal emitted only.")
             await log_decision(
                 strategy_id,
                 symbol,
                 action,
-                decision["reason"],
+                "Execution disabled; proposal emitted only.",
                 decision["signal_payload"],
-                True,
+                False,
             )
         else:
             print("  Dry run mode, no trade executed.")
@@ -99,11 +120,46 @@ async def run_strategy(execute: bool):
                 False,
             )
 
+    # If no clear decision point is hit in a given environment, this provides a
+    # safe way to validate formatting end-to-end without changing strategy math.
+    if (not emitted_any) and _truthy_env("EMIT_DEMO_PROPOSAL", False):
+        created_at_utc = datetime.now(timezone.utc)
+        ttl = timedelta(minutes=max(1, proposal_ttl_minutes))
+        for right in (OptionRight.CALL, OptionRight.PUT):
+            demo = OrderProposal(
+                created_at_utc=created_at_utc,
+                repo_id=repo_id,
+                agent_name="strategy-engine",
+                strategy_name=f"{config.STRATEGY_NAME}-demo",
+                strategy_version=os.getenv("STRATEGY_VERSION") or None,
+                correlation_id=correlation_id,
+                symbol="SPY",
+                asset_type=ProposalAssetType.OPTION,
+                option=ProposalOption(
+                    expiration=(created_at_utc.date() + timedelta(days=7)),
+                    right=right,
+                    strike=500.0,
+                    contract_symbol=None,
+                ),
+                side=ProposalSide.BUY,
+                quantity=1,
+                limit_price=1.23,
+                rationale=ProposalRationale(
+                    short_reason="Demo proposal (format verification only).",
+                    indicators={"demo": True},
+                ),
+                constraints=ProposalConstraints(
+                    valid_until_utc=(created_at_utc + ttl),
+                    requires_human_approval=True,
+                ),
+            )
+            emit_proposal(demo)
+
 
 if __name__ == "__main__":
     configure_startup_logging(
         agent_name="strategy-engine",
-        intent="Run the strategy engine loop (fetch data, decide, and optionally execute paper trades).",
+        intent="Run the strategy engine loop (fetch data, decide, and emit non-executing order proposals).",
     )
     try:
         fp = get_build_fingerprint()
@@ -114,7 +170,11 @@ if __name__ == "__main__":
     except Exception:
         pass
     parser = argparse.ArgumentParser()
-    parser.add_argument("--execute", action="store_true", help="Actually place paper trades.")
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Kept for compatibility; strategy-engine does not execute (proposals only).",
+    )
     args = parser.parse_args()
 
     try:

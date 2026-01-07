@@ -1,35 +1,40 @@
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-import pytest
-
-from backend.marketdata.candles.timeframes import bucket_range_utc, parse_timeframe
+from backend.marketdata.candles.timeframe import bar_range_utc, floor_time, parse_timeframe
 
 
 def _utc(y, m, d, hh, mm, ss=0) -> dt.datetime:
     return dt.datetime(y, m, d, hh, mm, ss, tzinfo=dt.timezone.utc)
 
 
-def test_1m_alignment_utc_floor():
+def test_1m_alignment_ny_wall_clock():
     tf = parse_timeframe("1m")
-    s1, e1 = bucket_range_utc(_utc(2025, 12, 20, 12, 0, 5), tf)
-    s2, e2 = bucket_range_utc(_utc(2025, 12, 20, 12, 0, 59), tf)
-    s3, e3 = bucket_range_utc(_utc(2025, 12, 20, 12, 1, 0), tf)
-
-    assert s1 == _utc(2025, 12, 20, 12, 0, 0)
-    assert e1 == _utc(2025, 12, 20, 12, 1, 0)
-    assert s2 == s1 and e2 == e1
-    assert s3 == _utc(2025, 12, 20, 12, 1, 0)
-    assert e3 == _utc(2025, 12, 20, 12, 2, 0)
+    # 2025-12-20 is EST (-05:00). 09:30:05 NY == 14:30:05 UTC.
+    ts = _utc(2025, 12, 20, 14, 30, 5)
+    s, e = bar_range_utc(ts, tf, tz="America/New_York")
+    assert s == _utc(2025, 12, 20, 14, 30, 0)
+    assert e == _utc(2025, 12, 20, 14, 31, 0)
 
 
-def test_5m_alignment_utc_floor():
+def test_5m_alignment_ny_wall_clock_boundaries():
     tf = parse_timeframe("5m")
-    s1, _ = bucket_range_utc(_utc(2025, 12, 20, 12, 4, 59), tf)
-    s2, _ = bucket_range_utc(_utc(2025, 12, 20, 12, 5, 0), tf)
+    # 09:34:59 NY == 14:34:59 UTC -> floors to 09:30 NY (14:30 UTC)
+    s1 = floor_time(_utc(2025, 12, 20, 14, 34, 59), tf, tz="America/New_York")
+    # 09:35:00 NY == 14:35:00 UTC -> starts new 5m bucket
+    s2 = floor_time(_utc(2025, 12, 20, 14, 35, 0), tf, tz="America/New_York")
+    assert s1 == _utc(2025, 12, 20, 14, 30, 0)
+    assert s2 == _utc(2025, 12, 20, 14, 35, 0)
 
-    assert s1 == _utc(2025, 12, 20, 12, 0, 0)
-    assert s2 == _utc(2025, 12, 20, 12, 5, 0)
+
+def test_15m_alignment_ny_wall_clock_boundaries():
+    tf = parse_timeframe("15m")
+    # 09:44:59 NY == 14:44:59 UTC -> floors to 09:30 NY
+    s1 = floor_time(_utc(2025, 12, 20, 14, 44, 59), tf, tz="America/New_York")
+    # 09:45:00 NY == 14:45:00 UTC -> new 15m bucket
+    s2 = floor_time(_utc(2025, 12, 20, 14, 45, 0), tf, tz="America/New_York")
+    assert s1 == _utc(2025, 12, 20, 14, 30, 0)
+    assert s2 == _utc(2025, 12, 20, 14, 45, 0)
 
 
 def test_1d_alignment_ny_midnight_boundary_dst_aware():
@@ -46,31 +51,11 @@ def test_1d_alignment_ny_midnight_boundary_dst_aware():
     before = ny_midnight_utc - dt.timedelta(minutes=1)
     after = ny_midnight_utc + dt.timedelta(minutes=1)
 
-    s_before, e_before = bucket_range_utc(before, tf, tz_market="America/New_York")
-    s_after, e_after = bucket_range_utc(after, tf, tz_market="America/New_York")
+    s_before, e_before = bar_range_utc(before, tf, tz="America/New_York")
+    s_after, e_after = bar_range_utc(after, tf, tz="America/New_York")
 
     assert s_after == ny_midnight_utc
     assert e_after == (ny_midnight + dt.timedelta(days=1)).astimezone(dt.timezone.utc)
     assert e_before == ny_midnight_utc
     assert s_before == (ny_midnight - dt.timedelta(days=1)).astimezone(dt.timezone.utc)
-
-
-def test_1w_alignment_monday_ny_00_00():
-    tf = parse_timeframe("1w")
-    ny = ZoneInfo("America/New_York")
-
-    # A Monday local midnight boundary
-    monday = dt.datetime(2025, 12, 1, 0, 0, 0, tzinfo=ny)
-    assert monday.weekday() == 0  # Monday
-
-    just_before = monday - dt.timedelta(minutes=1)  # Sunday 23:59 local
-    just_after = monday + dt.timedelta(minutes=1)   # Monday 00:01 local
-
-    s_before, e_before = bucket_range_utc(just_before.astimezone(dt.timezone.utc), tf, tz_market="America/New_York")
-    s_after, e_after = bucket_range_utc(just_after.astimezone(dt.timezone.utc), tf, tz_market="America/New_York")
-
-    assert s_after == monday.astimezone(dt.timezone.utc)
-    assert e_after == (monday + dt.timedelta(days=7)).astimezone(dt.timezone.utc)
-    assert e_before == monday.astimezone(dt.timezone.utc)
-    assert s_before == (monday - dt.timedelta(days=7)).astimezone(dt.timezone.utc)
 

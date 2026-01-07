@@ -13,8 +13,8 @@ from alpaca.data.live.stock import StockDataStream
 
 from backend.common.timeutils import ensure_aware_utc, utc_now
 from backend.marketdata.candles.aggregator import CandleAggregator
-from backend.marketdata.candles.models import EmittedCandle
-from backend.marketdata.candles.timeframes import SUPPORTED_TIMEFRAMES
+from backend.marketdata.candles.models import Candle, Tick
+from backend.marketdata.candles.timeframe import SUPPORTED_TIMEFRAMES
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.utils.ops_markers import OpsDB
 
@@ -101,20 +101,20 @@ class MarketCandlesWriter:
         pool = await asyncpg.create_pool(database_url)
         return cls(pool)
 
-    async def upsert_many(self, candles: Iterable[EmittedCandle]) -> None:
+    async def upsert_many(self, candles: Iterable[Candle]) -> None:
         rows = [
             (
                 c.symbol,
                 c.timeframe,
-                ensure_aware_utc(c.ts_start_utc),
-                ensure_aware_utc(c.ts_end_utc),
+                ensure_aware_utc(c.start_ts),
+                ensure_aware_utc(c.end_ts),
                 float(c.open),
                 float(c.high),
                 float(c.low),
                 float(c.close),
                 int(c.volume),
                 None if c.vwap is None else float(c.vwap),
-                None if c.trade_count is None else int(c.trade_count),
+                int(c.trade_count),
                 bool(c.is_final),
             )
             for c in candles
@@ -145,8 +145,8 @@ class MarketCandlesWriter:
                 await conn.executemany(sql, rows)
 
 
-async def _db_consumer(queue: asyncio.Queue[EmittedCandle], writer: MarketCandlesWriter, *, batch_max: int) -> None:
-    buf: list[EmittedCandle] = []
+async def _db_consumer(queue: asyncio.Queue[Candle], writer: MarketCandlesWriter, *, batch_max: int) -> None:
+    buf: list[Candle] = []
     while True:
         try:
             item = await queue.get()
@@ -172,7 +172,7 @@ async def _db_consumer(queue: asyncio.Queue[EmittedCandle], writer: MarketCandle
             await asyncio.sleep(1)
 
 
-async def _periodic_flush(agg: CandleAggregator, queue: asyncio.Queue[EmittedCandle], *, interval_sec: float) -> None:
+async def _periodic_flush(agg: CandleAggregator, queue: asyncio.Queue[Candle], *, interval_sec: float) -> None:
     while True:
         await asyncio.sleep(interval_sec)
         try:
@@ -230,13 +230,12 @@ async def main() -> None:
 
     agg = CandleAggregator(
         timeframes=cfg.timeframes,
-        lateness_seconds=cfg.lateness_seconds,
+        max_lateness_seconds=cfg.lateness_seconds,
         tz_market=cfg.tz_market,
         session_daily=cfg.session_daily,
-        emit_updates=True,
     )
     writer = await MarketCandlesWriter.create(cfg.database_url)
-    out_q: asyncio.Queue[EmittedCandle] = asyncio.Queue(maxsize=cfg.db_batch_max * 4)
+    out_q: asyncio.Queue[Candle] = asyncio.Queue(maxsize=cfg.db_batch_max * 4)
 
     # Start DB writer + periodic flush loops
     tasks = [
@@ -249,22 +248,29 @@ async def main() -> None:
 
     async def trade_handler(data: Any) -> None:
         # Alpaca trade objects have .symbol/.price/.size/.timestamp
-        event = {
-            "symbol": getattr(data, "symbol", None),
-            "price": getattr(data, "price", None),
-            "size": getattr(data, "size", None),
-            "timestamp": getattr(data, "timestamp", None),
-        }
-        candles = agg.ingest(event)
+        tick = Tick(
+            symbol=getattr(data, "symbol", ""),
+            price=float(getattr(data, "price", 0.0)),
+            size=int(getattr(data, "size", 0)),
+            ts=ensure_aware_utc(getattr(data, "timestamp")),
+        )
+        candles = agg.ingest_tick(tick)
         for c in candles:
+            # Minimal integration point: emit intent log for finalized candles.
+            logger.info(
+                "intent_type=candle_finalized symbol=%s timeframe=%s start_ts=%s close=%s volume=%s",
+                c.symbol,
+                c.timeframe,
+                c.start_ts.isoformat(),
+                c.close,
+                c.volume,
+            )
             try:
                 out_q.put_nowait(c)
             except asyncio.QueueFull:
-                # Backpressure: drop updates but keep finals (best-effort).
-                if c.is_final:
-                    await out_q.put(c)
+                await out_q.put(c)
 
-        if agg.candles_emitted_update % 5000 == 0 and agg.candles_emitted_update > 0:
+        if agg.candles_finalized % 5000 == 0 and agg.candles_finalized > 0:
             logger.info("candle agg snapshot: %s", agg.ops_snapshot())
 
     logger.info("Subscribing to trades for: %s", ",".join(cfg.symbols))

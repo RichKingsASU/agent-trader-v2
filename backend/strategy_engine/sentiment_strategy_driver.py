@@ -25,8 +25,9 @@ import argparse
 import logging
 import sys
 import os
-from datetime import date
+from datetime import date, datetime, timezone, timedelta
 from typing import List
+from uuid import uuid4
 
 from backend.strategy_engine.config import config
 from backend.strategy_engine.news_fetcher import (
@@ -37,11 +38,18 @@ from backend.strategy_engine.strategies.llm_sentiment_alpha import make_decision
 from backend.common.a2a_sdk import RiskAgentClient
 from backend.strategy_engine.risk import (
     get_or_create_strategy_definition,
-    record_trade,
     log_decision,
 )
 from backend.strategy_engine.signal_writer import write_trading_signal
 from backend.common.vertex_ai import init_vertex_ai_or_log
+from backend.trading.proposals.emitter import emit_proposal
+from backend.trading.proposals.models import (
+    OrderProposal,
+    ProposalAssetType,
+    ProposalConstraints,
+    ProposalRationale,
+    ProposalSide,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -70,6 +78,9 @@ async def run_sentiment_strategy(
     """
     strategy_name = "llm_sentiment_alpha"
     today = date.today()
+    correlation_id = os.getenv("CORRELATION_ID") or uuid4().hex
+    repo_id = os.getenv("REPO_ID") or "RichKingsASU/agent-trader-v2"
+    proposal_ttl_minutes = int(os.getenv("PROPOSAL_TTL_MINUTES") or "5")
     
     logger.info(f"=" * 80)
     logger.info(f"LLM Sentiment Strategy - {today}")
@@ -204,6 +215,33 @@ async def run_sentiment_strategy(
             # The risk check is now handled within make_decision
             # We only proceed if action is not 'flat' (i.e., approved by risk)
             
+            # Emit a non-executing, auditable proposal at the "would trade" decision point.
+            side = ProposalSide.BUY if str(action).lower() == "buy" else ProposalSide.SELL
+            created_at_utc = datetime.now(timezone.utc)
+            proposal = OrderProposal(
+                created_at_utc=created_at_utc,
+                repo_id=repo_id,
+                agent_name="strategy-engine",
+                strategy_name=strategy_name,
+                strategy_version=os.getenv("STRATEGY_VERSION") or None,
+                correlation_id=correlation_id,
+                symbol=symbol,
+                asset_type=ProposalAssetType.EQUITY,
+                option=None,
+                side=side,
+                quantity=1,
+                limit_price=None,
+                rationale=ProposalRationale(
+                    short_reason=str(reason or "").strip() or "Strategy decision",
+                    indicators=signal_payload or {},
+                ),
+                constraints=ProposalConstraints(
+                    valid_until_utc=(created_at_utc + timedelta(minutes=max(1, proposal_ttl_minutes))),
+                    requires_human_approval=True,
+                ),
+            )
+            emit_proposal(proposal)
+
             # Step 5: Execute trade (if enabled)
             if execute:
                 logger.info(f"\n{'*' * 60}")
@@ -215,15 +253,13 @@ async def run_sentiment_strategy(
                 logger.info(f"Trade execution not yet implemented")
                 logger.info(f"Would execute: {action.upper()} {symbol} (${notional:.2f})")
                 
-                # Record the trade
-                await record_trade(strategy_id, today, notional)
                 await log_decision(
                     strategy_id,
                     symbol,
                     action,
                     reason,
                     signal_payload,
-                    True
+                    False
                 )
                 
                 # Update Firestore signal with trade execution
