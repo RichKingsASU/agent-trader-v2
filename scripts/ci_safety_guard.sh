@@ -10,8 +10,11 @@
 
 set -euo pipefail
 
-# --- Configuration / Globals ---
-DRY_RUN=0
+# --- Repo Root (run from any working directory) ---
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo /workspace)"
+cd "$ROOT"
+
+# --- Configuration ---
 FAIL_FLAG=0
 SUCCESS_COUNT=0
 CHECK_COUNT=3
@@ -80,9 +83,22 @@ check_for_latest_tag() {
     [ -d "${K8S_DIR}" ] && search_dirs+=("${K8S_DIR}")
     [ -d "${INFRA_DIR}" ] && search_dirs+=("${INFRA_DIR}")
 
-    if [ "${#search_dirs[@]}" -eq 0 ]; then
-        print_success "No k8s/ or infra/ directory found; skipping ':latest' scan."
-        return 0
+    local -a search_paths=()
+    [[ -d "k8s" ]] && search_paths+=("k8s")
+    [[ -d "infra" ]] && search_paths+=("infra")
+
+    local found=0
+    if [[ ${#search_paths[@]} -gt 0 ]]; then
+        while IFS= read -r file; do
+            [[ -z "${file}" ]] && continue
+            while IFS= read -r match; do
+                [[ -z "${match}" ]] && continue
+                found=1
+                local line_no="${match%%:*}"
+                local line_text="${match#*:}"
+                print_failure "${rule_name}" "${file}" "${line_no}" "${remediation_hint}" "${line_text}"
+            done < <(grep -n "image:.*:latest" "${file}" 2>/dev/null || true)
+        done < <(grep -r -l "image:.*:latest" "${search_paths[@]}" 2>/dev/null || true)
     fi
 
     local latest_files=""
@@ -117,11 +133,20 @@ check_for_execute_mode() {
         return 0
     fi
 
-    # Look for explicit assignment forms: AGENT_MODE=EXECUTE or AGENT_MODE: EXECUTE
-    local execute_files=""
-    execute_files="$(grep -R -i -l -E "AGENT_MODE[[:space:]]*[:=][[:space:]]*EXECUTE" "${scan_dirs[@]}" 2>/dev/null || true)"
+    local found=0
+    # Exclude this script itself from the search
+    while IFS= read -r file; do
+        [[ -z "${file}" ]] && continue
+        while IFS= read -r match; do
+            [[ -z "${match}" ]] && continue
+            found=1
+            local line_no="${match%%:*}"
+            local line_text="${match#*:}"
+            print_failure "${rule_name}" "${file}" "${line_no}" "${remediation_hint}" "${line_text}"
+        done < <(grep -n -i "AGENT_MODE.*EXECUTE" "${file}" 2>/dev/null || true)
+    done < <(grep -r -i -l "AGENT_MODE.*EXECUTE" "." --exclude-dir=".git" --exclude="ci_safety_guard.sh" 2>/dev/null || true)
 
-    if [ -z "${execute_files}" ]; then
+    if [[ "${found}" -eq 0 ]]; then
         print_success "No instances of 'AGENT_MODE=EXECUTE' found."
         return 0
     fi
@@ -145,8 +170,20 @@ check_for_scaled_executors() {
     fi
 
     # Find files that look like executor manifests, then check replicas
-    local execution_manifests=""
-    execution_manifests="$(find "${K8S_DIR}" -type f \( -name "*-executor.yaml" -o -name "*-trader.yaml" \) 2>/dev/null || true)"
+    if [[ -d "k8s" ]]; then
+        while IFS= read -r -d '' file; do
+            # This grep pattern finds "replicas:" followed by any number (not zero)
+            if grep -q "replicas: *[1-9]" "${file}" 2>/dev/null; then
+                while IFS= read -r match; do
+                    [[ -z "${match}" ]] && continue
+                    found_scaled=1
+                    local line_no="${match%%:*}"
+                    local line_text="${match#*:}"
+                    print_failure "${rule_name}" "${file}" "${line_no}" "${remediation_hint}" "${line_text}"
+                done < <(grep -n "replicas: *[1-9]" "${file}" 2>/dev/null || true)
+            fi
+        done < <(find "k8s" -type f \( -name "*-executor.yaml" -o -name "*-trader.yaml" \) -print0 2>/dev/null || true)
+    fi
 
     if [ -z "${execution_manifests}" ]; then
         print_success "No executor/trader manifests found; skipping replica check."
@@ -167,53 +204,31 @@ check_for_scaled_executors() {
 }
 
 # --- Main Execution ---
-main() {
-    while [ "$#" -gt 0 ]; do
-        case "$1" in
-            --dry-run)
-                DRY_RUN=1
-                shift
-                ;;
-            --help|-h)
-                usage
-                exit 0
-                ;;
-            *)
-                echo "ERROR: Unknown argument: $1" >&2
-                usage >&2
-                exit 2
-                ;;
-        esac
-    done
+echo "Running AgentTrader v2 CI Safety Guard..."
+echo "Repo root: ${ROOT}"
+echo ""
 
-    log "Running AgentTrader v2 CI Safety Guard..."
-    log "Repo root: ${REPO_ROOT}"
-    if [ "${DRY_RUN}" -eq 1 ]; then
-        log "Mode: DRY-RUN (will not fail the build)"
-    fi
-    log ""
+check_for_latest_tag
+echo ""
+check_for_execute_mode
+echo ""
+check_for_scaled_executors
+echo ""
 
-    check_for_latest_tag
-    log ""
-    check_for_execute_mode
-    log ""
-    check_for_scaled_executors
-    log ""
-
-    # --- Final Result ---
-    print_header "Result"
-    if [ "${FAIL_FLAG}" -ne 0 ]; then
-        if [ "${DRY_RUN}" -eq 1 ]; then
-            echo "DRY-RUN COMPLETE: Violations were detected (see above), but exiting 0 by request."
-            exit 0
-        fi
-        echo "Safety guard failed: critical violations detected." >&2
-        exit 1
-    fi
-
-    if [ "${SUCCESS_COUNT}" -ne "${CHECK_COUNT}" ]; then
-        # Fail safe if the expected number of checks didn't report success.
-        fail "Internal error: expected ${CHECK_COUNT} checks to pass, got ${SUCCESS_COUNT}."
+# --- Final Result ---
+print_header "Result"
+if [[ "$FAIL_FLAG" -ne 0 ]]; then
+    echo "🔴 Safety guard failed. Found critical violations."
+    echo "   Please review the errors above and correct the identified files."
+    exit 1
+else
+    if [[ "$SUCCESS_COUNT" -eq "$CHECK_COUNT" ]]; then
+        echo "🟢 All $CHECK_COUNT safety checks passed successfully."
+        echo "CI SAFETY GUARD PASSED"
+        exit 0
+    else
+        echo "🟡 Warning: Not all checks passed, but no failures detected. Please review output."
+        exit 1 # Fail safe if success count doesn't match
     fi
 
     echo "SUCCESS: All ${CHECK_COUNT} safety checks passed."
