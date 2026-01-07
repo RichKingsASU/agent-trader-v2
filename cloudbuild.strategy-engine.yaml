@@ -1,14 +1,41 @@
 steps:
-- name: gcr.io/cloud-builders/bash
-  entrypoint: bash
-  args:
-    [
-      "build",
-      "-f",
-      "infra/Dockerfile.strategy_engine",
-      "-t",
-      "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-engine:${SHORT_SHA}",
-      ".",
+  - name: 'bash'
+    id: 'Safety Guard'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        echo "--- Checking for ':latest' image tags ---"
+        if find . -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -r "image:.*:latest"; then
+          echo "❌ FAILED: Use of ':latest' image tag is forbidden."
+          exit 1
+        else
+          echo "✅ PASSED: No ':latest' image tags found."
+        fi
+
+        echo "--- Checking for 'AGENT_MODE=EXECUTE' ---"
+        if find . -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | xargs grep -E "AGENT_MODE( )?[:=]( )?('|")?EXECUTE('|")?"; then
+          echo "❌ FAILED: 'AGENT_MODE' must not be set to 'EXECUTE' in committed code."
+          exit 1
+        else
+          echo "✅ PASSED: No instances of 'AGENT_MODE=EXECUTE' found."
+        fi
+
+        echo "--- Checking for scaled execution agents (replicas > 0) ---"
+        if find ./k8s/execution -name "*.yaml" -o -name "*.yml" | xargs grep -r "replicas: *[1-9]"; then
+          echo "❌ FAILED: Execution agent replicas must be 0 in committed code."
+          exit 1
+        else
+          echo "✅ PASSED: No execution agents found with replicas > 0."
+        fi
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Build strategy-engine'
+    args: [
+      'build',
+      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}',
+      '-f', 'infra/Dockerfile.strategy_engine',
+      '.'
     ]
 images:
-- "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-engine:${SHORT_SHA}"
+- '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'

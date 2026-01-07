@@ -63,6 +63,32 @@ These artifacts form the system’s permanent audit trail.
 > **This repo is governed, not experimental.**
 > If a change cannot be explained to an auditor, it does not belong here.
 
+## Recommended Workflow
+
+For common operational tasks (e.g., local development, testing, building), it is highly recommended to use the `make` utility. This provides a unified, self-documenting interface to the underlying scripts, improving clarity and determinism.
+
+**Note:** Using `make` targets does NOT change the runtime behavior of the application or alter any existing safety controls. Execution remains DISABLED.
+
+To see available commands:
+
+```bash
+make help
+```
+
+## CI Safety Guard
+
+This repository includes a `scripts/ci_safety_guard.sh` script that runs automatically in the CI/CD pipeline. This guard is a read-only, non-destructive check to prevent high-risk configurations from being committed or deployed.
+
+**Purpose:** To provide an automated safety net against common operational errors and enforce non-negotiable architectural rules.
+
+**The guard will fail the build if it detects:**
+1.  **`:latest` image tags:** All container images must have a specific version or SHA hash.
+2.  **`AGENT_MODE` set to `EXECUTE`:** Production execution is disabled at the code level.
+3.  **Execution agent `replicas > 0`:** Execution agents must be scaled to zero by default.
+
+**How to Fix Failures:**
+If the safety guard fails your build, read the error message carefully. It will point to the exact file and line that caused the violation. Correct the configuration in that file and commit the change.
+
 ## Repo layout
 
 - **`/backend`**: Python services + ingestion jobs

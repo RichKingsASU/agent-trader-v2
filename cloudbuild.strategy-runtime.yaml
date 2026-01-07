@@ -1,4 +1,10 @@
 steps:
+  - name: 'bash'
+    id: 'Safety Guard'
+    entrypoint: '/bin/sh'
+    args:
+      - '-c'
+      - './scripts/ci_safety_guard.sh'
 - name: gcr.io/cloud-builders/bash
   entrypoint: bash
   args:
@@ -7,8 +13,8 @@ steps:
       "-f",
       "backend/strategy_service/Dockerfile",
       "-t",
-      "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:${SHORT_SHA}",
+      "${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}",
       ".",
     ]
 images:
-- "us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:${SHORT_SHA}"
+- "${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}"

@@ -48,22 +48,6 @@ spec:
         ports:
         - containerPort: 8080
           name: http
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: http
-          initialDelaySeconds: 5
-          periodSeconds: 10
-          timeoutSeconds: 2
-          failureThreshold: 6
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: http
-          initialDelaySeconds: 10
-          periodSeconds: 20
-          timeoutSeconds: 2
-          failureThreshold: 3
         env:
           - name: REPO_ID
             value: "agent-trader-v2"
@@ -73,17 +57,19 @@ spec:
             value: "marketdata"
           - name: AGENT_MODE
             value: "OFF"
+          - name: SERVICE_NAME
+            value: "marketdata-mcp-server"
           - name: GIT_SHA
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['git_sha']
+          - name: EXECUTION_HALTED
             valueFrom:
               configMapKeyRef:
                 name: agenttrader-kill-switch
                 key: EXECUTION_HALTED
           - name: EXECUTION_HALTED_FILE
             value: /etc/agenttrader/kill-switch/EXECUTION_HALTED
-          - name: APCA_API_KEY_ID
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.labels['git_sha']
           - name: WORKLOAD
             valueFrom:
               fieldRef:
@@ -113,11 +99,18 @@ spec:
             cpu: 1
             memory: 1Gi
             ephemeral-storage: 2Gi
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 2
+          timeoutSeconds: 2
+          failureThreshold: 30
         readinessProbe:
           httpGet:
             path: /readyz
             port: http
-          initialDelaySeconds: 10
+          initialDelaySeconds: 5
           periodSeconds: 10
           timeoutSeconds: 3
           failureThreshold: 6
@@ -125,7 +118,7 @@ spec:
           httpGet:
             path: /livez
             port: http
-          initialDelaySeconds: 30
+          initialDelaySeconds: 10
           periodSeconds: 20
           timeoutSeconds: 3
           failureThreshold: 3
