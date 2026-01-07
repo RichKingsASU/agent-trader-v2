@@ -15,8 +15,31 @@ steps:
         fi
 
         echo "--- Checking for 'AGENT_MODE=EXECUTE' ---"
-        if find . -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | grep -v "ALLOWED_AGENT_MODES" | xargs grep -q "AGENT_MODE=EXECUTE" || find . -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | grep -v "ALLOWED_AGENT_MODES" | xargs grep -q "AGENT_MODE: EXECUTE"; then
-          echo "❌ FAILED: 'AGENT_MODE' must not be set to 'EXECUTE' in committed code."
+        AGENT_MODE_EXECUTE_FOUND=0
+        find . -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | while read FILE;
+        do
+          if [ -f "$FILE" ]; then
+            while read LINE;
+            do
+              # Check for literal 'AGENT_MODE=EXECUTE' or 'AGENT_MODE: EXECUTE'
+              if echo "$LINE" | grep -E -q "AGENT_MODE[[:space:]]*=[[:space:]]*('|")?EXECUTE('|")?" || echo "$LINE" | grep -E -q "AGENT_MODE:[[:space:]]*('|")?EXECUTE('|")?"; then
+                # Exclude the ALLOWED_AGENT_MODES definition itself
+                if ! echo "$LINE" | grep -q "ALLOWED_AGENT_MODES"; then
+                  echo "❌ FAILED: AGENT_MODE must not be set to EXECUTE in committed code."
+                  echo "   File: $FILE"
+                  echo "   Line: $LINE"
+                  AGENT_MODE_EXECUTE_FOUND=1
+                  break # Exit inner loop
+                fi
+              fi
+            done < "$FILE"
+          fi
+          if [ "$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]; then
+            break # Exit outer loop
+          fi
+        done
+
+        if [ "$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]; then
           exit 1
         else
           echo "✅ PASSED: No instances of 'AGENT_MODE=EXECUTE' found."
