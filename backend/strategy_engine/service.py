@@ -7,7 +7,12 @@ _validate_or_exit("strategy-engine")
 
 from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
 
-_enforce_agent_mode_guard()
+_log_runtime_fingerprint(service="strategy-engine")
+del _log_runtime_fingerprint
+
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
+
+enforce_agent_mode_guard()
 
 import asyncio
 import json
@@ -20,11 +25,14 @@ from typing import Any
 from fastapi import FastAPI, Response
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.app_heartbeat_writer import install_app_heartbeat
+from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.observability.ops_json_logger import OpsLogger
 
 from .driver import run_strategy
 
 app = FastAPI(title="AgentTrader Strategy Engine")
+install_fastapi_correlation_middleware(app)
 install_app_heartbeat(app, service_name="strategy-engine")
 
 
