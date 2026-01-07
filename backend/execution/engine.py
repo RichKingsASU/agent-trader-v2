@@ -608,6 +608,15 @@ class RiskManager:
         self._ledger = ledger
         self._positions = positions
 
+    def kill_switch_enabled(self) -> bool:
+        """
+        Returns True if the execution kill-switch is enabled.
+
+        This is a public wrapper around the internal kill-switch checks so
+        execution agents can gate trading before attempting order routing.
+        """
+        return self._kill_switch_enabled()
+
     def _kill_switch_enabled(self) -> bool:
         env_name = self._config.kill_switch_env_var
         if str(get_env(env_name, "0")).strip().lower() in {"1", "true", "yes", "on"}:
@@ -639,7 +648,7 @@ class RiskManager:
         checks: list[dict[str, Any]] = []
 
         # Kill switch
-        enabled = self._kill_switch_enabled()
+        enabled = self.kill_switch_enabled()
         checks.append({"check": "kill_switch", "enabled": enabled})
         if enabled:
             return RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
