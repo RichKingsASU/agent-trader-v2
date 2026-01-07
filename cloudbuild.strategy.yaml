@@ -15,5 +15,7 @@ steps:
         --build-arg IMAGE_REF="${IMAGE_REF}" \
         -t "${IMAGE_REF}" \
         .
+
+      sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
 images:
 - 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:$SHORT_SHA'
