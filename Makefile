@@ -75,7 +75,7 @@ lock-check: ## Fail if backend *.lock files are out of date
 		diff -u "$$tmp/strategy_engine.requirements.norm.lock" "$$tmp/strategy_engine.requirements.norm.tmp.lock"; \
 		echo "OK: lock files are in sync"
 
-.PHONY: help fmt lint smoke-check test build frontend-build ci-validate deploy guard report readiness status git-status logs scale port-forward clean dev
+.PHONY: help fmt lint smoke-check test build frontend-build ci-validate ci-preflight deploy guard report readiness status git-status logs scale port-forward clean dev
 
 help: ## Show available targets and usage
 	@echo "AgentTrader v2 — Trading Floor Makefile"
@@ -153,6 +153,10 @@ smoke-check: ## Run Python import smoke tests
 ci-validate: ## Validate CI layout (cloudbuild.yaml references)
 	@echo "== ci-validate =="
 	@bash ./scripts/validate_ci_layout.sh
+
+ci-preflight: ## Fail-fast Cloud Build preflight (YAML + scripts + substitutions)
+	@echo "== ci-preflight =="
+	@bash ./scripts/ci_preflight.sh
 
 test: ## Run python tests if present
 	@echo "== test =="
