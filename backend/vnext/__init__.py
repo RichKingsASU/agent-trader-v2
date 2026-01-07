@@ -1,8 +1,7 @@
 """
-vNEXT: forward-looking, operator-first interfaces and scaffolds.
+vNEXT backend modules.
 
-This package is intentionally small and dependency-light. Submodules are expected
-to define contracts (interfaces, dataclasses, enums) that other components can
-implement without pulling in heavy runtime dependencies.
+This package is intentionally small and interface-forward: new capabilities land
+here behind explicit contracts before integrating with production services.
 """
 
