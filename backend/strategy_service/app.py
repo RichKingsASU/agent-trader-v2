@@ -4,10 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from .routers import strategies, broker_accounts, paper_orders, trades
 
 from backend.common.agent_boot import configure_startup_logging
-from backend.observability.build_fingerprint import get_build_fingerprint
+from backend.observability.correlation import install_fastapi_correlation_middleware
 
 app = FastAPI(title="AgentTrader Strategy Service")
-logger = logging.getLogger(__name__)
+install_fastapi_correlation_middleware(app)
 
 # Startup identity/intent log (single JSON line).
 @app.on_event("startup")

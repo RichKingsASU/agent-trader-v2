@@ -11,8 +11,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.streams.alpaca_env import load_alpaca_env
-from backend.common.timeutils import parse_alpaca_timestamp
-from backend.observability.build_fingerprint import get_build_fingerprint
+from backend.time.providers import normalize_alpaca_timestamp
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -43,7 +42,7 @@ def upsert_bars(conn, sym, bars):
     if not bars: return 0
     rows = []
     for b in bars:
-        ts = parse_alpaca_timestamp(b["t"])
+        ts = normalize_alpaca_timestamp(b["t"])
         rows.append((sym, ts, b["o"], b["h"], b["l"], b["c"], b["v"]))
     try:
         with conn.cursor() as cur:

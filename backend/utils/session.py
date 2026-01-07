@@ -1,13 +1,13 @@
 # agenttrader/backend/utils/session.py
 from datetime import datetime, time
 
-from backend.common.timeutils import to_nyse_time
+from backend.time.nyse_time import to_nyse
 
 def get_market_session(timestamp_utc: datetime) -> str:
     """
     Classifies a UTC timestamp into a market session for America/New_York.
     """
-    ts_ny = to_nyse_time(timestamp_utc)
+    ts_ny = to_nyse(timestamp_utc)
     t_ny = ts_ny.time()
 
     pre_market_start = time(4, 0)

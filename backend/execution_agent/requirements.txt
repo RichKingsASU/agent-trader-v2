@@ -1,0 +1,4 @@
+# Execution Agent is intentionally minimal: stdlib-only.
+#
+# Keep this file for container build parity with other services.
+
