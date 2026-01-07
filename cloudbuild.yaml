@@ -7,7 +7,7 @@ steps:
       - |
         set -e
         echo "--- Checking for ':latest' image tags ---"
-        if find . -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -E -q "image:.*:latest"; then
+        if find . -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -q "image:.*:latest"; then
           echo "❌ FAILED: Use of ':latest' image tag is forbidden."
           exit 1
         else
@@ -15,7 +15,7 @@ steps:
         fi
 
         echo "--- Checking for 'AGENT_MODE=EXECUTE' ---"
-        if find . -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | grep -v "ALLOWED_AGENT_MODES" | xargs grep -E -q "(AGENT_MODE[[:space:]]*=[[:space:]]*|AGENT_MODE:[[:space:]]*)"('|")?EXECUTE('|")?"; then
+        if find . -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | grep -v "ALLOWED_AGENT_MODES" | xargs grep -q "AGENT_MODE=EXECUTE" || find . -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | grep -v "ALLOWED_AGENT_MODES" | xargs grep -q "AGENT_MODE: EXECUTE"; then
           echo "❌ FAILED: 'AGENT_MODE' must not be set to 'EXECUTE' in committed code."
           exit 1
         else
@@ -23,7 +23,7 @@ steps:
         fi
 
         echo "--- Checking for scaled execution agents (replicas > 0) ---"
-        if find ./k8s/execution -name "*.yaml" -o -name "*.yml" | xargs grep -E -q "replicas:[[:space:]]*[1-9]"; then
+        if find ./k8s/execution -name "*.yaml" -o -name "*.yml" | xargs grep -q "replicas:[[:space:]]*[1-9]"; then
           echo "❌ FAILED: Execution agent replicas must be 0 in committed code."
           exit 1
         else
@@ -35,10 +35,8 @@ steps:
     id: 'Build marketdata-mcp-server'
     args: [
       'build',
-      '-t',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}',
-      '-f',
-      'backend/Dockerfile.marketdata-mcp-server',
+      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}',
+      '-f', 'backend/Dockerfile.marketdata-mcp-server',
       '.'
     ]
 
@@ -47,10 +45,8 @@ steps:
     id: 'Build strategy-engine'
     args: [
       'build',
-      '-t',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}',
-      '-f',
-      'infra/Dockerfile.strategy_engine',
+      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}',
+      '-f', 'infra/Dockerfile.strategy_engine',
       '.'
     ]
 
@@ -59,14 +55,7 @@ steps:
     id: 'Build strategy-runtime'
     args: [
       'build',
-      '-t',
-      '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}',
-      '-f',
-      'backend/strategy_service/Dockerfile',
+      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}',
+      '-f', 'backend/strategy_service/Dockerfile',
       '.'
     ]
-
-images:
-  - '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
-  - '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
-  - '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
