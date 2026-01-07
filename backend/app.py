@@ -7,7 +7,7 @@ import json
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.kill_switch import get_kill_switch_state
-from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
+from backend.common.http_correlation import install_http_correlation
 
 from backend.common.marketdata_heartbeat import snapshot
 from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
@@ -21,8 +21,14 @@ async def startup_event():
         agent_name="marketdata-mcp-server",
         intent="Serve marketdata MCP endpoints and run the Alpaca streamer background task.",
     )
-    log_event("marketdata_streamer_starting")
+    enabled, source = get_kill_switch_state()
+    if enabled:
+        # Non-execution service: keep serving, but make it visible.
+        print(f"kill_switch_active enabled=true source={source}", flush=True)
+    print("Starting Alpaca streamer...")
     asyncio.create_task(alpaca_streamer_main())
+
+install_http_correlation(app, service="marketdata-mcp-server")
 
 @app.get("/")
 async def read_root():

@@ -24,3 +24,6 @@ exchange-calendars==4.6.0
 psycopg[binary]
 asyncpg==0.29.0
 psycopg2-binary==2.9.9
+
+# Testing
+pytest==8.3.4

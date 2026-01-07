@@ -1,21 +1,29 @@
-# Ops Documentation Index
+# AgentTrader v2 — Ops Documentation Index
 
-This folder contains **operational** documentation for running AgentTrader safely.
+This directory contains **institutional operations governance** for AgentTrader v2 (safety-first; execution disabled unless explicitly authorized).
 
-## Production Lock (v2)
+## Core “Go/No-Go” package
 
-- **Lock artifact**: `ops/PRODUCTION_LOCK.md`
-- **Validation script**: `scripts/validate_production_lock.sh`
-- **Tag helper**: `scripts/tag_production_lock.sh`
-- **Controlled unlock procedure**: documented in `ops/PRODUCTION_LOCK.md`
+- **Production Readiness Checklist (single source)**: [`go_no_go.md`](./go_no_go.md)
+- **Pre-Market Runbook**: [`runbooks/pre_market.md`](./runbooks/pre_market.md)
+- **Post-Market Runbook**: [`runbooks/post_market.md`](./runbooks/post_market.md)
+- **Deployment reporting (auditable snapshots)**: [`reporting.md`](./reporting.md)
 
-## Required ops documents (validated by lock checks)
+## Automation
 
-- `docs/ops/go_no_go.md`
-- `docs/ops/agent_mesh.md`
-- `docs/ops/audit_pack.md`
+- **Deterministic readiness gate**: `scripts/readiness_check.sh`
+  - Writes: `audit_artifacts/readiness_report.md` and `audit_artifacts/readiness_report.json`
+- **Deployed-state report**: `scripts/report_v2_deploy.sh`
+  - Writes: `audit_artifacts/deploy_report.md` and `audit_artifacts/deploy_report.json`
 
-## Reporting
+## Related references (repo-wide)
 
-- `docs/ops/reporting.md`
+- **Kill switch operations**: `docs/KILL_SWITCH.md`
+- **GCP deployment guide**: `docs/DEPLOY_GCP.md`
+- **Deploy script (includes guardrails)**: `scripts/deploy_v2.sh`
+
+## Optional docs (link here if/when added)
+
+- `deploy_guardrails.md` (not currently present)
+- `disaster_recovery.md` (not currently present)
 

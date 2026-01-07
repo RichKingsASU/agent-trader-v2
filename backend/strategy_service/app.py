@@ -1,6 +1,5 @@
-import os
 import logging
-from typing import Any
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,17 +11,7 @@ from backend.common.kill_switch import get_kill_switch_state
 app = FastAPI(title="AgentTrader Strategy Service")
 install_fastapi_correlation_middleware(app)
 
-# Startup identity/intent log (single JSON line).
-@app.on_event("startup")
-def _startup() -> None:
-    configure_startup_logging(
-        agent_name="strategy-service",
-        intent="Serve strategy management APIs (strategies, broker accounts, paper orders, trades).",
-    )
-    enabled, source = get_kill_switch_state()
-    if enabled:
-        # Non-execution service: keep serving, but make it visible in logs.
-        logger.warning("kill_switch_active enabled=true source=%s", source)
+install_http_correlation(app, service="strategy-service")
 
     enabled, source = get_kill_switch_state()
     if enabled:
