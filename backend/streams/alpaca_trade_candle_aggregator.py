@@ -11,7 +11,7 @@ import asyncpg
 from alpaca.data.enums import DataFeed
 from alpaca.data.live.stock import StockDataStream
 
-from backend.common.timeutils import ensure_aware_utc, utc_now
+from backend.time.nyse_time import ensure_aware_utc, utc_now
 from backend.marketdata.candles.aggregator import CandleAggregator
 from backend.marketdata.candles.models import EmittedCandle
 from backend.marketdata.candles.timeframes import SUPPORTED_TIMEFRAMES

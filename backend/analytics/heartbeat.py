@@ -11,6 +11,7 @@ from typing import Literal, Optional
 from google.cloud import firestore
 
 from backend.persistence.firebase_client import get_db
+from backend.time.nyse_time import to_utc
 
 
 HeartbeatStatus = Literal["healthy", "degraded", "down", "unknown"]
@@ -80,7 +81,7 @@ def check_heartbeat(
         
         # Calculate staleness
         now = datetime.now(timezone.utc)
-        last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc) if last_heartbeat.tzinfo is None else last_heartbeat
+        last_heartbeat = to_utc(last_heartbeat)
         delta = now - last_heartbeat
         seconds_since = delta.total_seconds()
         

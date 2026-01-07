@@ -19,15 +19,15 @@ Fee handling:
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Deque, Iterable, Mapping, Optional
 from collections import deque
 
+from backend.time.nyse_time import to_utc
+
 
 def _as_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    return to_utc(dt)
 
 
 @dataclass(slots=True)

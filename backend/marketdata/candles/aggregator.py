@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from backend.common.timeutils import UTC, ensure_aware_utc, parse_timestamp, utc_now
+from backend.time.nyse_time import UTC, ensure_aware_utc, parse_ts, utc_now
 from backend.marketdata.candles.models import EmittedCandle
 from backend.marketdata.candles.timeframes import Timeframe, bucket_range_utc, parse_timeframes
 
@@ -56,7 +56,7 @@ def _parse_trade_event(event: Any) -> tuple[str, datetime, float, int]:
     if not symbol_s:
         raise ValueError("empty symbol")
 
-    ts_utc = parse_timestamp(ts)
+    ts_utc = parse_ts(ts)
 
     p = float(price)
     s = int(size)
