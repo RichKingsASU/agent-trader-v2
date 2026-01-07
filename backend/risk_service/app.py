@@ -1,4 +1,9 @@
 import json
+
+from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
+
+_enforce_agent_mode_guard()
+
 from fastapi import FastAPI
 from .routers import risk_limits
 

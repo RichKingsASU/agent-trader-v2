@@ -52,7 +52,7 @@ spec:
           env:
             # Always keep execution disabled in this service.
             - name: AGENT_MODE
-              value: "DISABLED"
+              value: "OFF"
             - name: EXECUTION_HALTED
               valueFrom:
                 configMapKeyRef:
