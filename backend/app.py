@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 import asyncio
 import os
-from datetime import datetime, timezone
+import json
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.kill_switch import get_kill_switch_state
@@ -35,7 +35,13 @@ async def read_root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service_id": "agenttrader-prod-streamer"}
+    return {"status": "healthy", "service_id": "agenttrader-prod-streamer", **get_build_fingerprint()}
+
+
+@app.get("/healthz")
+async def healthz_check():
+    # Alias for institutional conventions.
+    return await health_check()
 
 @app.get("/ops/status")
 async def ops_status():

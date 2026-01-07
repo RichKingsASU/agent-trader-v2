@@ -1,15 +1,31 @@
 # Cloud Build configuration for Congressional Disclosure Ingestion service
 
 steps:
-  # Build the Docker image (deployment is handled via Kubernetes in us-east4).
-  - name: 'gcr.io/cloud-builders/docker'
+  # Capture a deterministic UTC build timestamp for downstream steps.
+  - name: gcr.io/cloud-builders/bash
+    entrypoint: bash
     args:
-      - 'build'
-      - '-f'
-      - 'infra/Dockerfile.congressional_ingest'
-      - '-t'
-      - 'gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA'
-      - '.'
+      - -ceu
+      - |
+        date -u +%Y-%m-%dT%H:%M:%SZ > /workspace/.build_time_utc
+
+  # Build the Docker image (deployment is handled via Kubernetes in us-east4).
+  - name: gcr.io/cloud-builders/bash
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        BUILD_TIME_UTC="$(cat /workspace/.build_time_utc)"
+        GIT_SHA="${COMMIT_SHA:-$SHORT_SHA}"
+        IMAGE_REF="gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA"
+        docker build \
+          -f infra/Dockerfile.congressional_ingest \
+          --build-arg GIT_SHA="${GIT_SHA}" \
+          --build-arg BUILD_ID="${BUILD_ID}" \
+          --build-arg BUILD_TIME_UTC="${BUILD_TIME_UTC}" \
+          --build-arg IMAGE_REF="${IMAGE_REF}" \
+          -t "${IMAGE_REF}" \
+          .
     id: 'build-image'
 
   # Push the image to GCR
@@ -20,27 +36,34 @@ steps:
     id: 'push-image-sha'
 
   # Deploy to Cloud Run
-  - name: 'gcr.io/cloud-builders/gcloud'
+  - name: gcr.io/cloud-builders/bash
+    entrypoint: bash
     args:
-      - 'run'
-      - 'deploy'
-      - 'congressional-ingest'
-      - '--image=gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA'
-      - '--platform=managed'
-      - '--region=us-central1'
-      - '--set-env-vars=TENANT_ID=${_TENANT_ID}'
-      - '--set-env-vars=NATS_URL=${_NATS_URL}'
-      - '--set-env-vars=POLL_INTERVAL_SECONDS=${_POLL_INTERVAL_SECONDS}'
-      - '--set-env-vars=LOOKBACK_DAYS=${_LOOKBACK_DAYS}'
-      - '--set-env-vars=GIT_SHA=$SHORT_SHA'
-      - '--update-secrets=QUIVER_API_KEY=quiver-api-key:latest'
-      - '--cpu=1'
-      - '--memory=512Mi'
-      - '--min-instances=1'
-      - '--max-instances=1'
-      - '--timeout=3600'
-      - '--no-cpu-throttling'
-      - '--no-allow-unauthenticated'
+      - -ceu
+      - |
+        BUILD_TIME_UTC="$(cat /workspace/.build_time_utc)"
+        GIT_SHA="${COMMIT_SHA:-$SHORT_SHA}"
+        IMAGE_REF="gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA"
+        gcloud run deploy congressional-ingest \
+          --image="${IMAGE_REF}" \
+          --platform=managed \
+          --region=us-central1 \
+          --set-env-vars="TENANT_ID=${_TENANT_ID}" \
+          --set-env-vars="NATS_URL=${_NATS_URL}" \
+          --set-env-vars="POLL_INTERVAL_SECONDS=${_POLL_INTERVAL_SECONDS}" \
+          --set-env-vars="LOOKBACK_DAYS=${_LOOKBACK_DAYS}" \
+          --set-env-vars="GIT_SHA=${GIT_SHA}" \
+          --set-env-vars="BUILD_ID=${BUILD_ID}" \
+          --set-env-vars="BUILD_TIME_UTC=${BUILD_TIME_UTC}" \
+          --set-env-vars="IMAGE_REF=${IMAGE_REF}" \
+          --update-secrets=QUIVER_API_KEY=quiver-api-key:latest \
+          --cpu=1 \
+          --memory=512Mi \
+          --min-instances=1 \
+          --max-instances=1 \
+          --timeout=3600 \
+          --no-cpu-throttling \
+          --no-allow-unauthenticated
     id: 'deploy-cloud-run'
 
 # Substitution variables (can be overridden at build time)

@@ -8,6 +8,7 @@ Supports both API-based ingestion (Quiver Quantitative) and scraping fallback.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -22,6 +23,7 @@ from backend.common.agent_boot import configure_startup_logging
 from backend.common.nats.subjects import market_subject
 from backend.common.schemas.codec import encode_message
 from backend.common.schemas.models import MarketEventV1
+from backend.observability.build_fingerprint import get_build_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -447,6 +449,14 @@ async def main():
         agent_name="congressional-ingest",
         intent="Ingest congressional trades and publish market events to NATS.",
     )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
     
     tenant_id = os.getenv("TENANT_ID", "local")
     nats_url = os.getenv("NATS_URL", "nats://localhost:4222")
