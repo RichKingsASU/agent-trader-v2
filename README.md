@@ -2,6 +2,67 @@
 
 AgentTrader is a monorepo for Alpaca market ingestion + a Lovable-generated UI, backed by Firebase (Firestore).
 
+## 🔒 Enforcement & Safety Guarantees (AgentTrader v2)
+
+AgentTrader v2 is a **production-locked, institutional trading platform**.
+All development, automation, and agent behavior is governed by the rules below.
+
+### 🚫 Execution Status
+- **Trading execution is DISABLED**
+- No broker APIs are called
+- Execution agents are permanently scaled to `0`
+- `AGENT_MODE=EXECUTE` is forbidden in all manifests
+
+### 🛑 Safety Controls
+- Global kill-switch defaults to SAFE
+- Marketdata staleness halts all strategy activity
+- No strategy may execute without explicit human authorization
+- All execution pathways are scaffold-only and disabled
+
+### 🧠 Agent Constraints
+Agents MAY:
+- Generate reports and audit artifacts
+- Emit strategy proposals (non-executing)
+- Run readiness and safety checks
+- Capture last-known-good snapshots
+- Perform read-only operational tasks
+
+Agents MUST NOT:
+- Change `AGENT_MODE`
+- Flip kill-switches
+- Deploy to production
+- Enable execution
+- Modify locked artifacts
+
+### 📋 Engineering Guarantees
+- No `:latest` images anywhere
+- Identity + intent logging is mandatory
+- All logs are structured JSON
+- All deploys are auditable and replayable
+- Fail-safe defaults are enforced everywhere
+
+### 🔐 Change Control
+Any action that would:
+- enable execution
+- weaken safety defaults
+- introduce new agents
+- modify kill-switch behavior
+
+**requires a formal unlock ceremony**, documented approvals, and a new production lock.
+
+### 🧾 Auditability
+The system continuously produces:
+- readiness reports
+- deploy reports
+- config snapshots
+- proposal logs
+- postmortem replays
+
+These artifacts form the system’s permanent audit trail.
+
+> **This repo is governed, not experimental.**
+> If a change cannot be explained to an auditor, it does not belong here.
+
 ## Repo layout
 
 - **`/backend`**: Python services + ingestion jobs
