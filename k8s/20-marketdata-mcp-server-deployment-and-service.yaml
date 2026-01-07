@@ -28,6 +28,14 @@ spec:
         - containerPort: 8080
           name: http
         env:
+          - name: REPO_ID
+            value: "agent-trader-v2"
+          - name: AGENT_NAME
+            value: "marketdata-mcp-server"
+          - name: AGENT_ROLE
+            value: "marketdata"
+          - name: AGENT_MODE
+            value: "OFF"
           - name: GIT_SHA
             valueFrom:
               fieldRef:

@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.observability.correlation import install_fastapi_correlation_middleware
 from backend.ingestion.market_data_ingest import (
     MarketDataIngestor,
     load_config_from_env,
@@ -17,6 +18,7 @@ from backend.ingestion.market_data_ingest import (
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AgentTrader Market Ingestion Service")
+install_fastapi_correlation_middleware(app)
 
 
 @app.get("/health")

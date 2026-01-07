@@ -5,10 +5,13 @@ import sys
 import os
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.observability.correlation import install_fastapi_correlation_middleware
+from backend.observability.logger import log_event
 
 from backend.streams.alpaca_quotes_streamer import main as alpaca_streamer_main
 
 app = FastAPI()
+install_fastapi_correlation_middleware(app)
 
 @app.on_event("startup")
 async def startup_event():
@@ -16,7 +19,7 @@ async def startup_event():
         agent_name="marketdata-mcp-server",
         intent="Serve marketdata MCP endpoints and run the Alpaca streamer background task.",
     )
-    print("Starting Alpaca streamer...")
+    log_event("marketdata_streamer_starting")
     asyncio.create_task(alpaca_streamer_main())
 
 @app.get("/")

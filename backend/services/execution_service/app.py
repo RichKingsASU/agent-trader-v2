@@ -26,6 +26,7 @@ from backend.execution.engine import (
 )
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.vertex_ai import init_vertex_ai_or_log
+from backend.observability.correlation import install_fastapi_correlation_middleware
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,7 @@ def _build_engine_from_env() -> tuple[ExecutionEngine, RiskManager]:
 
 
 app = FastAPI(title="AgentTrader Execution Engine")
+install_fastapi_correlation_middleware(app)
 
 @app.on_event("startup")
 def _startup() -> None:

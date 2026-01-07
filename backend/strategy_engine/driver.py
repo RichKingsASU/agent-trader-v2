@@ -1,9 +1,10 @@
 import asyncio
-import subprocess
 from datetime import date
 import argparse
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.observability.correlation import bind_correlation_id
+from backend.observability.logger import intent_start, intent_end, log_event
 
 from .config import config
 from .models import fetch_recent_bars, fetch_recent_options_flow
@@ -20,66 +21,113 @@ async def run_strategy(execute: bool):
     """
     Main function to run the strategy engine.
     """
+    execute_requested = bool(execute)
+    # Non-negotiable safety: never execute orders from this runtime.
+    if execute:
+        log_event(
+            "execution_suppressed",
+            level="WARNING",
+            reason="Strategy runtime execution is disabled by policy (audit-trail only).",
+        )
+        execute = False
+
     strategy_id = await get_or_create_strategy_definition(config.STRATEGY_NAME)
     today = date.today()
     
     print(f"Running strategy '{config.STRATEGY_NAME}' for {today}...")
 
+    cycle_ctx = intent_start(
+        "strategy_evaluation_cycle",
+        "Evaluate strategy signals for configured symbols.",
+        payload={
+            "strategy_name": config.STRATEGY_NAME,
+            "strategy_id": strategy_id,
+            "trade_date": str(today),
+            "symbols": list(config.STRATEGY_SYMBOLS),
+            "symbols_count": len(config.STRATEGY_SYMBOLS),
+            "execute_requested": execute_requested,
+            "execute_enabled": bool(execute),
+        },
+    )
+
     for symbol in config.STRATEGY_SYMBOLS:
-        print(f"Processing symbol: {symbol}")
+        with bind_correlation_id():
+            print(f"Processing symbol: {symbol}")
 
-        bars = await fetch_recent_bars(symbol, config.STRATEGY_BAR_LOOKBACK_MINUTES)
-        flow_events = await fetch_recent_options_flow(symbol, config.STRATEGY_FLOW_LOOKBACK_MINUTES)
+            bars = await fetch_recent_bars(symbol, config.STRATEGY_BAR_LOOKBACK_MINUTES)
+            flow_events = await fetch_recent_options_flow(symbol, config.STRATEGY_FLOW_LOOKBACK_MINUTES)
 
-        decision = make_decision(bars, flow_events)
-        action = decision.get("action")
+            decision = make_decision(bars, flow_events)
+            action = decision.get("action")
 
-        if action == "flat":
-            await log_decision(strategy_id, symbol, "flat", decision["reason"], decision["signal_payload"], False)
-            print(f"  Decision: flat. Reason: {decision['reason']}")
-            continue
+            sig_ctx = intent_start(
+                "signal_produced",
+                "Produced strategy signal (may be flat).",
+                payload={
+                    "strategy_name": config.STRATEGY_NAME,
+                    "strategy_id": strategy_id,
+                    "symbol": symbol,
+                    "action": action,
+                    "reason": decision.get("reason"),
+                    "signal_payload": decision.get("signal_payload") or {},
+                },
+            )
+            intent_end(sig_ctx, "success")
 
-        # Calculate notional
-        last_price = bars[0].close if bars else 0
-        notional = last_price * decision.get("size", 0)
+            if action == "flat":
+                await log_decision(strategy_id, symbol, "flat", decision["reason"], decision["signal_payload"], False)
+                print(f"  Decision: flat. Reason: {decision['reason']}")
+                continue
 
-        # Risk check
-        if not await can_place_trade(strategy_id, today, notional):
-            reason = "Risk limit exceeded."
-            await log_decision(strategy_id, symbol, action, reason, decision["signal_payload"], False)
-            print(f"  Decision: {action}, but trade blocked. Reason: {reason}")
-            continue
+            # Calculate notional
+            last_price = bars[0].close if bars else 0
+            notional = last_price * decision.get("size", 0)
+
+            # Risk check
+            risk_allowed = await can_place_trade(strategy_id, today, notional)
+            if not risk_allowed:
+                reason = "Risk limit exceeded."
+                proposal_ctx = intent_start(
+                    "order_proposal",
+                    "Would place order, but blocked by risk limits.",
+                    payload={
+                        "strategy_name": config.STRATEGY_NAME,
+                        "strategy_id": strategy_id,
+                        "symbol": symbol,
+                        "side": action,
+                        "size": decision.get("size", 0),
+                        "notional": notional,
+                        "reason": reason,
+                        "risk_allowed": False,
+                        "would_execute": False,
+                    },
+                )
+                intent_end(proposal_ctx, "success")
+
+                await log_decision(strategy_id, symbol, action, reason, decision["signal_payload"], False)
+                print(f"  Decision: {action}, but trade blocked. Reason: {reason}")
+                continue
             
-        print(f"  Decision: {action}. Reason: {decision['reason']}")
+            print(f"  Decision: {action}. Reason: {decision['reason']}")
 
-        if execute:
-            print(f"  Executing {action} order for 1 {symbol}...")
-            # Call the existing paper trade script
-            process = subprocess.run(
-                [
-                    "python",
-                    "backend/streams/manual_paper_trade.py",
-                    symbol,
-                    action,
-                    str(decision.get("size", 1)),
-                ],
-                capture_output=True,
-                text=True,
+            # Intent point: order proposal (never executing).
+            proposal_ctx = intent_start(
+                "order_proposal",
+                "Proposed order based on strategy decision (non-executing).",
+                payload={
+                    "strategy_name": config.STRATEGY_NAME,
+                    "strategy_id": strategy_id,
+                    "symbol": symbol,
+                    "side": action,
+                    "size": decision.get("size", 1),
+                    "notional": notional,
+                    "reason": decision.get("reason"),
+                    "risk_allowed": True,
+                    "would_execute": False,
+                },
             )
-            print(f"   manual_paper_trade.py stdout: {process.stdout}")
-            print(f"   manual_paper_trade.py stderr: {process.stderr}")
+            intent_end(proposal_ctx, "success")
 
-            # Record the trade
-            await record_trade(strategy_id, today, notional)
-            await log_decision(
-                strategy_id,
-                symbol,
-                action,
-                decision["reason"],
-                decision["signal_payload"],
-                True,
-            )
-        else:
             print("  Dry run mode, no trade executed.")
             await log_decision(
                 strategy_id,
@@ -89,6 +137,8 @@ async def run_strategy(execute: bool):
                 decision["signal_payload"],
                 False,
             )
+
+    intent_end(cycle_ctx, "success")
 
 
 if __name__ == "__main__":

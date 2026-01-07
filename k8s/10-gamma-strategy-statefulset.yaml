@@ -27,6 +27,14 @@ spec:
         - containerPort: 8080
           name: http
         env:
+          - name: REPO_ID
+            value: "agent-trader-v2"
+          - name: AGENT_NAME
+            value: "strategy-engine"
+          - name: AGENT_ROLE
+            value: "strategy_eval"
+          - name: AGENT_MODE
+            value: "OFF"
           - name: GIT_SHA
             valueFrom:
               fieldRef:
