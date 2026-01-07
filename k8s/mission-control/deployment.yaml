@@ -24,6 +24,7 @@ spec:
         app.kubernetes.io/instance: mission-control
         version: v2
     spec:
+      serviceAccountName: trading-floor-sa
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
