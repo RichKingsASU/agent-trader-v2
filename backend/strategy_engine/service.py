@@ -72,6 +72,7 @@ async def _startup() -> None:
     )
 
     app.state.shutting_down = False
+    app.state.ready = False
     app.state.loop_heartbeat_monotonic = time.monotonic()
 
     async def _loop_heartbeat() -> None:
@@ -79,15 +80,21 @@ async def _startup() -> None:
             app.state.loop_heartbeat_monotonic = time.monotonic()
             await asyncio.sleep(1.0)
 
-    async def _ready_log_once() -> None:
+    async def _initialize_readiness() -> None:
         """
-        Emit a single high-signal log line once /readyz would return 200.
+        Flip readiness only after full dependency init.
+
+        For this service, "ready" is defined as being able to evaluate the
+        safety gate successfully at least once (including a marketdata
+        heartbeat fetch).
         """
         while not getattr(app.state, "shutting_down", False):
             try:
                 status, _payload = await _current_state()
                 if status == "ok":
-                    print("SERVICE_READY: strategy-engine", flush=True)
+                    if not bool(getattr(app.state, "ready", False)):
+                        app.state.ready = True
+                        print("SERVICE_READY: strategy-engine", flush=True)
                     return
             except Exception:
                 # Keep retrying; readiness endpoint already reflects state.
@@ -95,7 +102,7 @@ async def _startup() -> None:
             await asyncio.sleep(2.0)
 
     app.state.loop_task = asyncio.create_task(_loop_heartbeat())
-    app.state.ready_log_task = asyncio.create_task(_ready_log_once())
+    app.state.init_task = asyncio.create_task(_initialize_readiness())
 
     # Background cycle loop (evaluation only; never enables execution).
     cycle_s = float(os.getenv("STRATEGY_CYCLE_SECONDS") or "30")
@@ -126,9 +133,9 @@ async def _shutdown() -> None:
 
     cycle_task: asyncio.Task | None = getattr(app.state, "cycle_task", None)
     loop_task: asyncio.Task | None = getattr(app.state, "loop_task", None)
-    ready_log_task: asyncio.Task | None = getattr(app.state, "ready_log_task", None)
+    init_task: asyncio.Task | None = getattr(app.state, "init_task", None)
 
-    for t in (cycle_task, loop_task, ready_log_task):
+    for t in (cycle_task, loop_task, init_task):
         if t is None:
             continue
         try:
@@ -136,7 +143,7 @@ async def _shutdown() -> None:
         except Exception:
             pass
 
-    for t in (cycle_task, loop_task, ready_log_task):
+    for t in (cycle_task, loop_task, init_task):
         if t is None:
             continue
         try:
@@ -159,8 +166,13 @@ async def healthz() -> dict[str, Any]:
 
 @app.get("/readyz")
 async def readyz(response: Response) -> dict[str, Any]:
+    ready = bool(getattr(app.state, "ready", False))
+    if not ready:
+        response.status_code = 503
+        return {"status": "not_ready", "identity": _identity()}
     status, payload = await _current_state()
     response.status_code = 200 if status == "ok" else 503
+    payload["ready"] = True
     return payload
 
 
