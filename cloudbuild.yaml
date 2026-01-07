@@ -1,14 +1,6 @@
-options:
-  env:
-    - WORKSPACE_ROOT=/workspace
-
+# This CI pipeline enforces institutional safety guarantees.
 steps:
-  - name: 'bash' # RISK: In Cloud Build, `name` is a *container image*, not a shell.
-                 # RISK: `bash` likely resolves to Docker Hub `bash:latest` (implicit `:latest`), which can fail early due to:
-                 # - Docker Hub rate limits / unauthenticated pull restrictions
-                 # - org policies restricting external registries
-                 # - image not existing / tag drift (un-pinned)
-                 # This is the #1 likely reason the build fails before any docker build/push (IMAGES: -).
+  - name: 'gcr.io/cloud-builders/bash'
     id: 'Safety Guard'
     entrypoint: 'bash' # RISK: Assumes the container image has `bash` in PATH; if `name: bash` pulls a minimal image, this can be "exec: bash: not found".
     args:
@@ -140,21 +132,12 @@ steps:
             "replicas:[[:space:]]*[1-9]" \
             "${EXECUTION_YAMLS[@]}"
         fi
+        echo "✅ PASSED: No execution agents found with replicas > 0."
 
-  - name: 'python:3.11'
+  - name: 'python:3.11-slim'
     id: 'Smoke check Python imports (pre-docker)'
     entrypoint: 'bash'
-    args:
-      - -ceu
-      - |
-        echo "--- Smoke check: import critical Python modules (no secrets) ---"
-        python --version
-        python -m pip install --upgrade pip
-        python -m pip install -r backend/requirements.txt
-        python scripts/smoke_check_imports.py || {
-          echo "❌ Import smoke check failed (see errors above)." >&2
-          exit 1
-        }
+    args: ["-c", "python scripts/smoke_check_imports.py"]
 
   # Build and push marketdata-mcp-server
   - name: 'gcr.io/cloud-builders/docker'
@@ -170,10 +153,12 @@ steps:
     id: 'Import gate marketdata-mcp-server'
     entrypoint: 'bash'
     args:
-      - -ceu
+      - "-c"
       - |
+        set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
-        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.app
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.app
 
   # Build and push strategy-engine
   - name: 'gcr.io/cloud-builders/docker'
@@ -189,10 +174,12 @@ steps:
     id: 'Import gate strategy-engine'
     entrypoint: 'bash'
     args:
-      - -ceu
+      - "-c"
       - |
+        set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
-        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.strategy_engine.service
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_engine.service
 
   # Build and push strategy-runtime (used by gamma and whale strategies)
   - name: 'gcr.io/cloud-builders/docker'
@@ -208,7 +195,9 @@ steps:
     id: 'Import gate strategy-runtime'
     entrypoint: 'bash'
     args:
-      - -ceu
+      - "-c"
       - |
+        set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
-        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.strategy_service.app
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
