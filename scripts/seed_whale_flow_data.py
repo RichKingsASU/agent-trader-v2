@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from google.cloud import firestore
 
+from backend.time.nyse_time import utc_now
+
 # Sample symbols
 SYMBOLS = ["SPY", "QQQ", "IWM", "AAPL", "TSLA", "NVDA", "MSFT", "AMZN", "GOOGL", "META"]
 
@@ -63,7 +65,7 @@ def generate_random_trade(symbol: str, base_price: float) -> dict:
     
     # Days to expiry (0-60 days)
     days_to_expiry = random.randint(0, 60)
-    expiry_date = datetime.utcnow() + timedelta(days=days_to_expiry)
+    expiry_date = utc_now() + timedelta(days=days_to_expiry)
     expiry_str = expiry_date.strftime("%m/%d")
     
     # Calculate moneyness
@@ -102,7 +104,7 @@ def generate_random_trade(symbol: str, base_price: float) -> dict:
     
     # Timestamp (recent trades)
     minutes_ago = random.randint(0, 60)
-    timestamp = datetime.utcnow() - timedelta(minutes=minutes_ago)
+    timestamp = utc_now() - timedelta(minutes=minutes_ago)
     
     return {
         "symbol": symbol,
@@ -143,7 +145,7 @@ def generate_golden_sweep(symbol: str, base_price: float) -> dict:
     
     # Less than 14 days to expiry
     days_to_expiry = random.randint(1, 13)
-    expiry_date = datetime.utcnow() + timedelta(days=days_to_expiry)
+    expiry_date = utc_now() + timedelta(days=days_to_expiry)
     expiry_str = expiry_date.strftime("%m/%d")
     
     # Strike close to ATM for golden sweeps
@@ -171,7 +173,7 @@ def generate_golden_sweep(symbol: str, base_price: float) -> dict:
     
     # Recent timestamp
     minutes_ago = random.randint(0, 30)
-    timestamp = datetime.utcnow() - timedelta(minutes=minutes_ago)
+    timestamp = utc_now() - timedelta(minutes=minutes_ago)
     
     return {
         "symbol": symbol,
@@ -256,7 +258,7 @@ def seed_data(tenant_id: str, num_trades: int = 50, num_golden_sweeps: int = 5):
     gex_status = {
         "net_gex": random.uniform(-5000000, 5000000),
         "volatility_bias": random.choice(["Bullish", "Bearish", "Neutral"]),
-        "timestamp": datetime.utcnow(),
+        "timestamp": utc_now(),
     }
     
     ops_ref.set(gex_status)
