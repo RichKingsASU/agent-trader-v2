@@ -4,12 +4,9 @@ metadata:
   name: whale-strategy
   namespace: trading-floor
   labels:
-    agenttrader.dev/repo_id: agent-trader-v2
-    app.kubernetes.io/part-of: agent-trader-v2
-    app.kubernetes.io/version: 54afffe
-  annotations:
-    agenttrader.dev/git_sha: "__GIT_SHA__"
-    agenttrader.dev/build_id: "__BUILD_ID__"
+    app.kubernetes.io/name: whale-strategy
+    app.kubernetes.io/component: strategy-runtime
+    app.kubernetes.io/part-of: agenttrader-v2
 spec:
   serviceName: "whale-strategy"
   replicas: 1
@@ -20,7 +17,11 @@ spec:
     metadata:
       labels:
         strategy: whale
-        agenttrader.dev/repo_id: agent-trader-v2
+        app.kubernetes.io/name: whale-strategy
+        app.kubernetes.io/component: strategy-runtime
+        app.kubernetes.io/part-of: agenttrader-v2
+        git_sha: a2466ec
+        app.kubernetes.io/name: agenttrader
         app.kubernetes.io/part-of: agent-trader-v2
         app.kubernetes.io/version: 54afffe
         git_sha: 54afffe
@@ -41,19 +42,21 @@ spec:
         - containerPort: 8080
           name: http
         readinessProbe:
-          tcpSocket:
-            port: 8080
+          httpGet:
+            path: /healthz
+            port: http
           initialDelaySeconds: 5
-          periodSeconds: 5
-          timeoutSeconds: 2
-          failureThreshold: 6
-        livenessProbe:
-          tcpSocket:
-            port: 8080
-          initialDelaySeconds: 10
           periodSeconds: 10
           timeoutSeconds: 2
           failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 20
+          timeoutSeconds: 2
+          failureThreshold: 3
         env:
           - name: REPO_ID
             value: "agent-trader-v2"

@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ops-to-core-http
+  namespace: trading-floor
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: agenttrader-v2
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Label any ops/reporting pod with: app.kubernetes.io/component=ops
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: ops
+      ports:
+        - protocol: TCP
+          port: 8080
+

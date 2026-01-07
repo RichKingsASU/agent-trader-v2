@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Request
 from typing import List
 from uuid import UUID, uuid4
 import requests
+import os
 from google.cloud import firestore
 from pydantic import BaseModel
 
@@ -15,6 +16,8 @@ from backend.tenancy.paths import tenant_collection
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
 COLLECTION_STRATEGIES = "strategies"
+RISK_SERVICE_URL = os.getenv("RISK_SERVICE_URL", "http://127.0.0.1:8002")
+
 class PaperOrderSimulateRequest(BaseModel):
     broker_account_id: UUID
     strategy_id: UUID
@@ -103,7 +106,7 @@ def simulate_order(payload: PaperOrderSimulateRequest, request: Request):
     
     try:
         response = requests.post(
-            "http://127.0.0.1:8002/risk/check-trade",
+            f"{RISK_SERVICE_URL}/risk/check-trade",
             json=risk_check_payload,
             headers={"Authorization": request.headers.get("Authorization", "")},
         )
