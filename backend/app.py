@@ -1,11 +1,6 @@
 import os as _os
 
-from backend.common.config_contract import validate_or_exit as _validate_or_exit
-
-# Fail-fast env contract validation (must run before other backend imports).
-_validate_or_exit("marketdata-mcp-server")
-
-_enforce_agent_mode_guard()
+_log_runtime_fingerprint(service="marketdata-mcp-server")
 
 import asyncio
 import os
@@ -113,6 +108,7 @@ async def startup_event() -> None:
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     app.state.shutting_down = True
+    app.state.ready = False
     try:
         app.state.ops_logger.shutdown(phase="initiated")  # type: ignore[attr-defined]
     except Exception:
@@ -131,13 +127,14 @@ async def shutdown_event() -> None:
         except Exception:
             pass
 
-    for t in (ready_task, stream_task, loop_task):
-        if t is None:
-            continue
-        try:
-            await t
-        except Exception:
-            pass
+    tasks = [t for t in (ready_task, stream_task, loop_task) if t is not None]
+    if not tasks:
+        return
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10.0)
+    except Exception:
+        # Best-effort; never hang shutdown.
+        pass
 
 
 @app.get("/")
