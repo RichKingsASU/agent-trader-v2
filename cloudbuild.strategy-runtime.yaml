@@ -1,10 +1,13 @@
 steps:
   - name: 'bash'
     id: 'Safety Guard'
-    entrypoint: '/bin/sh'
+    entrypoint: bash
     args:
-      - '-c'
-      - './scripts/ci_safety_guard.sh'
+      - "-c"
+      - |
+        set -euo pipefail
+        chmod +x ./scripts/ci_safety_guard.sh
+        ./scripts/ci_safety_guard.sh
   - name: gcr.io/cloud-builders/docker
     id: 'Build strategy-runtime'
     args:
@@ -21,9 +24,11 @@ steps:
     id: 'Import gate strategy-runtime'
     entrypoint: 'bash'
     args:
-      - -ceu
+      - "-c"
       - |
+        set -euo pipefail
         IMAGE_REF="${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}"
-        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
 images:
 - "${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}"

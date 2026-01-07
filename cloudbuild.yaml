@@ -28,7 +28,12 @@ steps:
         echo "===== PHASE 2: safety guard ====="
 
         echo "--- Checking for ':latest' image tags ---"
-        if find "${WORKSPACE_ROOT}" -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -q "image:.*:latest"; then
+        # RISK: Depends on core utilities existing in the container (`find`, `grep`, `xargs`). If the `bash` image lacks these, this will fail immediately.
+        # RISK: `find . -name "*.yaml" -o -name "*.yml"` has no parentheses and no `-type f`; it may emit directories or unexpected matches in edge cases.
+        # RISK: `grep -v "cloudbuild"` filters by substring anywhere in the path; it may exclude more than intended if a directory/file contains "cloudbuild".
+        # RISK: `xargs grep ...` with *no input* can invoke `grep` with no args (exit 2). In bash, failures inside `if <pipeline>; then` don't trip `set -e`,
+        #       so this can silently turn the check into a no-op while still emitting confusing stderr.
+        if find . -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -q "image:.*:latest"; then
           echo "❌ FAILED: Use of ':latest' image tag is forbidden."
           exit 1
         else
@@ -39,6 +44,10 @@ steps:
         AGENT_MODE_EXECUTE_FOUND=0
         find "${WORKSPACE_ROOT}" -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | while read FILE_VAR;
         do
+          # RISK: The `while ...; do ... done` is fed by a pipeline, so in bash it runs in a subshell.
+          #       Any changes to `AGENT_MODE_EXECUTE_FOUND` inside the loop will *not* propagate to the parent shell,
+          #       making the post-loop `if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]` check ineffective.
+          #       (This is more of a safety-gap than an early-failure cause, but it can hide real violations.)
           if [ -f "$$FILE_VAR" ]; then
             while read LINE_VAR;
             do
@@ -67,7 +76,10 @@ steps:
         fi
 
         echo "--- Checking for scaled execution agents (replicas > 0) ---"
-        if find "${WORKSPACE_ROOT}/k8s/execution" -name "*.yaml" -o -name "*.yml" | xargs grep -q "replicas:[[:space:]]*[1-9]"; then
+        # RISK: Repo currently has no `./k8s/execution/` directory, so `find` will emit "No such file or directory" on stderr and return nonzero.
+        #       In an `if` condition, bash won't exit on that despite `set -e`, so this check becomes a no-op (and can look like a failure in logs).
+        # RISK: Same `xargs` empty-input caveat as above.
+        if find ./k8s/execution -name "*.yaml" -o -name "*.yml" | xargs grep -q "replicas:[[:space:]]*[1-9]"; then
           echo "❌ FAILED: Execution agent replicas must be 0 in committed code."
           exit 1
         else
@@ -112,10 +124,12 @@ steps:
     waitFor: ['PHASE 3: import smoke']
     entrypoint: 'bash'
     args:
-      - -ceu
+      - "-c"
       - |
+        set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
-        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.app
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.app
 
   # Build and push strategy-engine
   - name: 'gcr.io/cloud-builders/docker'
@@ -135,10 +149,12 @@ steps:
     waitFor: ['Build strategy-engine']
     entrypoint: 'bash'
     args:
-      - -ceu
+      - "-c"
       - |
+        set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
-        sh "${WORKSPACE_ROOT}/scripts/ci_import_gate.sh" "${IMAGE_REF}" backend.strategy_engine.service
+        chmod +x ./scripts/ci_import_gate.sh
+        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_engine.service
 
   # Build and push strategy-runtime (used by gamma and whale strategies)
   - name: 'gcr.io/cloud-builders/docker'
@@ -158,8 +174,9 @@ steps:
     waitFor: ['Build strategy-runtime']
     entrypoint: 'bash'
     args:
-      - -ceu
+      - "-c"
       - |
+        set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
         sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
 
