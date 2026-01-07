@@ -20,6 +20,7 @@ from backend.ingestion.firebase_writer import FirebaseWriter, FirestorePaths
 from backend.ingestion.rate_limit import Backoff, TokenBucket
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.observability.build_fingerprint import get_build_fingerprint
 
 
@@ -529,6 +530,7 @@ def load_config_from_env() -> IngestConfig:
 
 
 async def _amain() -> int:
+    enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="market-data-ingest",
         intent="Continuously ingest stock quotes from Alpaca and write latest snapshots to Firestore.",

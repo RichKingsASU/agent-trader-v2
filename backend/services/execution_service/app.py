@@ -31,6 +31,7 @@ from backend.execution.engine import (
     OrderIntent,
     RiskManager,
 )
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.kill_switch import get_kill_switch_state
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.observability.correlation import install_fastapi_correlation_middleware
@@ -104,20 +105,7 @@ install_fastapi_correlation_middleware(app)
 
 @app.on_event("startup")
 def _startup() -> None:
-    # Fail fast if environment is unsafe.
-    validate_required_env_or_exit(
-        required=("REPO_ID", "AGENT_NAME", "AGENT_ROLE", "AGENT_MODE", "EXECUTION_ENABLED"),
-        intent_type="execution_service_startup_refused",
-    )
-    validate_agent_mode_or_exit(
-        allowed={"OFF", "OBSERVE", "EXECUTE", "DISABLED", "WARMUP", "LIVE", "HALTED"},
-        intent_type="execution_service_startup_refused",
-    )
-    validate_flag_exact_false_or_exit(
-        var_name="EXECUTION_ENABLED",
-        intent_type="execution_service_startup_refused",
-    )
-
+    enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="execution-engine",
         intent="Serve the execution API; validate config and execute broker order intents.",

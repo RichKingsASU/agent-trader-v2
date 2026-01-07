@@ -17,6 +17,9 @@ from typing import Any
 from fastapi import FastAPI, Response
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
+from backend.safety.config import load_kill_switch, load_stale_threshold_seconds
+from backend.safety.safety_state import evaluate_safety_state, is_safe_to_run_strategies
 
 from .driver import run_strategy
 
@@ -34,6 +37,7 @@ def _identity() -> dict[str, Any]:
 
 @app.on_event("startup")
 async def _startup() -> None:
+    enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="strategy-engine",
         intent="Serve strategy-engine health endpoints and run strategy cycles with fail-closed safety gating.",

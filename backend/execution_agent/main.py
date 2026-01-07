@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.kill_switch import get_kill_switch_state
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.execution_agent.gating import enforce_startup_gate_or_exit
 from backend.trading.execution.decider import decide_execution
 from backend.trading.execution.models import SafetySnapshot
@@ -173,6 +174,9 @@ def iter_ndjson_follow(*, path: Path, start_at_end: bool, poll_interval_s: float
 
 def main() -> None:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
+
+    # Runtime safety guard: refuse EXECUTE (and require explicit mode).
+    enforce_agent_mode_guard()
 
     # Absolute safety boundary: refuse to start unless the hard gate passes.
     enforce_startup_gate_or_exit()

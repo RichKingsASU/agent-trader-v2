@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.http_correlation import install_http_correlation
 from backend.common.ops_metrics import REGISTRY, agent_start_total, errors_total, mark_activity, update_marketdata_heartbeat_metrics
 from backend.streams.alpaca_quotes_streamer import get_last_marketdata_ts, main as alpaca_streamer_main
@@ -43,6 +44,7 @@ def _identity() -> dict[str, Any]:
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="marketdata-mcp-server",
         intent="Serve marketdata MCP endpoints and run the Alpaca streamer background task.",
