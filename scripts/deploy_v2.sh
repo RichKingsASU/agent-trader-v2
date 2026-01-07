@@ -1,148 +1,80 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# =========================
-# AgentTrader v2 Deploy Guard
-# Refuses to run outside v2
-# =========================
+# Deterministic deploy wrapper for AgentTrader v2.
+# - runs pre-deploy guardrails (fail-fast)
+# - applies k8s manifests
+# - waits for rollout on v2 workloads
+# - runs report script if present
 
-REQUIRED_REPO_ID="${REQUIRED_REPO_ID:-agent-trader-v2}"
-REQUIRED_REMOTE_SUBSTR="${REQUIRED_REMOTE_SUBSTR:-RichKingsASU/agent-trader-v2}"
+NS="default"
+K8S_DIR="k8s/"
+PROJECT=""
+EXPECTED_CONTEXT=""
+ALLOW_UNKNOWN_IMAGES="0"
+
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/deploy_v2.sh [options]
+
+Options:
+  --namespace <ns>            Kubernetes namespace (default: "default")
+  --k8s-dir <dir>             Manifests directory (default: "k8s/")
+  --project <gcp-project-id>   Optional GCP project id (passed to guard)
+  --expected-context <ctx>     Expected kubectl context (passed to guard)
+  --allow-unknown-images       Allow images that cannot be validated (NOT recommended)
+  -h, --help                   Show help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --namespace) NS="${2:?}"; shift 2;;
+    --k8s-dir) K8S_DIR="${2:?}"; shift 2;;
+    --project) PROJECT="${2:?}"; shift 2;;
+    --expected-context) EXPECTED_CONTEXT="${2:?}"; shift 2;;
+    --allow-unknown-images) ALLOW_UNKNOWN_IMAGES="1"; shift 1;;
+    -h|--help) usage; exit 0;;
+    *) echo "ERROR: Unknown arg: $1" >&2; usage; exit 2;;
+  esac
+done
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "${ROOT}" ]]; then
-  echo "ERROR: Not inside a git repository. Refusing to deploy."
+  echo "ERROR: Not inside a git repository. Refusing."
   exit 1
 fi
-
 cd "${ROOT}"
 
-if [[ ! -f ".repo_id" ]]; then
-  echo "ERROR: Missing .repo_id at repo root. Refusing to deploy."
-  echo "Fix: create .repo_id containing exactly: ${REQUIRED_REPO_ID}"
-  exit 1
-fi
+guard_args=(--namespace "${NS}" --k8s-dir "${K8S_DIR}")
+if [[ -n "${PROJECT}" ]]; then guard_args+=(--project "${PROJECT}"); fi
+if [[ -n "${EXPECTED_CONTEXT}" ]]; then guard_args+=(--expected-context "${EXPECTED_CONTEXT}"); fi
+if [[ "${ALLOW_UNKNOWN_IMAGES}" == "1" ]]; then guard_args+=(--allow-unknown-images); fi
 
-REPO_ID="$(tr -d ' \n\r\t' < .repo_id)"
-if [[ "${REPO_ID}" != "${REQUIRED_REPO_ID}" ]]; then
-  echo "ERROR: .repo_id mismatch. Expected '${REQUIRED_REPO_ID}', got '${REPO_ID}'. Refusing."
-  exit 1
-fi
-
-ORIGIN_URL="$(git remote get-url origin 2>/dev/null || true)"
-if [[ "${ORIGIN_URL}" != *"${REQUIRED_REMOTE_SUBSTR}"* ]]; then
-  echo "ERROR: origin remote is not ${REQUIRED_REMOTE_SUBSTR}. Refusing."
-  echo "origin: ${ORIGIN_URL}"
-  exit 1
-fi
-
-# Refuse dirty deploys unless explicitly allowed
-if [[ "${ALLOW_DIRTY_DEPLOY:-0}" != "1" ]] && [[ -n "$(git status --porcelain)" ]]; then
-  echo "ERROR: Working tree is dirty. Commit or stash first. Refusing."
-  echo ""
-  git status --porcelain
-  exit 1
-fi
-
-REF="${REF:-HEAD}"
-SHA="$(git rev-parse --short "${REF}")"
-
-# Defaults (override via env)
-PROJECT="${PROJECT:-agenttrader-prod}"
-REGION="${REGION:-us-east4}"
-REPO="${REPO:-trader-repo}"
-NS="${NS:-trading-floor}"
-
-echo "== Deploying AgentTrader v2 =="
-echo "repo_root: ${ROOT}"
-echo "repo_id:   ${REPO_ID}"
-echo "origin:    ${ORIGIN_URL}"
-echo "project:   ${PROJECT}"
-echo "region:    ${REGION}"
-echo "repo:      ${REPO}"
-echo "namespace: ${NS}"
-echo "ref:       ${REF}"
-echo "sha:       ${SHA}"
-echo ""
-
-for bin in git gcloud kubectl; do
-  if ! command -v "${bin}" >/dev/null 2>&1; then
-    echo "ERROR: Missing required binary '${bin}' in PATH. Refusing."
-    exit 1
-  fi
-done
-
-# Require gcloud auth
-if ! gcloud auth list --filter=status:ACTIVE --format="value(account)" | grep -q .; then
-  echo "ERROR: No active gcloud account. Run: gcloud auth login"
-  exit 1
-fi
-
-if [[ ! -d "k8s" ]]; then
-  echo "ERROR: Missing ./k8s directory at repo root. Refusing."
-  exit 1
-fi
-
-for cfg in cloudbuild.mcp.yaml cloudbuild.strategy-runtime.yaml cloudbuild.strategy-engine.yaml; do
-  if [[ ! -f "${cfg}" ]]; then
-    echo "ERROR: Missing required Cloud Build config: ${cfg}. Refusing."
-    exit 1
-  fi
-done
-
-# Build + push images (Cloud Build configs assumed present)
-echo "== Cloud Build: marketdata-mcp-server =="
-gcloud builds submit \
-  --config cloudbuild.mcp.yaml \
-  --substitutions=_REGION="${REGION}",_PROJECT="${PROJECT}",_REPO="${REPO}",_TAG="${SHA}" \
-  .
-
-echo "== Cloud Build: strategy-runtime =="
-gcloud builds submit \
-  --config cloudbuild.strategy-runtime.yaml \
-  --substitutions=_REGION="${REGION}",_PROJECT="${PROJECT}",_REPO="${REPO}",_TAG="${SHA}" \
-  .
-
-echo "== Cloud Build: strategy-engine =="
-gcloud builds submit \
-  --config cloudbuild.strategy-engine.yaml \
-  --substitutions=_REGION="${REGION}",_PROJECT="${PROJECT}",_REPO="${REPO}",_TAG="${SHA}" \
-  .
-
-# Apply K8s manifests (assumes k8s/ contains the deploy YAML)
-echo "== kubectl apply k8s/ =="
-kubectl apply -f k8s/
-
-# Pin images to this SHA (never "latest" in prod)
-echo "== Pin images to SHA ${SHA} =="
-
-if kubectl -n "${NS}" get deploy marketdata-mcp-server >/dev/null 2>&1; then
-  kubectl -n "${NS}" set image deploy/marketdata-mcp-server \
-    marketdata-mcp-server-container="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/marketdata-mcp-server:${SHA}"
-fi
-
-if kubectl -n "${NS}" get deploy strategy-engine >/dev/null 2>&1; then
-  kubectl -n "${NS}" set image deploy/strategy-engine \
-    strategy-engine="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/strategy-engine:${SHA}"
-fi
-
-# Strategy workloads in this repo are StatefulSets.
-if kubectl -n "${NS}" get statefulset gamma-strategy >/dev/null 2>&1; then
-  kubectl -n "${NS}" set image statefulset/gamma-strategy \
-    gamma-strategy-container="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/strategy-runtime:${SHA}"
-fi
-
-if kubectl -n "${NS}" get statefulset whale-strategy >/dev/null 2>&1; then
-  kubectl -n "${NS}" set image statefulset/whale-strategy \
-    whale-strategy-container="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/strategy-runtime:${SHA}"
-fi
-
-echo "== Rollout status =="
-kubectl -n "${NS}" rollout status deploy/marketdata-mcp-server --timeout=300s || true
-kubectl -n "${NS}" rollout status deploy/strategy-engine --timeout=300s || true
-kubectl -n "${NS}" rollout status statefulset/gamma-strategy --timeout=300s || true
-kubectl -n "${NS}" rollout status statefulset/whale-strategy --timeout=300s || true
+./scripts/predeploy_guard.sh "${guard_args[@]}"
 
 echo ""
-echo "✅ Deploy script finished."
-echo "Next: kubectl -n ${NS} get pods -o wide"
+echo "== kubectl apply (${K8S_DIR}) =="
+kubectl apply -f "${K8S_DIR}"
+
+echo ""
+echo "== rollout status (app.kubernetes.io/part-of=agent-trader-v2) =="
+resources="$(kubectl -n "${NS}" get deploy,statefulset -l app.kubernetes.io/part-of=agent-trader-v2 -o name 2>/dev/null || true)"
+if [[ -z "${resources}" ]]; then
+  echo "WARN: No deployments/statefulsets found with label app.kubernetes.io/part-of=agent-trader-v2 in namespace ${NS}"
+else
+  while IFS= read -r r; do
+    [[ -z "${r}" ]] && continue
+    echo "kubectl -n ${NS} rollout status ${r}"
+    kubectl -n "${NS}" rollout status "${r}" --timeout=300s
+  done <<< "${resources}"
+fi
+
+echo ""
+if [[ -x "./scripts/report_v2_deploy.sh" ]]; then
+  echo "== report_v2_deploy =="
+  ./scripts/report_v2_deploy.sh || true
+else
+  echo "== report_v2_deploy =="
+  echo "INFO: ./scripts/report_v2_deploy.sh not found or not executable (skipping)"
+fi

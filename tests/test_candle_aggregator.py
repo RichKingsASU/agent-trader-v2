@@ -1,48 +1,37 @@
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 from backend.marketdata.candles.aggregator import CandleAggregator
+from backend.marketdata.candles.models import Tick
 
 
-def _e(symbol: str, ts: dt.datetime, price: float, size: int) -> dict:
-    return {"symbol": symbol, "timestamp": ts, "price": price, "size": size}
+NY = ZoneInfo("America/New_York")
 
 
 def _utc(y, m, d, hh, mm, ss) -> dt.datetime:
     return dt.datetime(y, m, d, hh, mm, ss, tzinfo=dt.timezone.utc)
 
 
+def _ny_to_utc(y, m, d, hh, mm, ss) -> dt.datetime:
+    return dt.datetime(y, m, d, hh, mm, ss, tzinfo=NY).astimezone(dt.timezone.utc)
+
+
 def test_ohlcv_math_and_rollover_final():
-    agg = CandleAggregator(timeframes=["1m"], lateness_seconds=5)
+    agg = CandleAggregator(timeframes=["1m"], max_lateness_seconds=2)
 
-    out1 = agg.ingest(_e("SPY", _utc(2025, 12, 20, 12, 0, 5), 100.0, 10))
-    assert len(out1) == 1
-    assert out1[0].is_final is False
-    assert out1[0].open == 100.0
-    assert out1[0].high == 100.0
-    assert out1[0].low == 100.0
-    assert out1[0].close == 100.0
-    assert out1[0].volume == 10
+    # 09:30 NY minute
+    assert agg.ingest_tick(Tick(ts=_ny_to_utc(2025, 12, 20, 9, 30, 5), price=100.0, size=10, symbol="SPY")) == []
+    assert (
+        agg.ingest_tick(Tick(ts=_ny_to_utc(2025, 12, 20, 9, 30, 59), price=101.0, size=5, symbol="SPY")) == []
+    )
 
-    out2 = agg.ingest(_e("SPY", _utc(2025, 12, 20, 12, 0, 59), 101.0, 5))
-    assert len(out2) == 1
-    assert out2[0].is_final is False
-    assert out2[0].open == 100.0
-    assert out2[0].high == 101.0
-    assert out2[0].low == 100.0
-    assert out2[0].close == 101.0
-    assert out2[0].volume == 15
-
-    # New bucket => rollover emits a final for 12:00 plus an update for 12:01.
-    out3 = agg.ingest(_e("SPY", _utc(2025, 12, 20, 12, 1, 3), 102.0, 1))
-    assert len(out3) == 2
-    finals = [c for c in out3 if c.is_final]
-    updates = [c for c in out3 if not c.is_final]
-    assert len(finals) == 1
-    assert len(updates) == 1
-
-    f = finals[0]
-    assert f.ts_start_utc == _utc(2025, 12, 20, 12, 0, 0)
-    assert f.ts_end_utc == _utc(2025, 12, 20, 12, 1, 0)
+    # Advance watermark into next minute (+ lateness) -> finalize 09:30 candle.
+    out = agg.ingest_tick(Tick(ts=_ny_to_utc(2025, 12, 20, 9, 31, 3), price=102.0, size=1, symbol="SPY"))
+    assert len(out) == 1
+    f = out[0]
+    assert f.is_final is True
+    assert f.start_ts == _ny_to_utc(2025, 12, 20, 9, 30, 0)
+    assert f.end_ts == _ny_to_utc(2025, 12, 20, 9, 31, 0)
     assert f.open == 100.0
     assert f.high == 101.0
     assert f.low == 100.0
@@ -51,34 +40,30 @@ def test_ohlcv_math_and_rollover_final():
 
 
 def test_lateness_update_within_window_and_drop_beyond_window():
-    agg = CandleAggregator(timeframes=["1m"], lateness_seconds=5)
+    agg = CandleAggregator(timeframes=["1m"], max_lateness_seconds=5)
 
-    agg.ingest(_e("SPY", _utc(2025, 12, 20, 12, 0, 5), 100.0, 1))
-    agg.ingest(_e("SPY", _utc(2025, 12, 20, 12, 0, 59), 101.0, 1))
+    assert agg.ingest_tick(Tick(ts=_ny_to_utc(2025, 12, 20, 9, 30, 5), price=100.0, size=1, symbol="SPY")) == []
+    assert agg.ingest_tick(Tick(ts=_ny_to_utc(2025, 12, 20, 9, 30, 59), price=101.0, size=1, symbol="SPY")) == []
 
-    # Advance watermark into next minute.
-    out3 = agg.ingest(_e("SPY", _utc(2025, 12, 20, 12, 1, 3), 102.0, 1))
-    assert any(c.is_final for c in out3)
+    # Advance watermark, but not far enough to finalize 09:30 yet (lateness=5s).
+    assert agg.ingest_tick(Tick(ts=_ny_to_utc(2025, 12, 20, 9, 31, 3), price=102.0, size=1, symbol="SPY")) == []
 
-    # Late trade within lateness window (wm=12:01:03, cutoff=12:00:58)
-    out4 = agg.ingest(_e("SPY", _utc(2025, 12, 20, 12, 0, 58), 99.0, 2))
-    assert len(out4) == 1
-    assert out4[0].is_final is False
-    assert out4[0].ts_start_utc == _utc(2025, 12, 20, 12, 0, 0)
-    assert out4[0].low == 99.0
-    assert out4[0].high == 101.0
-    assert out4[0].close == 101.0  # close stays last-by-timestamp
-    assert out4[0].volume == 1 + 1 + 2
+    # Late tick within tolerance (wm=09:31:03, cutoff=09:30:58)
+    assert agg.ingest_tick(Tick(ts=_ny_to_utc(2025, 12, 20, 9, 30, 58), price=99.0, size=2, symbol="SPY")) == []
 
-    # Now flush after lateness window has passed to re-emit final with updated values.
-    flushed = agg.flush(_utc(2025, 12, 20, 12, 1, 6))
-    finals = [c for c in flushed if c.is_final and c.ts_start_utc == _utc(2025, 12, 20, 12, 0, 0)]
-    assert len(finals) == 1
-    assert finals[0].low == 99.0
-    assert finals[0].volume == 4
+    # Flush after tolerance window => finalize 09:30 with late tick applied.
+    flushed = agg.flush(_ny_to_utc(2025, 12, 20, 9, 31, 6))
+    assert len(flushed) == 1
+    f = flushed[0]
+    assert f.is_final is True
+    assert f.start_ts == _ny_to_utc(2025, 12, 20, 9, 30, 0)
+    assert f.low == 99.0
+    assert f.high == 101.0
+    assert f.close == 101.0
+    assert f.volume == 1 + 1 + 2
 
-    # Too-late trade (older than watermark - lateness) should be dropped.
-    out5 = agg.ingest(_e("SPY", _utc(2025, 12, 20, 12, 0, 0), 98.0, 1))
+    # Too-late tick should be dropped (flush advanced watermark to 09:31:06).
+    out5 = agg.ingest_tick(Tick(ts=_ny_to_utc(2025, 12, 20, 9, 30, 0), price=98.0, size=1, symbol="SPY"))
     assert out5 == []
-    assert agg.late_events_dropped >= 1
+    assert agg.late_drops >= 1
 

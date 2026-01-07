@@ -223,6 +223,14 @@ if __name__ == "__main__":
         agent_name="strategy-engine",
         intent="Run the strategy engine loop (fetch data, decide); enforce global kill-switch and stale-marketdata gating.",
     )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--execute",

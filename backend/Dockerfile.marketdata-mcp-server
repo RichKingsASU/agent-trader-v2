@@ -8,6 +8,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
     PORT=8080
 
+# Build fingerprint (baked into image; can be overridden at deploy-time).
+ARG GIT_SHA=unknown
+ARG BUILD_ID=unknown
+ARG BUILD_TIME_UTC=unknown
+ARG IMAGE_REF=unknown
+ENV GIT_SHA=$GIT_SHA \
+    BUILD_ID=$BUILD_ID \
+    BUILD_TIME_UTC=$BUILD_TIME_UTC \
+    IMAGE_REF=$IMAGE_REF
+
 # Create an unprivileged user for runtime.
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
 
