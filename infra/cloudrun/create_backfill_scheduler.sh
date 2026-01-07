@@ -5,6 +5,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=infra/cloudrun/common.sh
 source "${ROOT_DIR}/infra/cloudrun/common.sh"
 
+# SUSPENDED (post-lock Day 1 Ops):
+# This script creates/updates a Cloud Scheduler job (mutating infrastructure).
+# Day 1 Ops automation is read-only; do not run this in the default mode.
+echo "SUSPENDED: infra/cloudrun/create_backfill_scheduler.sh is disabled in post-lock Day 1 Ops." >&2
+echo "If you truly need a scheduler, treat it as a human-only change with explicit approval." >&2
+exit 0
+
 defaults
 require_env PROJECT_ID
 
@@ -24,27 +31,29 @@ RUN_API_URI="https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${RE
 
 create_or_update() {
   if gcloud scheduler jobs describe "${SCHEDULER_NAME}" --location "${SCHEDULER_LOCATION}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
-    gcloud scheduler jobs update http "${SCHEDULER_NAME}" \
-      --location "${SCHEDULER_LOCATION}" \
-      --project "${PROJECT_ID}" \
-      --schedule "${SCHEDULE_CRON}" \
-      --time-zone "${TIME_ZONE}" \
-      --uri "${RUN_API_URI}" \
-      --http-method POST \
-      --oauth-service-account-email "${SCHEDULER_SA_EMAIL}" \
-      --oauth-token-scope "https://www.googleapis.com/auth/cloud-platform" \
-      --message-body "{}"
+    # gcloud scheduler jobs update http "${SCHEDULER_NAME}" \
+    #   --location "${SCHEDULER_LOCATION}" \
+    #   --project "${PROJECT_ID}" \
+    #   --schedule "${SCHEDULE_CRON}" \
+    #   --time-zone "${TIME_ZONE}" \
+    #   --uri "${RUN_API_URI}" \
+    #   --http-method POST \
+    #   --oauth-service-account-email "${SCHEDULER_SA_EMAIL}" \
+    #   --oauth-token-scope "https://www.googleapis.com/auth/cloud-platform" \
+    #   --message-body "{}"
+    :
   else
-    gcloud scheduler jobs create http "${SCHEDULER_NAME}" \
-      --location "${SCHEDULER_LOCATION}" \
-      --project "${PROJECT_ID}" \
-      --schedule "${SCHEDULE_CRON}" \
-      --time-zone "${TIME_ZONE}" \
-      --uri "${RUN_API_URI}" \
-      --http-method POST \
-      --oauth-service-account-email "${SCHEDULER_SA_EMAIL}" \
-      --oauth-token-scope "https://www.googleapis.com/auth/cloud-platform" \
-      --message-body "{}"
+    # gcloud scheduler jobs create http "${SCHEDULER_NAME}" \
+    #   --location "${SCHEDULER_LOCATION}" \
+    #   --project "${PROJECT_ID}" \
+    #   --schedule "${SCHEDULE_CRON}" \
+    #   --time-zone "${TIME_ZONE}" \
+    #   --uri "${RUN_API_URI}" \
+    #   --http-method POST \
+    #   --oauth-service-account-email "${SCHEDULER_SA_EMAIL}" \
+    #   --oauth-token-scope "https://www.googleapis.com/auth/cloud-platform" \
+    #   --message-body "{}"
+    :
   fi
 }
 

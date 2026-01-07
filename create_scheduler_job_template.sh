@@ -17,12 +17,13 @@ SERVICE_ACCOUNT_EMAIL="12638678866-compute@developer.gserviceaccount.com" # Defa
 # For a direct API call (more complex), you'd point to the Cloud Run Admin API for job execution.
 CLOUD_RUN_JOB_URI="https://<YOUR_CLOUD_RUN_SERVICE_OR_API_ENDPOINT>"
 
-gcloud scheduler jobs create http alpaca-minute-ingest-scheduler \
-  --schedule="*/5 * * * 1-5" \
-  --uri="${CLOUD_RUN_JOB_URI}" \
-  --http-method=POST \
-  --oauth-service-account-email="${SERVICE_ACCOUNT_EMAIL}" \
-  --location="${REGION}" \
-  --project="${PROJECT_ID}" \
-  --headers="Content-Type=application/json" \
-  --message-body='{ "jobName": "alpaca-minute-ingest" }' 
+# SUSPENDED (post-lock Day 1 Ops): template only.
+# gcloud scheduler jobs create http alpaca-minute-ingest-scheduler \
+#   --schedule="*/5 * * * 1-5" \
+#   --uri="${CLOUD_RUN_JOB_URI}" \
+#   --http-method=POST \
+#   --oauth-service-account-email="${SERVICE_ACCOUNT_EMAIL}" \
+#   --location="${REGION}" \
+#   --project="${PROJECT_ID}" \
+#   --headers="Content-Type=application/json" \
+#   --message-body='{ "jobName": "alpaca-minute-ingest" }'
