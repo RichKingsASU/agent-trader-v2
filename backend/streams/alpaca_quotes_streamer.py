@@ -135,8 +135,12 @@ async def quote_data_handler(data):
             )
         intent_end(emit_ctx, "failure", error=e)
 
-async def main():
-    """Main function to start the quote streamer."""
+async def main(ready_event: asyncio.Event | None = None) -> None:
+    """Main function to start the quote streamer.
+
+    `ready_event` is an optional synchronization primitive used by the parent
+    service to mark readiness once subscriptions are configured.
+    """
     alpaca = load_alpaca_env()
     wss_client = StockDataStream(alpaca.key_id, alpaca.secret_key, feed=DataFeed.IEX)
     symbols = _symbols_from_env()
@@ -145,6 +149,14 @@ async def main():
     if not symbols:
         raise RuntimeError("ALPACA_SYMBOLS resolved to empty list")
     wss_client.subscribe_quotes(quote_data_handler, *symbols)
+
+    # Readiness: subscriptions configured and stream loop about to run.
+    if ready_event is not None:
+        try:
+            ready_event.set()
+        except Exception:
+            # Best-effort; readiness is also reflected by the parent health server.
+            pass
     
     try:
         await wss_client.run()
