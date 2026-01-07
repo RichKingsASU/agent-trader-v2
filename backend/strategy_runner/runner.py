@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
+from backend.common.replay_events import build_replay_event, dumps_replay_event
 from .bundle import StrategyBundle, create_strategy_bundle
 from .firecracker import FirecrackerConfig, FirecrackerMicroVM
 from .protocol import PROTOCOL_VERSION, parse_order_intent
@@ -131,6 +132,27 @@ class StrategySandboxRunner:
         events: Sequence[Dict[str, Any]],
         strategy_id: str = "strategy",
     ) -> List[Dict[str, Any]]:
+        # Replay markers for offline sandbox runs.
+        try:
+            print(
+                dumps_replay_event(
+                    build_replay_event(
+                        event="startup",
+                        component="backend.strategy_runner.runner",
+                        agent_name=str(strategy_id),
+                        trace_id=str(strategy_id),
+                        data={
+                            "runner": "StrategySandboxRunner",
+                            "events_count": len(events),
+                            "guest_cid": self.guest_cid,
+                            "vsock_port": self.vsock_port,
+                        },
+                    )
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
         bundle = create_strategy_bundle(strategy_source=strategy_source, strategy_id=strategy_id)
         drive_img = make_strategy_drive_image(bundle=bundle)
 
@@ -175,6 +197,27 @@ class StrategySandboxRunner:
                         # validate shape
                         _ = parse_order_intent(msg)
                         intents.append(msg)
+                        try:
+                            event_id = str(msg.get("event_id") or "").strip() or None
+                            intent_id = str(msg.get("intent_id") or "").strip() or None
+                            trace_id = event_id or intent_id or str(strategy_id)
+                            print(
+                                dumps_replay_event(
+                                    build_replay_event(
+                                        event="order_intent",
+                                        component="backend.strategy_runner.runner",
+                                        agent_name=str(strategy_id),
+                                        trace_id=trace_id,
+                                        data={
+                                            "stage": "emitted_by_guest",
+                                            "intent": msg,
+                                        },
+                                    )
+                                ),
+                                flush=True,
+                            )
+                        except Exception:
+                            pass
                     if msg.get("type") == "log" and msg.get("level") == "error":
                         # keep log errors, but don't fail automatically in scaffolding
                         pass

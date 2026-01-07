@@ -1,5 +1,4 @@
-import logging
-
+import json
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import strategies, broker_accounts, paper_orders, trades
@@ -17,6 +16,14 @@ def _startup() -> None:
         agent_name="strategy-service",
         intent="Serve strategy management APIs (strategies, broker accounts, paper orders, trades).",
     )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
 
     enabled, source = get_kill_switch_state()
     if enabled:

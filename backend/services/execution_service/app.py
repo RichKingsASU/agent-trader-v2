@@ -16,6 +16,7 @@ from backend.common.agent_state_machine import (
     read_agent_mode,
     trading_allowed,
 )
+from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.execution.engine import (
     AlpacaBroker,
     DryRunBroker,
@@ -88,11 +89,18 @@ app = FastAPI(title="AgentTrader Execution Engine")
 
 @app.on_event("startup")
 def _startup() -> None:
-    enabled, source = get_kill_switch_state()
-    if enabled:
-        # Execution service should keep serving (health/requests) but will refuse trading.
-        logger.warning("kill_switch_active enabled=true source=%s", source)
-
+    configure_startup_logging(
+        agent_name="execution-engine",
+        intent="Serve the execution API; validate config and execute broker order intents.",
+    )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
     # Best-effort: validate Vertex AI model config without crashing the service.
     try:
         init_vertex_ai_or_log()
@@ -111,7 +119,13 @@ def _startup() -> None:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "service": "execution-engine"}
+    return {"status": "ok", "service": "execution-engine", **get_build_fingerprint()}
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, Any]:
+    # Alias for institutional conventions.
+    return health()
 
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
@@ -202,14 +216,11 @@ def recover(request: Request) -> dict[str, Any]:
 
 @app.post("/execute", response_model=ExecuteIntentResponse)
 def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
-    # Fail-safe: refuse to execute intents if marketdata is stale/unreachable.
-    try:
-        assert_marketdata_fresh()
-    except MarketDataStaleError as e:
-        logger.warning("exec_service.marketdata_stale: %s", e)
-        raise HTTPException(status_code=503, detail="marketdata_stale") from e
-
     engine = _engine_from_env()
+    # Prefer caller-provided trace_id; fall back to client_intent_id.
+    trace_id = str(req.metadata.get("trace_id") or req.client_intent_id or "").strip() or None
+    if trace_id:
+        set_replay_context(trace_id=trace_id)
     intent = OrderIntent(
         strategy_id=req.strategy_id,
         broker_account_id=req.broker_account_id,
@@ -290,7 +301,28 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
         raise HTTPException(status_code=409, detail={"error": "trading_refused", "reason": str(e)}) from e
     except Exception as e:
         logger.exception("exec_service.execute_failed: %s", e)
-        sm.on_unexpected_exception(exc=e, meta={"source": "execute_endpoint"})
+        try:
+            logger.error(
+                "%s",
+                dumps_replay_event(
+                    build_replay_event(
+                        event="state_transition",
+                        component="backend.services.execution_service.app",
+                        data={
+                            "from_state": "intent_received",
+                            "to_state": "execute_failed",
+                            "strategy_id": req.strategy_id,
+                            "symbol": req.symbol,
+                            "client_intent_id": req.client_intent_id,
+                            "error": str(e),
+                        },
+                        trace_id=trace_id,
+                        agent_name=os.getenv("AGENT_NAME") or "execution-engine",
+                    )
+                ),
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail="execution_failed") from e
 
     # Always log an audit event (safe JSON; broker_order may contain ids, not secrets).

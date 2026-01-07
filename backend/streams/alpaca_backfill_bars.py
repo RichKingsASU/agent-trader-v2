@@ -1,5 +1,6 @@
 
 import datetime as dt
+import json
 import logging
 import os
 
@@ -11,6 +12,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from backend.common.agent_boot import configure_startup_logging
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.common.timeutils import parse_alpaca_timestamp
+from backend.observability.build_fingerprint import get_build_fingerprint
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -63,6 +65,14 @@ def main():
         agent_name="alpaca-bars-backfill",
         intent="Backfill historical 1-minute bars from Alpaca into Postgres.",
     )
+    try:
+        fp = get_build_fingerprint()
+        print(
+            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
+            flush=True,
+        )
+    except Exception:
+        pass
     logger.info("Alpaca backfill script started.")
 
     db_url = os.getenv("DATABASE_URL")
