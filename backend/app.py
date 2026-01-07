@@ -1,11 +1,6 @@
 import os as _os
 
-from backend.common.config_contract import validate_or_exit as _validate_or_exit
-
-# Fail-fast env contract validation (must run before other backend imports).
-_validate_or_exit("marketdata-mcp-server")
-
-_enforce_agent_mode_guard()
+_log_runtime_fingerprint(service="marketdata-mcp-server")
 
 import asyncio
 import os
@@ -82,21 +77,34 @@ async def startup_event() -> None:
 
     stream_task.add_done_callback(_done_callback)
 
-    # Mark readiness once the background task is scheduled and the loop is running.
-    # NOTE: We avoid tying readiness to "market open" / tick arrival to prevent flapping.
-    await asyncio.sleep(0)
-    if stream_task.done():
-        # Don't claim readiness if the streamer failed immediately.
-        return
-    app.state.ready = True
-    if not bool(getattr(app.state, "ready_logged", False)):
-        app.state.ready_logged = True
-        print("SERVICE_READY: marketdata-mcp-server", flush=True)
+    async def _mark_ready_when_initialized() -> None:
+        # Full init: subscriptions configured by the streamer (ready_event set).
+        try:
+            await app.state.streamer_ready_event.wait()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
+
+        if bool(getattr(app.state, "shutting_down", False)):
+            return
+
+        t: asyncio.Task | None = getattr(app.state, "stream_task", None)
+        if t is None or t.done():
+            return
+
+        app.state.ready = True
+        if not bool(getattr(app.state, "ready_logged", False)):
+            app.state.ready_logged = True
+            print("SERVICE_READY: marketdata-mcp-server", flush=True)
+
+    app.state.ready_task = asyncio.create_task(_mark_ready_when_initialized())
 
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     app.state.shutting_down = True
+    app.state.ready = False
     try:
         print(f"SHUTDOWN_INITIATED: {_service_name()}", flush=True)
     except Exception:
@@ -115,13 +123,14 @@ async def shutdown_event() -> None:
         except Exception:
             pass
 
-    for t in (ready_task, stream_task, loop_task):
-        if t is None:
-            continue
-        try:
-            await t
-        except Exception:
-            pass
+    tasks = [t for t in (ready_task, stream_task, loop_task) if t is not None]
+    if not tasks:
+        return
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10.0)
+    except Exception:
+        # Best-effort; never hang shutdown.
+        pass
 
 
 @app.get("/")
