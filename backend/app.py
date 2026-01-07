@@ -131,7 +131,7 @@ async def startup_event() -> None:
 async def shutdown_event() -> None:
     app.state.shutting_down = True
     try:
-        print(f"shutdown_intent service={_service_name()}", flush=True)
+        print(f"SHUTDOWN_INITIATED: {_service_name()}", flush=True)
     except Exception:
         pass
 

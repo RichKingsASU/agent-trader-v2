@@ -118,6 +118,13 @@ def _startup() -> None:
     app.state.risk = risk
     app.state.agent_sm = AgentStateMachine(agent_id=str(os.getenv("EXEC_AGENT_ID") or "execution_engine"))
 
+@app.on_event("shutdown")
+def _shutdown() -> None:
+    try:
+        print("SHUTDOWN_INITIATED: execution-engine", flush=True)
+    except Exception:
+        pass
+
 
 @app.get("/health")
 def health() -> dict[str, Any]:
