@@ -15,5 +15,7 @@ steps:
           --build-arg IMAGE_REF="${IMAGE_REF}" \
           -t "${IMAGE_REF}" \
           .
+
+        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.ingestion.market_data_ingest
 images:
   - 'gcr.io/$PROJECT_ID/agenttrader-alpaca-ingest:$SHORT_SHA'
