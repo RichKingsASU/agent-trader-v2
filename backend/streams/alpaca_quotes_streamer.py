@@ -12,6 +12,27 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.utils.session import get_market_session
 
+LAST_MARKETDATA_TS_UTC: datetime | None = None
+LAST_MARKETDATA_SOURCE: str = "alpaca_quotes_streamer"
+
+
+def get_last_marketdata_ts() -> datetime | None:
+    return LAST_MARKETDATA_TS_UTC
+
+
+def _mark_marketdata_seen(ts: datetime | None = None) -> None:
+    """
+    Updates the in-process marketdata freshness marker.
+    This is intentionally lightweight and best-effort.
+    """
+    global LAST_MARKETDATA_TS_UTC
+    if ts is None:
+        ts = datetime.now(timezone.utc)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    LAST_MARKETDATA_TS_UTC = ts.astimezone(timezone.utc)
+
+
 try:
     alpaca = load_alpaca_env()
     API_KEY = alpaca.key_id
@@ -26,6 +47,7 @@ except KeyError as e:
 
 async def quote_data_handler(data):
     """Handler for incoming quote data."""
+    _mark_marketdata_seen()
     logging.info(f"Received quote for {data.symbol}: Bid={data.bid_price}, Ask={data.ask_price}")
     
     try:
