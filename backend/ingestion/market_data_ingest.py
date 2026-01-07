@@ -541,8 +541,16 @@ async def _amain() -> int:
     ingestor = MarketDataIngestor(cfg)
 
     loop = asyncio.get_running_loop()
+    shutdown_logged = False
 
     def _handle_signal(signum: int, _frame: Any | None = None) -> None:
+        nonlocal shutdown_logged
+        if not shutdown_logged:
+            shutdown_logged = True
+            try:
+                print("SHUTDOWN_INITIATED: market-data-ingest", flush=True)
+            except Exception:
+                pass
         log_json("signal", status="received", signum=signum)
         ingestor.request_stop()
 
