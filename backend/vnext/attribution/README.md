@@ -1,12 +1,12 @@
-# Market Regime
+# Attribution
 
 ## Intent
-Define interfaces and data shapes for detecting and tracking market regimes (trend, chop, volatility states) and exposing regime annotations to downstream vNEXT modules.
+Define interfaces for performance and decision attribution (signal -> action -> outcome) including standardized event schemas and explainability artifacts.
 
 ## Non-goals (for this vNEXT skeleton)
-- Selecting a specific regime model/algorithm
-- Online inference wired into production loops
-- Backfilling or migrating existing regime logic
+- Computing production PnL or official accounting
+- Replacing existing ledger/analytics modules
+- Building dashboards or APIs
 
 ## Deliverables in this module
 - `interfaces.py`: Contract-only placeholders (no runtime behavior).

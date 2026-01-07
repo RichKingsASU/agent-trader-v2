@@ -1,15 +1,17 @@
-# vNEXT Risk Governance (Global Kill Switch)
+# Risk Governance
 
-This folder defines **interfaces only** for human authority overrides.
+## Intent
+Define vNEXT risk policy boundaries: rule declaration, approval workflows, auditability expectations, and interfaces for risk decisions without embedding enforcement runtime.
 
-## Principles
+## Non-goals (for this vNEXT skeleton)
+- Enforcing risk in live execution services
+- Persisting approvals/audits to a real datastore
+- Integrating with existing kill-switch/circuit breakers
 
-- **Manual only**: governance actions are performed by authorized humans (or tightly-controlled ops tooling acting on explicit human intent).
-- **Logged always**: every governance action must emit an immutable `GovernanceAuditRecord`.
-- **Overrides automation**: governance decisions (e.g., kill switch) take precedence over all automated strategy/execution decisions.
+## Deliverables in this module
+- `interfaces.py`: Contract-only placeholders (no runtime behavior).
+- `__init__.py`: Empty package marker.
 
-## Scope
-
-- No implementations or business logic live here.
-- `interfaces.py` provides type contracts for checking whether trading is allowed and reading the current governance state.
-
+## Constraints
+- No imports from existing live systems under `backend/`.
+- No execution logic, side effects, network calls, or persistence.

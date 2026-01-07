@@ -1,12 +1,12 @@
-# Market Regime
+# Portfolio Risk
 
 ## Intent
-Define interfaces and data shapes for detecting and tracking market regimes (trend, chop, volatility states) and exposing regime annotations to downstream vNEXT modules.
+Define portfolio-level risk representation and interfaces (exposures, Greeks, concentration, liquidity) as consumable artifacts for vNEXT governance and attribution.
 
 ## Non-goals (for this vNEXT skeleton)
-- Selecting a specific regime model/algorithm
-- Online inference wired into production loops
-- Backfilling or migrating existing regime logic
+- Connecting to broker accounts
+- Calculating real Greeks from live option chains
+- Replacing existing `backend/risk*` services
 
 ## Deliverables in this module
 - `interfaces.py`: Contract-only placeholders (no runtime behavior).
