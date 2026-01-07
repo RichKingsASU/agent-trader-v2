@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+
+_log_runtime_fingerprint(service="strategy-engine")
+
 import asyncio
 import os
 import time
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, Response
@@ -13,13 +16,9 @@ from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.safety.config import load_kill_switch, load_stale_threshold_seconds
 from backend.safety.safety_state import evaluate_safety_state, is_safe_to_run_strategies
 
-from .driver import run_strategy, _fetch_marketdata_heartbeat, _parse_iso_dt
+from .driver import run_strategy
 
 app = FastAPI(title="AgentTrader Strategy Engine")
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _identity() -> dict[str, Any]:
@@ -31,40 +30,6 @@ def _identity() -> dict[str, Any]:
     }
 
 
-async def _current_state() -> tuple[str, dict[str, Any]]:
-    kill = load_kill_switch()
-    threshold = load_stale_threshold_seconds()
-    hb = await _fetch_marketdata_heartbeat()
-    last_ts = _parse_iso_dt((hb.get("data") or {}).get("last_marketdata_ts"))
-
-    state = evaluate_safety_state(
-        trading_enabled=True,
-        kill_switch=kill,
-        marketdata_last_ts=last_ts,
-        stale_threshold_seconds=threshold,
-        now=_utc_now(),
-        ttl_seconds=30,
-    )
-
-    status = "ok" if is_safe_to_run_strategies(state) else "halted"
-    payload = {
-        "status": status,
-        "identity": _identity(),
-        "safety_state": {
-            "trading_enabled": state.trading_enabled,
-            "kill_switch": state.kill_switch,
-            "marketdata_fresh": state.marketdata_fresh,
-            "marketdata_last_ts": state.marketdata_last_ts.isoformat() if state.marketdata_last_ts else None,
-            "reason_codes": state.reason_codes,
-            "updated_at": state.updated_at.isoformat(),
-            "ttl_seconds": state.ttl_seconds,
-            "stale_threshold_seconds": threshold,
-        },
-        "marketdata_heartbeat": hb,
-    }
-    return status, payload
-
-
 @app.on_event("startup")
 async def _startup() -> None:
     enforce_agent_mode_guard()
@@ -74,6 +39,7 @@ async def _startup() -> None:
     )
 
     app.state.shutting_down = False
+    app.state.ready = False
     app.state.loop_heartbeat_monotonic = time.monotonic()
 
     async def _loop_heartbeat() -> None:
@@ -81,15 +47,21 @@ async def _startup() -> None:
             app.state.loop_heartbeat_monotonic = time.monotonic()
             await asyncio.sleep(1.0)
 
-    async def _ready_log_once() -> None:
+    async def _initialize_readiness() -> None:
         """
-        Emit a single high-signal log line once /readyz would return 200.
+        Flip readiness only after full dependency init.
+
+        For this service, "ready" is defined as being able to evaluate the
+        safety gate successfully at least once (including a marketdata
+        heartbeat fetch).
         """
         while not getattr(app.state, "shutting_down", False):
             try:
                 status, _payload = await _current_state()
                 if status == "ok":
-                    print("SERVICE_READY: strategy-engine", flush=True)
+                    if not bool(getattr(app.state, "ready", False)):
+                        app.state.ready = True
+                        print("SERVICE_READY: strategy-engine", flush=True)
                     return
             except Exception:
                 # Keep retrying; readiness endpoint already reflects state.
@@ -97,7 +69,7 @@ async def _startup() -> None:
             await asyncio.sleep(2.0)
 
     app.state.loop_task = asyncio.create_task(_loop_heartbeat())
-    app.state.ready_log_task = asyncio.create_task(_ready_log_once())
+    app.state.init_task = asyncio.create_task(_initialize_readiness())
 
     # Background cycle loop (evaluation only; never enables execution).
     cycle_s = float(os.getenv("STRATEGY_CYCLE_SECONDS") or "30")
@@ -117,20 +89,24 @@ async def _startup() -> None:
 
     app.state.cycle_task = asyncio.create_task(_loop())
 
+    # Readiness: startup completed and critical in-process loops scheduled.
+    app.state.is_ready = True
+    print("SERVICE_READY: strategy-engine", flush=True)
+
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     app.state.shutting_down = True
     try:
-        print("shutdown_intent service=strategy-engine", flush=True)
+        print("SHUTDOWN_INITIATED: strategy-engine", flush=True)
     except Exception:
         pass
 
     cycle_task: asyncio.Task | None = getattr(app.state, "cycle_task", None)
     loop_task: asyncio.Task | None = getattr(app.state, "loop_task", None)
-    ready_log_task: asyncio.Task | None = getattr(app.state, "ready_log_task", None)
+    init_task: asyncio.Task | None = getattr(app.state, "init_task", None)
 
-    for t in (cycle_task, loop_task, ready_log_task):
+    for t in (cycle_task, loop_task, init_task):
         if t is None:
             continue
         try:
@@ -138,7 +114,7 @@ async def _shutdown() -> None:
         except Exception:
             pass
 
-    for t in (cycle_task, loop_task, ready_log_task):
+    for t in (cycle_task, loop_task, init_task):
         if t is None:
             continue
         try:
@@ -156,13 +132,18 @@ async def health() -> dict[str, Any]:
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     # Process is alive (do not gate on external dependencies).
-    return {"status": "ok", "identity": _identity()}
+    return {"status": "ok"}
 
 
 @app.get("/readyz")
 async def readyz(response: Response) -> dict[str, Any]:
+    ready = bool(getattr(app.state, "ready", False))
+    if not ready:
+        response.status_code = 503
+        return {"status": "not_ready", "identity": _identity()}
     status, payload = await _current_state()
     response.status_code = 200 if status == "ok" else 503
+    payload["ready"] = True
     return payload
 
 
@@ -177,11 +158,5 @@ async def livez(response: Response) -> dict[str, Any]:
     cycle_ok = cycle_task is not None and (not cycle_task.done())
     ok = loop_ok and cycle_ok and (not shutting_down)
     response.status_code = 200 if ok else 503
-    return {
-        "status": "alive" if ok else ("cycle_dead" if not cycle_ok else "wedged"),
-        "identity": _identity(),
-        "loop_heartbeat_age_s": max(0.0, now - last),
-        "max_age_s": max_age_s,
-        "cycle_task_alive": bool(cycle_ok),
-    }
+    return {"status": "ok" if ok else ("cycle_dead" if not cycle_ok else "wedged")}
 

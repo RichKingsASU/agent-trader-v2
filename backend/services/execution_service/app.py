@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_runtime_fingerprint
+
+_log_runtime_fingerprint(service="execution-engine")
+
 import json
 import logging
 import os
@@ -30,6 +34,11 @@ from backend.common.kill_switch import get_kill_switch_state
 from backend.common.vertex_ai import init_vertex_ai_or_log
 from backend.execution.marketdata_health import check_market_ingest_heartbeat
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
+from backend.safety.startup_validation import (
+    validate_agent_mode_or_exit,
+    validate_flag_exact_false_or_exit,
+    validate_required_env_or_exit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +128,13 @@ def _startup() -> None:
     app.state.engine = engine
     app.state.risk = risk
     app.state.agent_sm = AgentStateMachine(agent_id=str(os.getenv("EXEC_AGENT_ID") or "execution_engine"))
+
+@app.on_event("shutdown")
+def _shutdown() -> None:
+    try:
+        print("SHUTDOWN_INITIATED: execution-engine", flush=True)
+    except Exception:
+        pass
 
 
 @app.get("/health")
