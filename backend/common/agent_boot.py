@@ -12,6 +12,8 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from backend.common.audit_logging import configure_audit_log_enrichment, set_correlation_id
+
 
 def _utc_ts() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -123,6 +125,14 @@ def configure_startup_logging(agent_name: str, intent: str) -> None:
     - Never raises
     """
     try:
+        # Make agent identity available for all log lines (best-effort).
+        if not (os.getenv("AGENT_NAME") or "").strip():
+            os.environ["AGENT_NAME"] = _sanitize_text(agent_name, max_len=128) or "unknown"
+
+        # Set a stable correlation_id for "startup" phase logs.
+        set_correlation_id("startup")
+        configure_audit_log_enrichment(agent_name=os.environ.get("AGENT_NAME"))
+
         payload: dict[str, Any] = {
             "ts": _utc_ts(),
             "agent_name": _sanitize_text(agent_name, max_len=128) or "unknown",
