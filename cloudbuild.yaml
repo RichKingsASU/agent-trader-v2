@@ -4,7 +4,7 @@ steps:
     id: preflight
     entrypoint: bash
     args:
-      - -c
+      - '-c'
       - |
         set -euo pipefail
         pwd
@@ -17,7 +17,7 @@ steps:
     id: Safety Guard
     entrypoint: bash
     args:
-      - -c
+      - '-c'
       - |
         set -euo pipefail
         test -f /workspace/scripts/ci_safety_guard.sh
