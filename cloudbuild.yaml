@@ -1,13 +1,19 @@
+# This CI pipeline enforces institutional safety guarantees.
 steps:
-  - name: 'bash'
+  - name: 'gcr.io/cloud-builders/bash'
     id: 'Safety Guard'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        set -e
+        set -euo pipefail
+
+        # NOTE: This guard is intentionally explicit and chatty.
+        # It should fail fast with actionable output when a safety invariant is violated.
+
         echo "--- Checking for ':latest' image tags ---"
-        if find . -name "*.yaml" -o -name "*.yml" | grep -v "cloudbuild" | xargs grep -q "image:.*:latest"; then
+        mapfile -t YAML_FILES < <(find . -type f \( -name "*.yaml" -o -name "*.yml" \) ! -name "cloudbuild*")
+        if [ "${#YAML_FILES[@]}" -gt 0 ] && grep -nE "image:.*:latest\b" "${YAML_FILES[@]}"; then
           echo "❌ FAILED: Use of ':latest' image tag is forbidden."
           exit 1
         else
@@ -15,43 +21,28 @@ steps:
         fi
 
         echo "--- Checking for 'AGENT_MODE=EXECUTE' ---"
-        AGENT_MODE_EXECUTE_FOUND=0
-        find . -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" | grep -v "cloudbuild" | while read FILE_VAR;
-        do
-          if [ -f "$$FILE_VAR" ]; then
-            while read LINE_VAR;
-            do
-              # Check for literal 'AGENT_MODE=EXECUTE' or 'AGENT_MODE: EXECUTE'
-              if echo "$$LINE_VAR" | grep -q "AGENT_MODE=EXECUTE" || echo "$$LINE_VAR" | grep -q "AGENT_MODE: EXECUTE"; then
-                # Exclude the ALLOWED_AGENT_MODES definition itself
-                if ! echo "$$LINE_VAR" | grep -q "ALLOWED_AGENT_MODES"; then
-                  echo "❌ FAILED: AGENT_MODE must not be set to EXECUTE in committed code."
-                  echo "   File: $$FILE_VAR"
-                  echo "   Line: $$LINE_VAR"
-                  AGENT_MODE_EXECUTE_FOUND=1
-                  break # Exit inner loop
-                fi
-              fi
-            done < "$$FILE_VAR"
-          fi
-          if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]; then
-            break # Exit outer loop
-          fi
-        done
-
-        if [ "$$AGENT_MODE_EXECUTE_FOUND" -eq 1 ]; then
+        mapfile -t CODE_FILES < <(find . -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.py" -o -name "*.sh" -o -name "Dockerfile" -o -name "Dockerfile.*" \) ! -name "cloudbuild*")
+        if [ "${#CODE_FILES[@]}" -gt 0 ] && grep -nE "AGENT_MODE[[:space:]]*[:=][[:space:]]*(['\"])?EXECUTE\1" "${CODE_FILES[@]}" | grep -v "ALLOWED_AGENT_MODES"; then
+          echo "❌ FAILED: AGENT_MODE must not be set to EXECUTE in committed code."
           exit 1
         else
           echo "✅ PASSED: No instances of 'AGENT_MODE=EXECUTE' found."
         fi
 
         echo "--- Checking for scaled execution agents (replicas > 0) ---"
-        if find ./k8s/execution -name "*.yaml" -o -name "*.yml" | xargs grep -q "replicas:[[:space:]]*[1-9]"; then
+        mapfile -t EXEC_AGENT_MANIFESTS < <(grep -rl --include="*.yaml" --include="*.yml" "name: execution-agent" ./k8s 2>/dev/null || true)
+        SCALED_EXECUTION_AGENT=0
+        for MANIFEST in "${EXEC_AGENT_MANIFESTS[@]}"; do
+          if grep -nE "replicas:[[:space:]]*[1-9]" "$MANIFEST"; then
+            SCALED_EXECUTION_AGENT=1
+          fi
+        done
+
+        if [ "$SCALED_EXECUTION_AGENT" -eq 1 ]; then
           echo "❌ FAILED: Execution agent replicas must be 0 in committed code."
           exit 1
-        else
-          echo "✅ PASSED: No execution agents found with replicas > 0."
         fi
+        echo "✅ PASSED: No execution agents found with replicas > 0."
 
   # Build and push marketdata-mcp-server
   - name: 'gcr.io/cloud-builders/docker'
