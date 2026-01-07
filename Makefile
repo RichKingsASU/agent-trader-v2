@@ -1,5 +1,6 @@
 .PHONY: report report-skip-health
 .PHONY: day1-dry-run
+.PHONY: ci-validate
 
 # -----------------------------------------------------------------------------
 # AgentTrader v2 — “Trading Floor” one-command workflow
@@ -148,6 +149,10 @@ smoke-check: ## Run Python import smoke tests
 	@echo "== smoke-check =="
 	@if [ ! -f ./scripts/smoke_check_imports.py ]; then echo "ERROR: missing ./scripts/smoke_check_imports.py"; exit 1; fi
 	@"$(PY)" ./scripts/smoke_check_imports.py
+
+ci-validate: ## Validate CI layout (cloudbuild.yaml references)
+	@echo "== ci-validate =="
+	@bash ./scripts/validate_ci_layout.sh
 
 test: ## Run python tests if present
 	@echo "== test =="

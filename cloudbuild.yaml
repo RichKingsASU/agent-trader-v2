@@ -1,4 +1,12 @@
 steps:
+  - name: 'gcr.io/cloud-builders/bash'
+    id: 'CI Layout Validate'
+    entrypoint: 'bash'
+    args:
+      - -ceu
+      - |
+        bash ./scripts/validate_ci_layout.sh
+
   - name: 'bash'
     id: 'Safety Guard'
     entrypoint: 'bash'
