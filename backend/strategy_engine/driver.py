@@ -2,8 +2,12 @@ import asyncio
 import subprocess
 from datetime import date
 import argparse
+import os
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.strategies.registry.loader import load_config
+from backend.strategies.registry.validator import compute_effective_mode
+from backend.strategies.registry.models import StrategyMode
 
 from .config import config
 from .models import fetch_recent_bars, fetch_recent_options_flow
@@ -20,16 +24,33 @@ async def run_strategy(execute: bool):
     """
     Main function to run the strategy engine.
     """
-    strategy_id = await get_or_create_strategy_definition(config.STRATEGY_NAME)
+    # Load strategy config from the repo-native registry (safe-by-default).
+    # Back-compat: default strategy_id to STRATEGY_NAME.
+    requested_id = (os.getenv("STRATEGY_ID") or config.STRATEGY_NAME).strip()
+    cfg = load_config(requested_id)
+    effective_mode = compute_effective_mode(cfg)
+
+    if not cfg.enabled:
+        print(f"Strategy '{cfg.strategy_id}' is disabled; exiting (safe-by-default).")
+        return
+
+    # Registry-backed identity in the risk/audit subsystem.
+    strategy_id = await get_or_create_strategy_definition(cfg.strategy_id)
     today = date.today()
     
-    print(f"Running strategy '{config.STRATEGY_NAME}' for {today}...")
+    print(
+        f"Running strategy '{cfg.strategy_id}' for {today} "
+        f"(requested_mode={cfg.mode.value} effective_mode={effective_mode.value})..."
+    )
 
-    for symbol in config.STRATEGY_SYMBOLS:
+    bar_lookback = int(cfg.parameters.get("bar_lookback_minutes", config.STRATEGY_BAR_LOOKBACK_MINUTES))
+    flow_lookback = int(cfg.parameters.get("flow_lookback_minutes", config.STRATEGY_FLOW_LOOKBACK_MINUTES))
+
+    for symbol in cfg.symbols:
         print(f"Processing symbol: {symbol}")
 
-        bars = await fetch_recent_bars(symbol, config.STRATEGY_BAR_LOOKBACK_MINUTES)
-        flow_events = await fetch_recent_options_flow(symbol, config.STRATEGY_FLOW_LOOKBACK_MINUTES)
+        bars = await fetch_recent_bars(symbol, bar_lookback)
+        flow_events = await fetch_recent_options_flow(symbol, flow_lookback)
 
         decision = make_decision(bars, flow_events)
         action = decision.get("action")
@@ -52,7 +73,8 @@ async def run_strategy(execute: bool):
             
         print(f"  Decision: {action}. Reason: {decision['reason']}")
 
-        if execute:
+        can_execute = bool(execute) and effective_mode == StrategyMode.EXECUTE
+        if can_execute:
             print(f"  Executing {action} order for 1 {symbol}...")
             # Call the existing paper trade script
             process = subprocess.run(
@@ -80,7 +102,7 @@ async def run_strategy(execute: bool):
                 True,
             )
         else:
-            print("  Dry run mode, no trade executed.")
+            print("  No execution (effective_mode is non-execute or --execute not set).")
             await log_decision(
                 strategy_id,
                 symbol,

@@ -2,20 +2,14 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import strategies, broker_accounts, paper_orders, trades
+from .routers import strategies, broker_accounts, paper_orders, trades, strategy_configs
 
 from backend.common.kill_switch import get_kill_switch_state
+from backend.common.agent_boot import configure_startup_logging
+from backend.strategies.registry.loader import load_all_configs
 
 app = FastAPI(title="AgentTrader Strategy Service")
 logger = logging.getLogger(__name__)
-
-# Startup identity/intent log (single JSON line).
-@app.on_event("startup")
-def _startup() -> None:
-    configure_startup_logging(
-        agent_name="strategy-service",
-        intent="Serve strategy management APIs (strategies, broker accounts, paper orders, trades).",
-    )
 
 # Enable CORS for frontend
 app.add_middleware(
@@ -30,9 +24,19 @@ app.include_router(strategies.router)
 app.include_router(broker_accounts.router)
 app.include_router(paper_orders.router)
 app.include_router(trades.router)
+app.include_router(strategy_configs.router)
 
 @app.on_event("startup")
 def _startup() -> None:
+    # Identity/intent log (single JSON line).
+    configure_startup_logging(
+        agent_name="strategy-service",
+        intent="Serve strategy management APIs + read-only strategy config registry endpoints.",
+    )
+
+    # Load registry at startup so we fail-fast on invalid/duplicate configs.
+    app.state.strategy_config_registry = load_all_configs()
+
     enabled, source = get_kill_switch_state()
     if enabled:
         # Non-execution service: keep serving, but make it visible in logs.

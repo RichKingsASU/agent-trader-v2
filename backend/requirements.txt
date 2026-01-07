@@ -18,6 +18,7 @@ google-genai
 python-dotenv
 nats-py
 pandas
+pyyaml
 
 # Optional DB drivers (Postgres)
 psycopg[binary]
