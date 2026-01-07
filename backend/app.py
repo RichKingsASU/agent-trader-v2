@@ -42,6 +42,8 @@ async def startup_event():
 
     task.add_done_callback(_done_callback)
 
+install_http_correlation(app, service="marketdata-mcp-server")
+
 @app.get("/")
 async def read_root():
     return {"message": "Alpaca Market Streamer is running"}
