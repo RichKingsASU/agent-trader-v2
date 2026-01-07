@@ -12,6 +12,10 @@ GIT_SHA="${GIT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 IMAGE_URI="gcr.io/${PROJECT_ID}/${JOB_NAME}:${GIT_SHA}"
 SERVICE_ACCOUNT="my-run-sa@${PROJECT_ID}.iam.gserviceaccount.com"
 
+# Marketdata health contract (override as needed for your environment)
+MARKETDATA_HEALTH_URL="${MARKETDATA_HEALTH_URL:-http://127.0.0.1:8080/healthz}"
+MARKETDATA_MAX_AGE_SECONDS="${MARKETDATA_MAX_AGE_SECONDS:-60}"
+
 # --- IAM policy bindings (idempotent) ---
 echo "Ensuring IAM policy bindings..."
 gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:${SERVICE_ACCOUNT}" --role="roles/run.invoker" --condition=None > /dev/null
@@ -30,8 +34,7 @@ gcloud run jobs deploy "${JOB_NAME}" \
   --region "${REGION}" \
   --service-account "${SERVICE_ACCOUNT}" \
   --set-secrets="DATABASE_URL=DATABASE_URL:latest" \
-  --set-env-vars="GIT_SHA=${GIT_SHA}" \
-  --set-env-vars="STRATEGY_NAME=naive_flow_trend,STRATEGY_SYMBOLS=SPY,IWM,QQQ,STRATEGY_BAR_LOOKBACK_MINUTES=15,STRATEGY_FLOW_LOOKBACK_MINUTES=15" \
+  --set-env-vars="STRATEGY_NAME=naive_flow_trend,STRATEGY_SYMBOLS=SPY,IWM,QQQ,STRATEGY_BAR_LOOKBACK_MINUTES=15,STRATEGY_FLOW_LOOKBACK_MINUTES=15,MARKETDATA_HEALTH_URL=${MARKETDATA_HEALTH_URL},MARKETDATA_MAX_AGE_SECONDS=${MARKETDATA_MAX_AGE_SECONDS}" \
   --command "python" \
   --args "-m" \
   --args "backend.strategy_engine.driver" \
