@@ -13,14 +13,14 @@
 # Overridable configuration (safe defaults)
 NAMESPACE ?= default
 K8S_DIR ?= k8s
-PROJECT_ID ?=
-REGION ?=
-CONTEXT ?=
+PROJECT_ID ?= 
+REGION ?= 
+CONTEXT ?= 
 MISSION_CONTROL_URL ?= http://agenttrader-mission-control
 
 PY ?= python3
 
-.PHONY: help fmt lint test build deploy guard report readiness status logs scale port-forward clean
+.PHONY: help fmt lint test build frontend-build deploy guard report readiness status git-status logs scale port-forward clean dev
 
 help: ## Show available targets and usage
 	@echo "AgentTrader v2 — Trading Floor Makefile"
@@ -43,6 +43,11 @@ help: ## Show available targets and usage
 	@echo "  make guard && make deploy && make report"
 	@echo "  make readiness NAMESPACE=trading-floor"
 	@echo "  make logs AGENT=strategy-engine"
+
+dev: ## Start local development environment (backend + frontend)
+	@echo "Running local development environment..."
+	@if [ ! -f ./scripts/dev_all.sh ]; then echo "Error: ./scripts/dev_all.sh not found! Cannot start dev environment."; exit 1; fi
+	@./scripts/dev_all.sh
 
 fmt: ## Best-effort formatting (python + yaml)
 	@echo "== fmt (best-effort) =="
@@ -122,16 +127,18 @@ build: ## Build images locally if possible; else print instructions
 		docker build -f "$$f" -t "$$tag" .; \
 	done
 
+frontend-build: ## Build the frontend application (npm run build)
+	@echo "Building frontend application..."
+	@if [ ! -d ./frontend ]; then echo "Error: ./frontend directory not found! Cannot build frontend."; exit 1; fi
+	@npm --prefix frontend run build
+
 guard: ## Run predeploy guardrails (fail-fast)
 	@echo "== guard =="
-	@if [[ ! -x "./scripts/predeploy_guard.sh" ]]; then \
-		echo "ERROR: missing ./scripts/predeploy_guard.sh"; \
+	@if [[ ! -x "./scripts/ci_safety_guard.sh" ]]; then \
+		echo "ERROR: missing ./scripts/ci_safety_guard.sh"; \
 		exit 2; \
 	fi
-	@args=(--namespace "$(NAMESPACE)" --k8s-dir "$(K8S_DIR)"); \
-	[[ -n "$(PROJECT_ID)" ]] && args+=(--project "$(PROJECT_ID)"); \
-	[[ -n "$(CONTEXT)" ]] && args+=(--expected-context "$(CONTEXT)"); \
-	./scripts/predeploy_guard.sh "$${args[@]}"
+	@./scripts/ci_safety_guard.sh
 
 deploy: ## Deploy v2 (prefers scripts/deploy_v2.sh; else kubectl apply)
 	@echo "== deploy =="
@@ -176,6 +183,11 @@ status: ## Show k8s workload status + best-effort /ops/status
 		--mission-control-url "$(MISSION_CONTROL_URL)" \
 		$(if $(CONTEXT),--context "$(CONTEXT)",)
 
+
+git-status: ## Show current git status
+	@echo "Checking repository git status..."
+	@git status
+
 logs: ## Tail logs for one workload (AGENT=<name>)
 	@if [[ -z "$(AGENT)" ]]; then echo "ERROR: AGENT is required (e.g. make logs AGENT=strategy-engine)"; exit 2; fi
 	@./scripts/kubectl_logs.sh \
@@ -212,7 +224,8 @@ clean: ## Remove local temp artifacts safely
 		.pytest_cache .ruff_cache .mypy_cache \
 		.coverage coverage.xml htmlcov \
 		dist build \
-		audit_artifacts/*.tmp 2>/dev/null || true
+		audit_artifacts/*.tmp \
+		./frontend/dist 2>/dev/null || true
 	@echo "OK: removed common local caches/artifacts"
 
 # Day 1 Ops dry run (read-only): generates a dummy artifact set locally.
@@ -234,4 +247,3 @@ day1-dry-run:
 	cp -f audit_artifacts/deploy_report.md "$${OUT}/deploy_report.md" 2>/dev/null || true; \
 	cp -f audit_artifacts/deploy_report.json "$${OUT}/deploy_report.json" 2>/dev/null || true; \
 	echo "OK: wrote $${OUT}"
-
