@@ -48,3 +48,11 @@ Writes decisions to:
 If the filesystem is not writable, the agent emits full decision JSON objects to stdout
 with `intent_type="decision_output_fallback_stdout"`.
 
+## vNEXT: repo-wide non-invasive confirmation
+
+A repo-wide scan shows **no vNEXT-labeled runtime code** (outside vendored dependencies), so vNEXT introduces:
+- no imports from live-trading execution code
+- no side effects
+- no background threads
+- no network calls
+
