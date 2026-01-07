@@ -23,3 +23,6 @@ pandas
 psycopg[binary]
 asyncpg==0.29.0
 psycopg2-binary==2.9.9
+
+# Repo blueprint generator (k8s/cloudbuild YAML parsing)
+PyYAML>=6.0.2
