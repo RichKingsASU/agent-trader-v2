@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agenttrader-heartbeat-marketdata-mcp-server
+  namespace: trading-floor
+data:
+  # Updated by the app when HEARTBEAT_MODE=k8s-configmap
+  last_seen: ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agenttrader-heartbeat-strategy-engine
+  namespace: trading-floor
+data:
+  last_seen: ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agenttrader-heartbeat-execution-engine
+  namespace: trading-floor
+data:
+  last_seen: ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agenttrader-heartbeat-mission-control
+  namespace: trading-floor
+data:
+  last_seen: ""
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-heartbeat-writer
+  namespace: trading-floor
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames:
+      - agenttrader-heartbeat-marketdata-mcp-server
+      - agenttrader-heartbeat-strategy-engine
+      - agenttrader-heartbeat-execution-engine
+      - agenttrader-heartbeat-mission-control
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-heartbeat-writer
+  namespace: trading-floor
+subjects:
+  - kind: ServiceAccount
+    name: trading-floor-sa
+    namespace: trading-floor
+  - kind: ServiceAccount
+    name: marketdata-mcp-server-ksa
+    namespace: trading-floor
+  - kind: ServiceAccount
+    name: strategy-engine-ksa
+    namespace: trading-floor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: app-heartbeat-writer
+
