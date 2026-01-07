@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from backend.common.timeutils import ensure_aware_utc
+from backend.time.nyse_time import ensure_aware_utc
 
 
 @dataclass(frozen=True, slots=True)

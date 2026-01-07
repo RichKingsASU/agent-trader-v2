@@ -5,6 +5,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${ROOT_DIR}/deploy_logs"
 OUT_FILE="${OUT_DIR}/health_report.md"
 
+# TODO(ops-status): Prefer service `/ops/status` sampling in this report.
+# A minimal helper exists at `scripts/report_v2_deploy.py` (fetch_ops_status).
+# Integration is deferred until this report has a stable way to discover/resolve
+# in-cluster service URLs without long-lived port-forwards.
+
 # Non-interactive / no pagers
 export KUBECTL_PAGER=""
 export PAGER=cat
@@ -83,7 +88,8 @@ def _human_age(created):
         return ""
     now = _dt.datetime.now(_dt.timezone.utc)
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=_dt.timezone.utc)
+        # Avoid ad-hoc tzinfo assignment; assume naive is UTC.
+        ts = _dt.datetime.fromisoformat(ts.isoformat() + "+00:00")
     delta = now - ts
     secs = max(0, int(delta.total_seconds()))
     if secs < 60:
@@ -168,7 +174,8 @@ def _human_age(created):
         return ""
     now = _dt.datetime.now(_dt.timezone.utc)
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=_dt.timezone.utc)
+        # Avoid ad-hoc tzinfo assignment; assume naive is UTC.
+        ts = _dt.datetime.fromisoformat(ts.isoformat() + "+00:00")
     delta = now - ts
     secs = max(0, int(delta.total_seconds()))
     mins = secs // 60

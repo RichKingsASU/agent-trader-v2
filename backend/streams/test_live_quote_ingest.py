@@ -6,7 +6,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from backend.streams.alpaca_env import load_alpaca_env
-from backend.common.timeutils import parse_alpaca_timestamp
+from backend.time.providers import normalize_alpaca_timestamp
 from backend.utils.session import get_market_session
 
 # --- Environment Configuration ---
@@ -51,7 +51,7 @@ def main():
         print(f"No quote found for {symbol_to_test}, cannot trigger realtime event.")
         return
 
-    ts = parse_alpaca_timestamp(quote["t"])
+    ts = normalize_alpaca_timestamp(quote["t"])
     session = get_market_session(ts)
 
     with conn.cursor() as cur:
