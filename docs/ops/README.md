@@ -1,29 +1,26 @@
-# AgentTrader v2 — Ops Documentation Index
+# Ops (AgentTrader v2)
 
-This directory contains **institutional operations governance** for AgentTrader v2 (safety-first; execution disabled unless explicitly authorized).
+This folder contains the operational documentation for running AgentTrader v2 safely in autonomous **observe-only** mode.
 
-## Core “Go/No-Go” package
+## Index
 
-- **Production Readiness Checklist (single source)**: [`go_no_go.md`](./go_no_go.md)
-- **Pre-Market Runbook**: [`runbooks/pre_market.md`](./runbooks/pre_market.md)
-- **Post-Market Runbook**: [`runbooks/post_market.md`](./runbooks/post_market.md)
-- **Deployment reporting (auditable snapshots)**: [`reporting.md`](./reporting.md)
+- **Agent mesh plan (single source of truth)**: `docs/ops/agent_mesh.md`
+- **Reporting / readiness**: `docs/ops/reporting.md`
+- **Runbooks**: `docs/ops/runbooks/`
+- **Go/No-Go checklist (stub)**: `docs/ops/go_no_go.md`
+- **Deploy guardrails (stub)**: `docs/ops/deploy_guardrails.md`
+- **Disaster recovery plan (stub)**: `docs/ops/dr_plan.md`
 
-## Automation
+## Quick commands (read-only)
 
-- **Deterministic readiness gate**: `scripts/readiness_check.sh`
-  - Writes: `audit_artifacts/readiness_report.md` and `audit_artifacts/readiness_report.json`
-- **Deployed-state report**: `scripts/report_v2_deploy.sh`
-  - Writes: `audit_artifacts/deploy_report.md` and `audit_artifacts/deploy_report.json`
+- Pre-market snapshot:
+  - `./scripts/ops_pre_market.sh`
+- Post-market snapshot:
+  - `./scripts/ops_post_market.sh`
 
-## Related references (repo-wide)
+## Safety reminders
 
-- **Kill switch operations**: `docs/KILL_SWITCH.md`
-- **GCP deployment guide**: `docs/DEPLOY_GCP.md`
-- **Deploy script (includes guardrails)**: `scripts/deploy_v2.sh`
-
-## Optional docs (link here if/when added)
-
-- `deploy_guardrails.md` (not currently present)
-- `disaster_recovery.md` (not currently present)
+- Kill-switch defaults to **HALTED** in k8s: `k8s/05-kill-switch-configmap.yaml`
+- Marketdata freshness must gate strategies/execution: `docs/MARKETDATA_HEALTH_CONTRACT.md`
+- Execution remains **disabled** by default (do not enable in automation).
 

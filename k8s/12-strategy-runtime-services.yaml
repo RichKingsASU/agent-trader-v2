@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: agenttrader-gamma-strategy
+  namespace: trading-floor
+  labels:
+    app.kubernetes.io/name: agenttrader-gamma-strategy
+    app.kubernetes.io/component: strategy-runtime
+    app.kubernetes.io/part-of: agenttrader-v2
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/part-of: agenttrader-v2
+    strategy: gamma
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agenttrader-whale-strategy
+  namespace: trading-floor
+  labels:
+    app.kubernetes.io/name: agenttrader-whale-strategy
+    app.kubernetes.io/component: strategy-runtime
+    app.kubernetes.io/part-of: agenttrader-v2
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/part-of: agenttrader-v2
+    strategy: whale
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: http
+
