@@ -1,12 +1,12 @@
-# Market Regime
+# News Intelligence
 
 ## Intent
-Define interfaces and data shapes for detecting and tracking market regimes (trend, chop, volatility states) and exposing regime annotations to downstream vNEXT modules.
+Define the vNEXT boundary for extracting structured, tradable attributes from news (entities, sentiment, topics, novelty) and providing them as neutral artifacts.
 
 ## Non-goals (for this vNEXT skeleton)
-- Selecting a specific regime model/algorithm
-- Online inference wired into production loops
-- Backfilling or migrating existing regime logic
+- Calling external news APIs
+- LLM/provider integration
+- Replacing existing `backend/news_*` implementations
 
 ## Deliverables in this module
 - `interfaces.py`: Contract-only placeholders (no runtime behavior).
