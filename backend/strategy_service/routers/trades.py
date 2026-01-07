@@ -11,6 +11,7 @@ from backend.tenancy.auth import get_tenant_context
 from backend.tenancy.context import TenantContext
 from backend.persistence.firebase_client import get_firestore_client
 from backend.persistence.firestore_retry import with_firestore_retry
+from backend.common.kill_switch import get_kill_switch_state
 from google.cloud import firestore
 
 from ..db import build_raw_order, insert_paper_order
@@ -196,6 +197,15 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     # Check shadow mode flag (fail-safe: defaults to True)
     is_shadow_mode = get_shadow_mode_flag()
     logger.info(f"Executing trade in {'SHADOW' if is_shadow_mode else 'LIVE'} mode")
+
+    # Global kill switch: block any non-shadow ("live") execution path.
+    enabled, source = get_kill_switch_state()
+    if enabled and not is_shadow_mode:
+        logger.warning("kill_switch_active refusing_live_trade source=%s symbol=%s side=%s", source, trade_request.symbol, trade_request.side)
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "kill_switch_enabled", "source": source, "message": "Execution is globally halted."},
+        )
     
     # Risk check (always performed regardless of mode)
     risk_check_payload = {

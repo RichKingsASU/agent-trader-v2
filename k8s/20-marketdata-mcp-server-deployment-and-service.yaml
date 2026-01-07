@@ -28,7 +28,7 @@ spec:
         - containerPort: 8080
           name: http
         env:
-          - name: GIT_SHA
+          - name: EXECUTION_HALTED
             valueFrom:
               fieldRef:
                 fieldPath: metadata.labels['git_sha']

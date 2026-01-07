@@ -28,7 +28,13 @@ from .loader import (
     StrategyLoader,
     get_strategy_loader,
 )
-from .maestro_orchestrator import MaestroOrchestrator
+try:
+    from .maestro_orchestrator import MaestroOrchestrator
+    _HAS_MAESTRO_ORCHESTRATOR = True
+except ImportError:
+    # Maestro orchestrator not available (e.g., missing firebase_admin in minimal test env)
+    MaestroOrchestrator = None
+    _HAS_MAESTRO_ORCHESTRATOR = False
 
 try:
     from .maestro_controller import (
@@ -54,8 +60,10 @@ __all__ = [
     'BaseStrategy',
     'StrategyLoader',
     'get_strategy_loader',
-    'MaestroOrchestrator',
 ]
+
+if _HAS_MAESTRO_ORCHESTRATOR:
+    __all__.append('MaestroOrchestrator')
 
 if _HAS_MAESTRO:
     __all__.extend([
