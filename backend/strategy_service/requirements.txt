@@ -2,6 +2,7 @@ fastapi
 psycopg[binary]
 uvicorn
 python-dotenv
+pyyaml>=6.0.2
 httpx
 requests
 tenacity

@@ -72,9 +72,8 @@ fmt: ## Best-effort formatting (python + yaml)
 		echo "INFO: yamlfmt not found (optional)"; \
 	fi
 
-lint: ## Best-effort lint checks (includes import smoke check)
+lint: smoke-check ## Best-effort lint checks (includes import smoke check)
 	@echo "== lint (best-effort) =="
-	@make smoke-check
 	@if command -v ruff >/dev/null 2>&1; then \
 		echo "[python] ruff check ."; ruff check .; \
 	else \
@@ -93,8 +92,8 @@ lint: ## Best-effort lint checks (includes import smoke check)
 
 smoke-check: ## Run Python import smoke tests
 	@echo "== smoke-check =="
-	@if [ ! -x ./scripts/smoke_check_imports.py ]; then echo "ERROR: missing or non-executable ./scripts/smoke_check_imports.py"; exit 1; fi
-	@./scripts/smoke_check_imports.py
+	@if [ ! -f ./scripts/smoke_check_imports.py ]; then echo "ERROR: missing ./scripts/smoke_check_imports.py"; exit 1; fi
+	@"$(PY)" ./scripts/smoke_check_imports.py
 
 test: ## Run python tests if present
 	@echo "== test =="
