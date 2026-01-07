@@ -1,6 +1,7 @@
 """
 vNEXT package root.
 
-See `backend/vnext/GOVERNANCE.md` for cross-cutting rules.
+This package is reserved for forward-looking, interface-first designs.
+Implementations should be added only when governance requirements are met.
 """
 
