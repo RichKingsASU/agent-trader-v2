@@ -24,8 +24,9 @@ from backend.execution.engine import (
     OrderIntent,
     RiskManager,
 )
-from backend.common.agent_boot import configure_startup_logging
+from backend.common.kill_switch import get_kill_switch_state
 from backend.common.vertex_ai import init_vertex_ai_or_log
+from backend.common.marketdata_health import MarketDataStaleError, assert_marketdata_fresh
 
 logger = logging.getLogger(__name__)
 
@@ -87,10 +88,11 @@ app = FastAPI(title="AgentTrader Execution Engine")
 
 @app.on_event("startup")
 def _startup() -> None:
-    configure_startup_logging(
-        agent_name="execution-engine",
-        intent="Serve the execution API; validate config and execute broker order intents.",
-    )
+    enabled, source = get_kill_switch_state()
+    if enabled:
+        # Execution service should keep serving (health/requests) but will refuse trading.
+        logger.warning("kill_switch_active enabled=true source=%s", source)
+
     # Best-effort: validate Vertex AI model config without crashing the service.
     try:
         init_vertex_ai_or_log()
@@ -185,9 +187,14 @@ def recover(request: Request) -> dict[str, Any]:
 
 @app.post("/execute", response_model=ExecuteIntentResponse)
 def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
-    engine: ExecutionEngine = app.state.engine
-    risk: RiskManager = app.state.risk
-    sm: AgentStateMachine = app.state.agent_sm
+    # Fail-safe: refuse to execute intents if marketdata is stale/unreachable.
+    try:
+        assert_marketdata_fresh()
+    except MarketDataStaleError as e:
+        logger.warning("exec_service.marketdata_stale: %s", e)
+        raise HTTPException(status_code=503, detail="marketdata_stale") from e
+
+    engine = _engine_from_env()
     intent = OrderIntent(
         strategy_id=req.strategy_id,
         broker_account_id=req.broker_account_id,

@@ -37,6 +37,13 @@ async def run_strategy(execute: bool):
     """
     Main function to run the strategy engine.
     """
+    # Fail-safe: refuse to run if marketdata is stale/unreachable.
+    try:
+        await asyncio.to_thread(assert_marketdata_fresh)
+    except MarketDataStaleError as e:
+        print(f"[strategy_engine] Refusing to run: {e}")
+        raise
+
     strategy_id = await get_or_create_strategy_definition(config.STRATEGY_NAME)
     today = date.today()
     correlation_id = os.getenv("CORRELATION_ID") or uuid4().hex
@@ -172,4 +179,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    asyncio.run(run_strategy(args.execute))
+    try:
+        asyncio.run(run_strategy(args.execute))
+    except MarketDataStaleError:
+        raise SystemExit(2)
