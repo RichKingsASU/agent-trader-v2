@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agenttrader-kill-switch
+  namespace: trading-floor
+data:
+  # Global kill switch:
+  # - "0" (default): execution allowed (subject to other risk rules)
+  # - "1": execution halted (all execution agents refuse trading)
+  EXECUTION_HALTED: "0"
+

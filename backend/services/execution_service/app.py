@@ -25,8 +25,9 @@ from backend.execution.engine import (
     OrderIntent,
     RiskManager,
 )
-from backend.common.agent_boot import configure_startup_logging
+from backend.common.kill_switch import get_kill_switch_state
 from backend.common.vertex_ai import init_vertex_ai_or_log
+from backend.common.marketdata_health import MarketDataStaleError, assert_marketdata_fresh
 
 logger = logging.getLogger(__name__)
 
@@ -200,9 +201,14 @@ def recover(request: Request) -> dict[str, Any]:
 
 @app.post("/execute", response_model=ExecuteIntentResponse)
 def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
-    engine: ExecutionEngine = app.state.engine
-    risk: RiskManager = app.state.risk
-    sm: AgentStateMachine = app.state.agent_sm
+    # Fail-safe: refuse to execute intents if marketdata is stale/unreachable.
+    try:
+        assert_marketdata_fresh()
+    except MarketDataStaleError as e:
+        logger.warning("exec_service.marketdata_stale: %s", e)
+        raise HTTPException(status_code=503, detail="marketdata_stale") from e
+
+    engine = _engine_from_env()
     intent = OrderIntent(
         strategy_id=req.strategy_id,
         broker_account_id=req.broker_account_id,

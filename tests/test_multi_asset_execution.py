@@ -197,7 +197,7 @@ class TestExecutionEngineSmartRouting:
     def test_execution_downgraded_by_smart_routing(self, monkeypatch):
         """Test that execution is blocked when smart routing downgrades signal."""
         # Remove kill switch
-        monkeypatch.delenv("EXEC_KILL_SWITCH", raising=False)
+        monkeypatch.delenv("EXECUTION_HALTED", raising=False)
         
         # Mock smart router to downgrade
         mock_router = Mock(spec=SmartRouter)
@@ -261,7 +261,7 @@ class TestExecutionEngineSmartRouting:
     def test_execution_allowed_by_smart_routing(self, monkeypatch):
         """Test that execution proceeds when smart routing approves."""
         # Remove kill switch and set EXEC_TENANT_ID
-        monkeypatch.delenv("EXEC_KILL_SWITCH", raising=False)
+        monkeypatch.delenv("EXECUTION_HALTED", raising=False)
         monkeypatch.setenv("EXEC_TENANT_ID", "test_tenant")
         
         # Mock smart router to allow

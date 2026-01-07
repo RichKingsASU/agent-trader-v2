@@ -7,6 +7,7 @@ from backend.common.agent_boot import configure_startup_logging
 from backend.observability.build_fingerprint import get_build_fingerprint
 
 app = FastAPI(title="AgentTrader Strategy Service")
+logger = logging.getLogger(__name__)
 
 # Startup identity/intent log (single JSON line).
 @app.on_event("startup")

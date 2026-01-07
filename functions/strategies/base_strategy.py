@@ -111,6 +111,10 @@ class BaseStrategy(ABC):
                 - supported_assets: List of asset classes (default: [EQUITY])
         """
         self.config = config or {}
+
+        # Multi-asset cost guardrails
+        # Default: 0.1% max acceptable slippage/spread before downgrading to WAIT.
+        self.max_slippage_pct = float(self.config.get("max_slippage_pct", 0.001))
         
         # Cryptographic identity - initialized by StrategyLoader
         self._identity_manager = None
