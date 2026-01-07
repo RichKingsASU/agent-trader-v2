@@ -1,22 +1,17 @@
-# Ops (AgentTrader v2)
+# Ops Docs (AgentTrader v2)
 
-This folder contains the operational documentation for running AgentTrader v2 safely in autonomous **observe-only** mode.
+## Blueprint (auto-generated)
 
-## Index
+- **Blueprint**: `docs/BLUEPRINT.md`
+- **Regenerate**:
 
-- **Agent mesh plan (single source of truth)**: `docs/ops/agent_mesh.md`
-- **Reporting / readiness**: `docs/ops/reporting.md`
-- **Runbooks**: `docs/ops/runbooks/`
-- **Go/No-Go checklist (stub)**: `docs/ops/go_no_go.md`
-- **Deploy guardrails (stub)**: `docs/ops/deploy_guardrails.md`
-- **Disaster recovery plan (stub)**: `docs/ops/dr_plan.md`
+```bash
+./scripts/generate_blueprint.sh
+```
 
-## Quick commands (read-only)
-
-- Pre-market snapshot:
-  - `./scripts/ops_pre_market.sh`
-- Post-market snapshot:
-  - `./scripts/ops_post_market.sh`
+This produces:
+- `docs/BLUEPRINT.md`
+- `audit_artifacts/blueprints/BLUEPRINT_<YYYYMMDD_HHMM>.md`
 
 ## Safety reminders
 
