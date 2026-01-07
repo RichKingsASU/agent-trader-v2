@@ -1,2 +1,7 @@
-"""vNEXT backend contracts (interfaces and data models)."""
+"""
+vNEXT packages.
+
+This namespace is used for forward-looking, schema-first contracts that can be
+integrated incrementally without breaking existing services.
+"""
 

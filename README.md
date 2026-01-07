@@ -79,6 +79,8 @@ make help
 
 This repository includes a `scripts/ci_safety_guard.sh` script that runs automatically in the CI/CD pipeline. This guard is a read-only, non-destructive check to prevent high-risk configurations from being committed or deployed.
 
+For the full list of CI assumptions and guard invariants, see `docs/CI_CONTRACT.md`.
+
 **Purpose:** To provide an automated safety net against common operational errors and enforce non-negotiable architectural rules.
 
 **The guard will fail the build if it detects:**

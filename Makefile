@@ -75,7 +75,7 @@ lock-check: ## Fail if backend *.lock files are out of date
 		diff -u "$$tmp/strategy_engine.requirements.norm.lock" "$$tmp/strategy_engine.requirements.norm.tmp.lock"; \
 		echo "OK: lock files are in sync"
 
-.PHONY: help fmt lint smoke-check test build frontend-build deploy guard report readiness status git-status logs scale port-forward clean dev
+.PHONY: help fmt lint smoke-check test build frontend-build ci-validate deploy guard report readiness status git-status logs scale port-forward clean dev
 
 help: ## Show available targets and usage
 	@echo "AgentTrader v2 — Trading Floor Makefile"
@@ -203,6 +203,14 @@ guard: ## Run predeploy guardrails (fail-fast)
 		exit 2; \
 	fi
 	@./scripts/ci_safety_guard.sh
+
+ci-validate: ## Validate CI layout (cloudbuild paths + required scripts)
+	@echo "== ci-validate =="
+	@if [ ! -f "./scripts/validate_ci_layout.sh" ]; then \
+		echo "ERROR: missing ./scripts/validate_ci_layout.sh"; \
+		exit 2; \
+	fi
+	@bash ./scripts/validate_ci_layout.sh
 
 deploy: ## Deploy v2 (prefers scripts/deploy_v2.sh; else kubectl apply)
 	@echo "== deploy =="
