@@ -24,6 +24,7 @@ def evaluate_startup_gate(env: Mapping[str, str]) -> tuple[bool, list[str]]:
 
     Must be impossible to enable accidentally:
     - comparisons are strict, case-sensitive
+    - this agent is OBSERVE-only (never places orders)
     - BROKER_EXECUTION_ENABLED must be present AND exactly "false"
     """
     reason_codes: list[str] = []
@@ -32,7 +33,8 @@ def evaluate_startup_gate(env: Mapping[str, str]) -> tuple[bool, list[str]]:
         "REPO_ID": "agent-trader-v2",
         "AGENT_NAME": "execution-agent",
         "AGENT_ROLE": "execution",
-        "AGENT_MODE": "EXECUTE",
+        # Repo policy: OBSERVE must work; EXECUTE is forbidden in committed configs.
+        "AGENT_MODE": "OBSERVE",
         "EXECUTION_AGENT_ENABLED": "true",
     }
 
@@ -64,7 +66,7 @@ def refuse_startup(*, reason_codes: list[str]) -> NoReturn:
             "REPO_ID": "agent-trader-v2",
             "AGENT_NAME": "execution-agent",
             "AGENT_ROLE": "execution",
-            "AGENT_MODE": "EXECUTE",
+            "AGENT_MODE": "OBSERVE",
             "EXECUTION_AGENT_ENABLED": "true",
             "BROKER_EXECUTION_ENABLED": "false",
         },

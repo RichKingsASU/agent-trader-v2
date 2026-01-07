@@ -11,6 +11,13 @@ from typing import Any, Optional, Protocol, runtime_checkable
 import requests
 
 from backend.common.env import get_env
+from backend.common.agent_mode import require_live_mode as require_trading_live_mode
+from backend.common.kill_switch import (
+    ExecutionHaltedError,
+    get_kill_switch_state,
+    is_kill_switch_enabled,
+    require_live_mode as require_kill_switch_off,
+)
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.streams.alpaca_env import load_alpaca_env
 
@@ -994,16 +1001,23 @@ class ExecutionEngine:
                 pass
             return ExecutionResult(status="dry_run", risk=risk, routing=routing_decision, message="dry_run_enabled")
 
-        # Defense-in-depth: never place broker orders if the global kill switch is active,
-        # even if upstream risk checks were bypassed/misconfigured.
+        # Defense-in-depth: do not place broker orders unless explicitly authorized.
+        # - Trading authority: AGENT_MODE must be LIVE (fail-closed; raises AgentModeError).
+        # - Kill switch: must be OFF (convert to a rejected result for callers).
+        require_trading_live_mode(action="broker order placement")
         try:
-            require_live_mode(operation="broker order placement")
+            require_kill_switch_off(operation="broker order placement")
         except ExecutionHaltedError:
             enabled, source = get_kill_switch_state()
             checks = list(risk.checks or [])
             checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
             halted_risk = RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
-            return ExecutionResult(status="rejected", risk=halted_risk, routing=routing_decision, message="kill_switch_enabled")
+            return ExecutionResult(
+                status="rejected",
+                risk=halted_risk,
+                routing=routing_decision,
+                message="kill_switch_enabled",
+            )
 
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None

@@ -28,6 +28,18 @@ def test_gating_refuses_startup_when_missing_env(monkeypatch: pytest.MonkeyPatch
     assert int(getattr(e.value, "code", 1) or 1) != 0
 
 
+def test_gating_allows_observe_only_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REPO_ID", "agent-trader-v2")
+    monkeypatch.setenv("AGENT_NAME", "execution-agent")
+    monkeypatch.setenv("AGENT_ROLE", "execution")
+    monkeypatch.setenv("AGENT_MODE", "OBSERVE")
+    monkeypatch.setenv("EXECUTION_AGENT_ENABLED", "true")
+    monkeypatch.setenv("BROKER_EXECUTION_ENABLED", "false")
+
+    # Should not exit when configured for OBSERVE-only operation.
+    enforce_startup_gate_or_exit()
+
+
 def test_decision_rejects_on_kill_switch() -> None:
     safety = SafetySnapshot(
         kill_switch=True,

@@ -60,7 +60,7 @@ def _utc_ts() -> str:
 def _repo_id() -> str:
     # Prefer explicit runtime var, but keep a safe default for evidence.
     v = (os.getenv("REPO_ID") or "").strip()
-    return v or "RichKingsASU/agent-trader-v2"
+    return v or "agent-trader-v2"
 
 
 def _agent_identity(agent_name: Optional[str] = None) -> str:
