@@ -107,136 +107,40 @@ class FirestoreWriter:
         self._firestore = firestore_mod
         self._db = firestore_mod.Client(project=project_id, database=database)
 
-    @staticmethod
-    def _stable_sample(message_id: str, *, rate: float) -> bool:
+    def _protect_published_at(self, *, existing: dict[str, Any], incoming_doc: dict[str, Any]) -> dict[str, Any]:
         """
-        Deterministic sampling based on message_id (stable across retries).
-        """
-        try:
-            r = float(rate)
-        except Exception:
-            r = 0.0
-        if r <= 0.0:
-            return False
-        if r >= 1.0:
-            return True
-        mid = (message_id or "").strip()
-        if not mid:
-            return False
-        h = hashlib.sha1(mid.encode("utf-8", errors="ignore")).digest()
-        x = int.from_bytes(h[:4], "big") / float(2**32)
-        return x < r
+        Best-effort monotonic protection for fields that may be used for ordering.
 
-    @staticmethod
-    def _truncate_str(value: Any, *, max_len: int) -> str:
-        s = "" if value is None else str(value)
-        if max_len <= 0:
-            return ""
-        return s if len(s) <= max_len else (s[: max_len - 1] + "…")
+        Invariants:
+        - If a document already has `publishedAt`, we never move it backwards.
+        - If a document already has `source.publishedAt`, we never move it backwards.
 
-    @staticmethod
-    def _sanitize_payload(value: Any) -> Any:
+        Note: This does NOT add new fields; it only prevents regressions.
         """
-        Best-effort scrub for secrets/PII in sampled DLQ docs.
-        """
-        SENSITIVE_KEYS = {
-            "authorization",
-            "api_key",
-            "apikey",
-            "token",
-            "access_token",
-            "refresh_token",
-            "password",
-            "secret",
-            "client_secret",
-        }
-        if isinstance(value, dict):
-            out: dict[str, Any] = {}
-            for k, v in value.items():
-                ks = str(k).lower()
-                if ks in SENSITIVE_KEYS:
-                    out[str(k)] = "[redacted]"
-                else:
-                    out[str(k)] = FirestoreWriter._sanitize_payload(v)
+        out = dict(incoming_doc)
+        if not isinstance(existing, dict):
             return out
-        if isinstance(value, list):
-            return [FirestoreWriter._sanitize_payload(v) for v in value[:50]]
-        return value
 
-    def maybe_write_sampled_dlq_event(
-        self,
-        *,
-        message_id: str,
-        subscription: str,
-        topic: str,
-        handler: str,
-        http_status: int,
-        reason: str,
-        error: str,
-        delivery_attempt: Optional[int],
-        attributes: dict[str, str],
-        payload: Optional[dict[str, Any]],
-        sample_rate: float,
-        ttl_hours: float,
-    ) -> bool:
-        """
-        Best-effort: writes a sampled DLQ-candidate doc into Firestore.
+        existing_published_at = _parse_rfc3339(existing.get("publishedAt"))
+        incoming_published_at = _parse_rfc3339(out.get("publishedAt"))
+        if existing_published_at is not None and incoming_published_at is not None and incoming_published_at < existing_published_at:
+            out["publishedAt"] = existing_published_at
 
-        Retention is bounded via `expiresAt` (TTL field; enable TTL on collection group `sampled_dlq`).
-        Sampling is deterministic on `message_id` to avoid repeated writes on retries.
-        """
-        if not self._stable_sample(message_id, rate=sample_rate):
-            return False
+        existing_src = existing.get("source")
+        incoming_src = out.get("source")
+        existing_source_pub = _parse_rfc3339(existing_src.get("publishedAt")) if isinstance(existing_src, dict) else None
+        incoming_source_pub = _parse_rfc3339(incoming_src.get("publishedAt")) if isinstance(incoming_src, dict) else None
+        if (
+            isinstance(incoming_src, dict)
+            and existing_source_pub is not None
+            and incoming_source_pub is not None
+            and incoming_source_pub < existing_source_pub
+        ):
+            fixed_src = dict(incoming_src)
+            fixed_src["publishedAt"] = existing_source_pub
+            out["source"] = fixed_src
 
-        now = datetime.now(timezone.utc)
-        try:
-            hours = float(ttl_hours)
-        except Exception:
-            hours = 72.0
-        if hours <= 0:
-            return False
-
-        doc_id = (message_id or "").strip() or hashlib.sha1(str(now).encode("utf-8")).hexdigest()[:32]
-        doc_ref = self._db.collection("sampled_dlq").document(doc_id)
-
-        safe_payload = self._sanitize_payload(payload) if isinstance(payload, dict) else None
-        payload_json = ""
-        try:
-            payload_json = json.dumps(safe_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        except Exception:
-            payload_json = ""
-        max_payload_chars = 24_000  # Firestore doc limit guardrail (best-effort)
-        payload_too_large = bool(payload_json) and (len(payload_json) > max_payload_chars)
-
-        doc: dict[str, Any] = {
-            "messageId": (message_id or "").strip(),
-            "subscription": (subscription or "").strip(),
-            "topic": (topic or "").strip(),
-            "handler": (handler or "").strip(),
-            "httpStatus": int(http_status),
-            "reason": self._truncate_str(reason, max_len=256),
-            "error": self._truncate_str(error, max_len=2048),
-            "deliveryAttempt": int(delivery_attempt) if delivery_attempt is not None else None,
-            "attributes": dict(attributes or {}),
-            "receivedAt": now,
-            "expiresAt": now + timedelta(hours=hours),
-        }
-
-        if safe_payload is not None and not payload_too_large:
-            doc["payload"] = safe_payload
-            doc["payloadTruncated"] = False
-        elif payload_json:
-            doc["payloadJsonSnippet"] = self._truncate_str(payload_json, max_len=max_payload_chars)
-            doc["payloadTruncated"] = True
-
-        # Remove nulls for cleaner docs.
-        doc = {k: v for k, v in doc.items() if v is not None}
-        try:
-            doc_ref.set(doc, merge=False)
-            return True
-        except Exception:
-            # Never fail the request path due to DLQ sampling.
-            return False
+        return out
 
     def _upsert_event_doc(
         self,
@@ -275,7 +179,8 @@ class FirestoreWriter:
             if existing_max is not None and incoming < existing_max:
                 return False, "stale_event_ignored"
 
-            txn.set(ref, doc)
+            protected = self._protect_published_at(existing=existing or {}, incoming_doc=doc)
+            txn.set(ref, protected)
             return True, "applied"
 
         txn = self._db.transaction()
@@ -398,7 +303,8 @@ class FirestoreWriter:
         Writes `ops_services/{serviceId}` with stale protection.
 
         Stale protection rule (per mission):
-        - only overwrite if incoming `updated_at` >= max(stored.lastHeartbeatAt, stored.updatedAt)
+        - only overwrite if incoming `updated_at` >= max(stored.lastHeartbeatAt, stored.source.publishedAt)
+        - `updatedAt` stored in Firestore is always a server timestamp (write time)
         """
         ref = self._db.collection("ops_services").document(service_id)
 

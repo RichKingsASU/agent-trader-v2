@@ -126,109 +126,89 @@ def ingestion_worker():
             HEARTBEAT_INTERVAL_SECONDS,
             FLAG_CHECK_INTERVAL_SECONDS,
         )
+        from backend.common.ingest_switch import get_effective_ingest_enabled_state
     except ImportError as e:
-        # This is unrecoverable: fail fast so Cloud Run restarts with a clear signal.
-        logger.critical(
-            "Failed to import ingestion dependencies: %s",
-            e,
-            extra={
-                **LOG_EXTRA,
-                "event_type": "python.import_failed",
-                "context": "ingestion_worker",
-                "cwd": os.getcwd(),
-                "pythonpath_env": os.getenv("PYTHONPATH") or "",
-                "sys_path": list(sys.path),
-            },
-            exc_info=True,
-        )
-        os._exit(1)
+        logger.critical("Failed to import ingestion service: %s", e, extra=LOG_EXTRA)
+        return
 
     logger.info("Ingestion worker thread started.", extra=LOG_EXTRA)
     service = IngestionService()
     service.health_checker.sanity_checks()
 
-    # Supervisor loop: the worker must not exit unless shutdown is requested.
+    # Startup gate: log effective ingest enabled state.
+    eff_enabled, eff_source = get_effective_ingest_enabled_state(default_enabled=True)
+    logger.info(
+        "INGEST_ENABLED startup state: enabled=%s source=%s",
+        bool(eff_enabled),
+        str(eff_source or ""),
+        extra=LOG_EXTRA,
+    )
+
+    last_effective_enabled: bool | None = None
+    last_effective_source: str | None = None
+
     while not SHUTDOWN_FLAG.is_set():
         try:
-            from backend.ingestion.vm_ingest import IngestionService
-            import backend.ingestion.config as config_module
-            from backend.ingestion.config import (
-                HEARTBEAT_INTERVAL_SECONDS,
-                FLAG_CHECK_INTERVAL_SECONDS,
-            )
+            # Combine the repo-wide kill switch with the operator ingest switch.
+            effective_enabled, effective_source = get_effective_ingest_enabled_state(default_enabled=True)
+            if last_effective_enabled is None or effective_enabled != last_effective_enabled:
+                last_effective_enabled = bool(effective_enabled)
+                last_effective_source = str(effective_source or "")
+                if effective_enabled:
+                    logger.info(
+                        "INGEST_ENABLED transition: enabled=%s source=%s",
+                        bool(effective_enabled),
+                        str(effective_source or ""),
+                        extra=loop_log_extra,
+                    )
+                else:
+                    logger.warning(
+                        "INGEST_ENABLED transition: enabled=%s source=%s",
+                        bool(effective_enabled),
+                        str(effective_source or ""),
+                        extra=loop_log_extra,
+                    )
 
-            logger.info(
-                "Imported ingestion modules successfully.",
-                extra={
-                    **LOG_EXTRA,
-                    "module": "backend.ingestion.config",
-                    "module_file": getattr(config_module, "__file__", None),
-                },
-            )
+            # Check for kill switch
+            if time.time() - service.last_flag_check > FLAG_CHECK_INTERVAL_SECONDS:
+                service.ingest_enabled = service.health_checker.check_ingest_flag()
+                service.last_flag_check = time.time()
 
-            service = IngestionService()
-            service.health_checker.sanity_checks()
-            logger.info("Ingestion worker initialized.", extra=LOG_EXTRA)
-        except Exception:
-            # Log full stack trace; keep process alive and retry until shutdown.
-            retry_seconds = 5
-            logger.exception(
-                "Failed to initialize ingestion worker; retrying.",
-                extra={**LOG_EXTRA, "retry_in_seconds": retry_seconds},
-            )
-            SHUTDOWN_FLAG.wait(timeout=retry_seconds)
-            continue
-
-        while not SHUTDOWN_FLAG.is_set():
-            iteration_id = uuid.uuid4().hex
-            loop_log_extra = {**LOG_EXTRA, "iteration_id": iteration_id}
-
+            # Always emit a lightweight system heartbeat (even when disabled) for visibility.
             try:
-                # Check for kill switch
-                if time.time() - service.last_flag_check > FLAG_CHECK_INTERVAL_SECONDS:
-                    service.ingest_enabled = service.health_checker.check_ingest_flag()
-                    service.last_flag_check = time.time()
-
-                if not service.ingest_enabled:
-                    logger.warning("Ingestion is disabled via feature flag. Sleeping.", extra=loop_log_extra)
-                    time.sleep(HEARTBEAT_INTERVAL_SECONDS)
-                    continue
-
-                # Publish events (business logic is unchanged)
-                service.publish_system_event("info", "Ingestion heartbeat.")
-                logger.info(
-                    "Published system heartbeat.",
-                    extra={**loop_log_extra, "published_topic": service.system_events_topic_path},
+                service.publish_system_event(
+                    "info",
+                    "Ingestion heartbeat (enabled=%s, source=%s)." % (bool(effective_enabled and service.ingest_enabled), str(last_effective_source or "")),
                 )
-
-                service.publish_market_tick()
-                logger.info(
-                    "Published market tick.",
-                    extra={**loop_log_extra, "published_topic": service.market_ticks_topic_path},
-                )
-
-                service.publish_market_bar_1m()
-                logger.info(
-                    "Published market bar.",
-                    extra={**loop_log_extra, "published_topic": service.market_bars_1m_topic_path},
-                )
-
-                service.publish_trade_signal()
-                logger.info(
-                    "Published trade signal.",
-                    extra={**loop_log_extra, "published_topic": service.trade_signals_topic_path},
-                )
-
             except Exception:
-                # Log full stack trace; keep the loop alive.
-                logger.exception("Error in ingestion loop.", extra=loop_log_extra)
+                # Heartbeat must be best-effort; don't break the loop.
+                pass
 
-            # Wait for the next iteration or shutdown signal
-            SHUTDOWN_FLAG.wait(timeout=HEARTBEAT_INTERVAL_SECONDS)
+            if (not effective_enabled) or (not service.ingest_enabled):
+                # Log only on transitions to avoid log storms.
+                if not service.ingest_enabled:
+                    logger.warning("Ingestion is disabled via feature flag.", extra=loop_log_extra)
+                # Sleep can be interrupted by shutdown.
+                SHUTDOWN_FLAG.wait(timeout=HEARTBEAT_INTERVAL_SECONDS)
+                continue
 
-        if not SHUTDOWN_FLAG.is_set():
-            # Defensive: the publish loop should only exit on shutdown.
-            logger.error("Ingestion loop exited without shutdown; restarting.", extra=LOG_EXTRA)
+            # Publish events (business logic is unchanged)
+            logger.info("Published system heartbeat.", extra={**loop_log_extra, "published_topic": service.system_events_topic_path})
+            
+            service.publish_market_tick()
+            logger.info("Published market tick.", extra={**loop_log_extra, "published_topic": service.market_ticks_topic_path})
+
+            service.publish_market_bar_1m()
+            logger.info("Published market bar.", extra={**loop_log_extra, "published_topic": service.market_bars_1m_topic_path})
+
+            service.publish_trade_signal()
+            logger.info("Published trade signal.", extra={**loop_log_extra, "published_topic": service.trade_signals_topic_path})
+
+        except Exception as e:
+            logger.error("Error in ingestion loop: %s", e, extra=loop_log_extra, exc_info=True)
+
+        # Wait for the next iteration or shutdown signal
+        SHUTDOWN_FLAG.wait(timeout=HEARTBEAT_INTERVAL_SECONDS)
 
     logger.warning("Ingestion worker shutting down.", extra=LOG_EXTRA)
 
