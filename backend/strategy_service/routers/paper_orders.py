@@ -15,6 +15,8 @@ from backend.observability.risk_signals import risk_correlation_id
 from ..db import build_raw_order, insert_paper_order
 from ..db import insert_paper_order_idempotent
 from ..models import PaperOrderCreate
+from backend.common.a2a_sdk import RiskAgentClient
+from backend.contracts.risk import TradeCheckRequest
 
 router = APIRouter()
 
@@ -49,38 +51,31 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
 
         order.execution_id = str(uuid.uuid4())
     # 1. Run risk check
-    async with httpx.AsyncClient() as client:
-        try:
-            risk_check_payload = {
-                "correlation_id": corr,
-                "signal_id": order.signal_id,
-                "allocation_id": order.allocation_id,
-                "execution_id": order.execution_id,
-                "broker_account_id": str(order.broker_account_id),
-                "strategy_id": str(order.strategy_id),
-                "symbol": order.symbol,
-                "notional": str(order.notional),
-                "side": order.side,
-                "current_open_positions": 0,
-                "current_trades_today": 0,
-                "current_day_loss": "0.0",
-                "current_day_drawdown": "0.0",
-            }
-            response = await client.post(
-                f"{RISK_SERVICE_URL}/risk/check-trade",
-                json=risk_check_payload,
-                headers={"Authorization": request.headers.get("Authorization", "")},
-            )
-            response.raise_for_status()
-            risk_result = response.json()
-        except httpx.RequestError as e:
-            raise HTTPException(
-                status_code=500, detail=f"Error connecting to risk service: {e}"
-            )
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(
-                status_code=e.response.status_code, detail=f"Risk service error: {e.response.text}"
-            )
+    try:
+        risk_req = TradeCheckRequest(
+            broker_account_id=order.broker_account_id,
+            strategy_id=order.strategy_id,
+            symbol=order.symbol,
+            notional=str(order.notional),
+            side=order.side,
+            current_open_positions=0,
+            current_trades_today=0,
+            current_day_loss="0.0",
+            current_day_drawdown="0.0",
+        )
+        client = RiskAgentClient(RISK_SERVICE_URL)
+        risk_result = await client.check_trade(
+            risk_req,
+            authorization=request.headers.get("Authorization", ""),
+        )
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=500, detail=f"Error connecting to risk service: {e}") from e
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=e.response.status_code, detail=f"Risk service error: {e.response.text}"
+        ) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Risk service request failed: {e}") from e
 
     # 2. If allowed, insert paper order
     if risk_result.get("allowed"):
@@ -123,8 +118,8 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
             notional=order.notional,
             quantity=order.quantity,
             risk_allowed=True,
-            risk_scope=risk_result.get("scope"),
-            risk_reason=risk_result.get("reason"),
+            risk_scope=risk_result.scope,
+            risk_reason=risk_result.reason,
             raw_order=build_raw_order(logical_order),
             status="simulated",
         )
@@ -149,22 +144,5 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
         return insert_paper_order(tenant_id=ctx.tenant_id, payload=payload)
     else:
         # If risk check fails, return the reason
-        try:
-            log_event(
-                __import__("logging").getLogger(__name__),
-                "execution.risk_check.denied",
-                severity="WARNING",
-                correlation_id=corr,
-                tenant_id=ctx.tenant_id,
-                uid=ctx.uid,
-                mode="paper",
-                signal_id=order.signal_id,
-                allocation_id=order.allocation_id,
-                execution_id=order.execution_id,
-                reason=risk_result.get("reason"),
-                scope=risk_result.get("scope"),
-            )
-        except Exception:
-            pass
-        raise HTTPException(status_code=400, detail=risk_result)
+        raise HTTPException(status_code=400, detail=risk_result.model_dump(mode="json"))
 

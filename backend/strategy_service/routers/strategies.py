@@ -1,10 +1,10 @@
 from fastapi import APIRouter, HTTPException, Request
 from typing import List
 from uuid import UUID, uuid4
-import requests
 import os
 from google.cloud import firestore
 from pydantic import BaseModel
+import httpx
 
 from backend.persistence.firestore_retry import with_firestore_retry
 from ..db import get_db, insert_paper_order
@@ -12,7 +12,8 @@ from ..models import StrategyCreate, Strategy, PaperOrderCreate, PaperOrder
 from backend.tenancy.auth import get_tenant_context
 from backend.tenancy.context import TenantContext
 from backend.tenancy.paths import tenant_collection
-from backend.observability.risk_signals import risk_correlation_id
+from backend.common.a2a_sdk import RiskAgentSyncClient
+from backend.contracts.risk import TradeCheckRequest
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
@@ -101,36 +102,30 @@ def simulate_order(payload: PaperOrderSimulateRequest, request: Request):
         payload.execution_id = str(uuid4())
     # For now, we'll assume a simple risk check that always passes.
     # In the future, we can add a more sophisticated risk check here.
-    risk_check_payload = {
-        "correlation_id": corr,
-        "signal_id": payload.signal_id,
-        "allocation_id": payload.allocation_id,
-        "execution_id": payload.execution_id,
-        "broker_account_id": str(payload.broker_account_id),
-        "strategy_id": str(payload.strategy_id),
-        "symbol": payload.symbol,
-        "notional": str(payload.notional),
-        "side": payload.side,
-        "current_open_positions": 0,
-        "current_trades_today": 0,
-        "current_day_loss": "0.0",
-        "current_day_drawdown": "0.0",
-    }
     
     try:
-        response = requests.post(
-            f"{RISK_SERVICE_URL}/risk/check-trade",
-            json=risk_check_payload,
-            headers={"Authorization": request.headers.get("Authorization", "")},
+        risk_req = TradeCheckRequest(
+            broker_account_id=payload.broker_account_id,
+            strategy_id=payload.strategy_id,
+            symbol=payload.symbol,
+            notional=str(payload.notional),
+            side=payload.side,
+            current_open_positions=0,
+            current_trades_today=0,
+            current_day_loss="0.0",
+            current_day_drawdown="0.0",
         )
-        response.raise_for_status()
-        risk_result = response.json()
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Failed to connect to risk service: {e}")
+        risk_client = RiskAgentSyncClient(RISK_SERVICE_URL)
+        risk_result = risk_client.check_trade(
+            risk_req,
+            authorization=request.headers.get("Authorization", ""),
+        )
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to connect to risk service: {e}") from e
 
 
-    if not risk_result.get("allowed"):
-        raise HTTPException(status_code=400, detail=f"Risk check failed: {risk_result.get('reason')}")
+    if not risk_result.allowed:
+        raise HTTPException(status_code=400, detail=f"Risk check failed: {risk_result.reason}")
 
     paper_order = insert_paper_order(
         tenant_id=ctx.tenant_id,
@@ -150,8 +145,8 @@ def simulate_order(payload: PaperOrderSimulateRequest, request: Request):
             notional=payload.notional,
             quantity=payload.quantity,
             risk_allowed=True,
-            risk_scope=risk_result.get("scope"),
-            risk_reason=risk_result.get("reason"),
+            risk_scope=risk_result.scope,
+            risk_reason=risk_result.reason,
             raw_order={
                 "correlation_id": corr,
                 "signal_id": payload.signal_id,
