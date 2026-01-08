@@ -1,0 +1,10 @@
+# Application Server
+gunicorn==22.0.0
+flask==3.0.3
+
+# Google Cloud Libraries
+google-cloud-pubsub
+google-cloud-secret-manager
+google-cloud-firestore
+google-cloud-logging
+protobuf<4.0.0
