@@ -44,6 +44,23 @@ class FirebaseWriter:
         self._client = get_firestore_client(project_id=project_id)
         self.paths = paths or FirestorePaths()
 
+    def close(self) -> None:
+        """
+        Best-effort close for the underlying Firestore client.
+
+        This helps ensure gRPC channels are closed promptly on SIGTERM/SIGINT
+        for long-running ingestion processes.
+        """
+        client = getattr(self, "_client", None)
+        if client is None:
+            return
+        try:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+
     def _quote_doc(self, symbol: str):
         sym = (symbol or "").strip().upper()
         if not sym:

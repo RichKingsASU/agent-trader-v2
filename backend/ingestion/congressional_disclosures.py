@@ -29,6 +29,7 @@ from backend.common.nats.subjects import market_subject
 from backend.common.schemas.codec import encode_message
 from backend.common.schemas.models import MarketEventV1
 from backend.observability.build_fingerprint import get_build_fingerprint
+from backend.safety.process_safety import AsyncShutdown, startup_banner
 
 logger = logging.getLogger(__name__)
 
@@ -363,6 +364,10 @@ class CongressionalDisclosureIngestion:
         self.nats_client: Optional[NATS] = None
         self.quiver_client: Optional[QuiverQuantitativeClient] = None
         self.seen_trades: set[str] = set()  # Track processed trades
+        self._stop = asyncio.Event()
+
+    def request_stop(self) -> None:
+        self._stop.set()
     
     async def connect(self):
         """Connect to NATS and initialize clients."""
@@ -428,14 +433,34 @@ class CongressionalDisclosureIngestion:
         await self.connect()
         
         try:
-            while True:
+            last_hb = 0.0
+            hb_interval_s = float(os.getenv("HEARTBEAT_LOG_INTERVAL_S") or "60")
+            hb_interval_s = max(5.0, hb_interval_s)
+
+            while not self._stop.is_set():
                 try:
                     await self.ingest_once()
                 except Exception as e:
                     logger.error(f"Error during ingestion cycle: {e}", exc_info=True)
-                
+
+                now = time.monotonic()
+                if (now - last_hb) >= hb_interval_s:
+                    last_hb = now
+                    logger.info(
+                        "congressional_ingest.heartbeat",
+                        extra={
+                            "tenant_id": self.tenant_id,
+                            "lookback_days": self.lookback_days,
+                            "poll_interval_s": self.poll_interval,
+                            "seen_trades": len(self.seen_trades),
+                        },
+                    )
+
                 logger.info(f"Sleeping for {self.poll_interval} seconds...")
-                await asyncio.sleep(self.poll_interval)
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=float(self.poll_interval))
+                except asyncio.TimeoutError:
+                    pass
         finally:
             await self.disconnect()
 
@@ -454,6 +479,10 @@ async def main():
 
     configure_startup_logging(
         agent_name="congressional-ingest",
+        intent="Ingest congressional trades and publish market events to NATS.",
+    )
+    startup_banner(
+        service="congressional-ingest",
         intent="Ingest congressional trades and publish market events to NATS.",
     )
     try:
@@ -482,9 +511,21 @@ async def main():
         poll_interval_seconds=poll_interval,
         lookback_days=lookback_days,
     )
-    
+
+    shutdown = AsyncShutdown(service="congressional-ingest")
+    shutdown.add_callback(ingestion.request_stop)
+    shutdown.install()
+
     await ingestion.run_forever()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        raise SystemExit(130)
+    except SystemExit:
+        raise
+    except Exception as e:
+        logger.exception("congressional_ingest.crashed: %s", e)
+        raise SystemExit(1)

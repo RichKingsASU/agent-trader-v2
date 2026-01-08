@@ -39,6 +39,9 @@ class AccountUpdatesClient:
                             balances=balances,
                         )
 
+            except asyncio.CancelledError:
+                # Ensure task cancellation triggers a clean process shutdown.
+                raise
             except Exception as e:
                 logger.exception(f"AccountUpdatesClient error: {e}")
                 await asyncio.sleep(5)

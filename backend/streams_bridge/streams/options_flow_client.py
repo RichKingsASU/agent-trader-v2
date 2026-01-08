@@ -44,6 +44,9 @@ class OptionsFlowClient:
                         events_payload = payload if isinstance(payload, list) else [payload]
                         events = [map_devconsole_options_flow(ep) for ep in events_payload]
                         await self.writer.insert_options_flow(events)
+            except asyncio.CancelledError:
+                # Ensure task cancellation triggers a clean process shutdown.
+                raise
             except Exception as e:
                 logger.exception(f"OptionsFlowClient error: {e}")
                 attempt += 1

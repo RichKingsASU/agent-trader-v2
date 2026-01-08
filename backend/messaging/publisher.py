@@ -277,3 +277,44 @@ class PubSubPublisher:
         )
         return self.publish_envelope(envelope)
 
+    def close(self) -> None:
+        """
+        Best-effort shutdown for the underlying Pub/Sub client.
+
+        Rationale: PublisherClient can own background threads/batching and gRPC channels.
+        This method is intentionally defensive across google-cloud-pubsub versions.
+        """
+        client = getattr(self, "_client", None)
+        if client is None:
+            return
+
+        # Stop background batching threads (older versions).
+        try:
+            stop = getattr(client, "stop", None)
+            if callable(stop):
+                stop()
+        except Exception:
+            pass
+
+        # Close transport / channels (newer versions).
+        try:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+
+        try:
+            transport = getattr(client, "transport", None)
+            transport_close = getattr(transport, "close", None)
+            if callable(transport_close):
+                transport_close()
+        except Exception:
+            pass
+
+    def __enter__(self) -> "PubSubPublisher":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
+        self.close()
+

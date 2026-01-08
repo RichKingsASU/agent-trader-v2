@@ -34,6 +34,9 @@ class NewsStreamClient:
                         payload = json.loads(message)
                         event = map_devconsole_news(payload)
                         await self.writer.insert_news_events([event])
+            except asyncio.CancelledError:
+                # Ensure task cancellation triggers a clean process shutdown.
+                raise
             except Exception as e:
                 logger.exception(f"NewsStreamClient error: {e}")
                 await asyncio.sleep(5)
