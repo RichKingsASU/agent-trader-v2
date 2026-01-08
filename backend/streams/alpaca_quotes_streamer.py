@@ -159,6 +159,16 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
     alpaca = load_alpaca_env()
     symbols = _symbols_from_env()
 
+    # Deterministic Alpaca auth smoke tests (startup gate).
+    # Runs before any subscriptions are made.
+    if os.getenv("SKIP_ALPACA_AUTH_SMOKE_TESTS", "").strip().lower() not in ("1", "true", "yes", "y"):
+        from backend.streams.alpaca_auth_smoke import run_alpaca_auth_smoke_tests_async  # noqa: WPS433
+
+        feed = (os.getenv("ALPACA_DATA_FEED") or "iex").strip().lower() or "iex"
+        timeout_s = float(os.getenv("ALPACA_AUTH_SMOKE_TIMEOUT_S", "5"))
+        logging.info("Running Alpaca auth smoke tests (feed=%s, timeout_s=%s)...", feed, timeout_s)
+        await run_alpaca_auth_smoke_tests_async(feed=feed, timeout_s=timeout_s)
+
     logging.info(f"Subscribing to quotes for: {symbols}")
     if not symbols:
         raise RuntimeError("ALPACA_SYMBOLS resolved to empty list")
