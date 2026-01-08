@@ -12,11 +12,20 @@ from typing import Any
 # --- Structured Logging & Pre-run Configuration ---
 # This must run before any other modules are imported to ensure logging is configured correctly.
 
-# Set up structured logging with the google-cloud-logging library
-# This will automatically format logs as JSON and include standard Cloud Run fields.
-import google.cloud.logging
-logging_client = google.cloud.logging.Client()
-logging_client.setup_logging()
+# Set up structured logging with the google-cloud-logging library.
+# In CI/local environments, Application Default Credentials may be unavailable; in that case,
+# fall back to standard logging rather than crashing at import-time.
+try:
+    import google.cloud.logging  # type: ignore
+
+    logging_client = google.cloud.logging.Client()
+    logging_client.setup_logging()
+except Exception as e:  # noqa: BLE001 - best-effort logging initialization
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+    logging.getLogger(__name__).warning(
+        "google-cloud-logging unavailable; using std logging: %s",
+        e,
+    )
 
 # Set up a logger adapter to inject custom static fields into all log messages.
 LOG_EXTRA = {
