@@ -4,7 +4,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
 from backend.common.logging import log_event
@@ -32,6 +32,41 @@ def _short_hash_id(obj: Any) -> str:
     """
     raw = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:32]
+
+def _truncate_str(value: Any, *, max_len: int) -> str:
+    s = "" if value is None else str(value)
+    if max_len <= 0:
+        return ""
+    return s if len(s) <= max_len else (s[: max_len - 1] + "…")
+
+
+def _sanitize_payload(value: Any) -> Any:
+    """
+    Best-effort scrub for secrets/PII in sampled DLQ docs.
+    """
+    SENSITIVE_KEYS = {
+        "authorization",
+        "api_key",
+        "apikey",
+        "token",
+        "access_token",
+        "refresh_token",
+        "password",
+        "secret",
+        "client_secret",
+    }
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            ks = str(k).lower()
+            if ks in SENSITIVE_KEYS:
+                out[str(k)] = "[redacted]"
+            else:
+                out[str(k)] = _sanitize_payload(v)
+        return out
+    if isinstance(value, list):
+        return [_sanitize_payload(v) for v in value[:50]]
+    return value
 
 
 def deterministic_alert_id(payload: dict[str, Any]) -> str:
@@ -183,6 +218,74 @@ class FirestoreWriteLayer:
 
     def __init__(self, *, project_id: Optional[str] = None) -> None:
         self._db = get_firestore_client(project_id=project_id)
+
+    def write_sampled_dlq_event(
+        self,
+        *,
+        message_id: Optional[str],
+        subscription: Optional[str],
+        delivery_attempt: Optional[int],
+        http_status: int,
+        reason: str,
+        error: str,
+        kind: Optional[str],
+        attributes: Optional[dict[str, str]],
+        payload: Any,
+        ttl_hours: float,
+    ) -> Optional[str]:
+        """
+        Best-effort: write a sampled DLQ-candidate record into Firestore.
+
+        Retention is bounded via `expiresAt` (TTL field; enable TTL on collection group `sampled_dlq`).
+        """
+        try:
+            hours = float(ttl_hours)
+        except Exception:
+            hours = 72.0
+        if hours <= 0:
+            return None
+
+        now = _utc_now()
+        msg_id = (message_id or "").strip()
+        doc_id = msg_id or _short_hash_id({"ts": now.isoformat(), "subscription": subscription or "", "reason": reason})
+        ref = self._db.collection("sampled_dlq").document(doc_id)
+
+        safe_payload = _sanitize_payload(payload)
+        payload_json = ""
+        try:
+            payload_json = json.dumps(safe_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        except Exception:
+            payload_json = ""
+        max_payload_chars = 24_000
+        payload_too_large = bool(payload_json) and (len(payload_json) > max_payload_chars)
+
+        doc: dict[str, Any] = {
+            "messageId": msg_id,
+            "subscription": (subscription or "").strip(),
+            "kind": (kind or "").strip(),
+            "httpStatus": int(http_status),
+            "reason": _truncate_str(reason, max_len=256),
+            "error": _truncate_str(error, max_len=2048),
+            "deliveryAttempt": int(delivery_attempt) if delivery_attempt is not None else None,
+            "attributes": dict(attributes or {}),
+            "receivedAt": now,
+            "expiresAt": now + timedelta(hours=hours),
+        }
+
+        if not payload_too_large:
+            doc["payload"] = safe_payload
+            doc["payloadTruncated"] = False
+        elif payload_json:
+            doc["payloadJsonSnippet"] = _truncate_str(payload_json, max_len=max_payload_chars)
+            doc["payloadTruncated"] = True
+
+        doc = {k: v for k, v in doc.items() if v is not None and v != ""}
+        try:
+            ref.set(doc, merge=False)
+            return doc_id
+        except Exception as e:
+            log_event(logger, "dlq.sample_write_failed", severity="WARNING", error=str(e), message_id=msg_id)
+            return None
 
     def write_ops_service_latest(
         self,

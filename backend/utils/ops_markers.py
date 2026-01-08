@@ -9,12 +9,50 @@ but is provided under a valid Python module filename for imports.
 
 import json
 import os
+import logging
+import signal
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+logger = logging.getLogger(__name__)
+
+_SHUTDOWN_EVENT = threading.Event()
+_SHUTDOWN_HANDLERS_INSTALLED = False
+
+
+def _install_shutdown_handlers_once() -> None:
+    """
+    Best-effort: set a module shutdown flag on SIGINT/SIGTERM.
+
+    This avoids tight loops during shutdown and makes sleep interruptible.
+    """
+    global _SHUTDOWN_HANDLERS_INSTALLED
+    if _SHUTDOWN_HANDLERS_INSTALLED:
+        return
+    if threading.current_thread() is not threading.main_thread():
+        return
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            prev = signal.getsignal(sig)
+
+            def _handler(signum, frame, _prev=prev) -> None:  # type: ignore[no-untyped-def]
+                _SHUTDOWN_EVENT.set()
+                # Chain any previous handler (best-effort).
+                try:
+                    if callable(_prev):
+                        _prev(signum, frame)
+                except Exception:
+                    pass
+
+            signal.signal(sig, _handler)
+        _SHUTDOWN_HANDLERS_INSTALLED = True
+    except Exception:
+        # Never crash import or callers due to signal handler limitations.
+        return
 
 
 def _utcnow() -> datetime:
@@ -130,7 +168,11 @@ class OpsDB:
 
 
 def heartbeat_loop(
-    ctx: OpsContext, interval_sec: int = 30, status: str = "ok", meta: Optional[Dict[str, Any]] = None
+    ctx: OpsContext,
+    interval_sec: int = 30,
+    status: str = "ok",
+    meta: Optional[Dict[str, Any]] = None,
+    shutdown_event: threading.Event | None = None,
 ):
     """
     Use in always-on stream services:
@@ -139,7 +181,16 @@ def heartbeat_loop(
     """
 
     db = OpsDB()
-    while True:
-        db.upsert_heartbeat(ctx, status=status, meta=meta)
-        time.sleep(interval_sec)
+    _install_shutdown_handlers_once()
+    ev = shutdown_event or _SHUTDOWN_EVENT
+    i = 0
+    while not ev.is_set():
+        i += 1
+        logger.info("ops_markers heartbeat_loop iteration=%d component=%s", i, ctx.component)
+        try:
+            db.upsert_heartbeat(ctx, status=status, meta=meta)
+        except Exception:
+            # Never allow the heartbeat thread to die silently.
+            logger.exception("ops_markers heartbeat_loop error component=%s", ctx.component)
+        ev.wait(timeout=float(interval_sec))
 
