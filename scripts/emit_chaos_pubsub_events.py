@@ -103,14 +103,13 @@ def _valid_payload_for_topic(topic: str, *, now_iso: str, idx: int) -> Dict[str,
             "eventId": f"bar-{idx}-{uuid.uuid4().hex[:8]}",
             "symbol": "AAPL",
             "timeframe": "1m",
-            "producedAt": now_iso,
-            "start": now_iso,
-            "end": now_iso,
-            "o": 123.0,
-            "h": 124.0,
-            "l": 122.5,
-            "c": 123.7,
-            "v": 123456,
+            "ts": now_iso,
+            "open": 123.0,
+            "high": 124.0,
+            "low": 122.5,
+            "close": 123.7,
+            "volume": 123456,
+            "source": "synthetic",
         }
     if topic == "trade-signals":
         return {
@@ -134,6 +133,17 @@ def _valid_system_event_payload(*, now_iso: str, idx: int) -> Dict[str, Any]:
         "region": "us-central1",
     }
 
+def _wrap_event_envelope(*, event_type: str, agent_name: str, ts: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "event_type": event_type,
+        "agent_name": agent_name,
+        "git_sha": "chaos-test",
+        "ts": ts,
+        "trace_id": uuid.uuid4().hex,
+        "payload": payload,
+    }
+
 
 def build_scenario(
     scenario: str,
@@ -148,7 +158,12 @@ def build_scenario(
     Returns (scenario_label, pubsub_push_envelope).
     """
     if scenario == "valid_system_event":
-        payload = _valid_system_event_payload(now_iso=now_iso, idx=idx)
+        payload = _wrap_event_envelope(
+            event_type="system.event",
+            agent_name=f"chaos-svc-{idx}",
+            ts=now_iso,
+            payload=_valid_system_event_payload(now_iso=now_iso, idx=idx),
+        )
         env = _make_push_envelope(
             payload=payload,
             message_id=message_id,
@@ -159,7 +174,13 @@ def build_scenario(
         return scenario, env
 
     if scenario == "valid_topic_event":
-        payload = _valid_payload_for_topic(topic, now_iso=now_iso, idx=idx)
+        event_type = "market.tick" if topic == "market-ticks" else ("market.bars.1m" if topic == "market-bars-1m" else "trade.signal")
+        payload = _wrap_event_envelope(
+            event_type=event_type,
+            agent_name="chaos-producer",
+            ts=now_iso,
+            payload=_valid_payload_for_topic(topic, now_iso=now_iso, idx=idx),
+        )
         env = _make_push_envelope(
             payload=payload,
             message_id=message_id,

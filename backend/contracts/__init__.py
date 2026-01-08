@@ -1,10 +1,16 @@
-"""
-Shared, versioned contracts for cross-agent/service interactions.
+from __future__ import annotations
 
-Rule of thumb:
-- Services OWN behavior/handlers.
-- Contracts OWN schemas (request/response payload shapes).
+from backend.contracts.registry import (
+    SchemaValidationError,
+    get_schema_path_for_topic,
+    get_validator_for_topic,
+    validate_topic_event,
+)
 
-Import these contracts from both producers and consumers to prevent drift.
-"""
+__all__ = [
+    "SchemaValidationError",
+    "get_schema_path_for_topic",
+    "get_validator_for_topic",
+    "validate_topic_event",
+]
 
