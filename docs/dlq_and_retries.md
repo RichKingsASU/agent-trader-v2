@@ -196,6 +196,18 @@ All consumers should emit one structured JSON log line per message with:
 Minimum logging rule:
 - Any message that will be retried (push non-2xx / pull nack) should produce an **ERROR** log with enough fields to correlate retries and measure rates.
 
+### Optional: sampled DLQ audit in Firestore (bounded retention)
+
+Some consumers in this repo also emit a **best-effort Firestore write** when they return a poison **4xx** response (i.e., “this message should route to DLQ if configured”):
+
+- Collection: `sampled_dlq/{messageId}` (collection group: `sampled_dlq`)
+- Fields:
+  - `receivedAt`, `expiresAt` (TTL)
+  - `messageId`, `subscription`, `topic`, `handler/kind`, `deliveryAttempt`, `httpStatus`
+  - `reason`, bounded `error`, and a sanitized+bounded `payload` (or snippet)
+
+This is intentionally **sampled** (deterministic by `messageId`) and TTL’d to ensure **bounded retention** and low cost. Enable Firestore TTL for `sampled_dlq` as described in `firestore_ttl.md`.
+
 ---
 
 ## Alerting thresholds (pragmatic defaults)

@@ -407,13 +407,27 @@ class MarketDataIngestor:
 
             if self.cfg.dry_run:
                 self._stats.heartbeat_writes_ok += 1
-                log_json("heartbeat", last_symbol=self._last_symbol, status="dry_run", ts=payload["ts"])
+                log_json(
+                    "heartbeat",
+                    last_symbol=self._last_symbol,
+                    status="dry_run",
+                    ingest_enabled=bool(enabled),
+                    ingest_enabled_source=source,
+                    ts=payload["ts"],
+                )
             else:
                 try:
                     assert self._writer is not None
                     self._writer.write_ops_market_ingest(payload)
                     self._stats.heartbeat_writes_ok += 1
-                    log_json("heartbeat", last_symbol=self._last_symbol, status="ok", ts=payload["ts"])
+                    log_json(
+                        "heartbeat",
+                        last_symbol=self._last_symbol,
+                        status="ok" if enabled else "paused",
+                        ingest_enabled=bool(enabled),
+                        ingest_enabled_source=source,
+                        ts=payload["ts"],
+                    )
                 except Exception as e:
                     self._stats.heartbeat_writes_err += 1
                     log_json(
@@ -421,6 +435,8 @@ class MarketDataIngestor:
                         last_symbol=self._last_symbol,
                         status="error",
                         ts=payload["ts"],
+                        ingest_enabled=bool(enabled),
+                        ingest_enabled_source=source,
                         error=str(e),
                         severity="ERROR",
                     )
@@ -471,6 +487,7 @@ class MarketDataIngestor:
         self._backoff = backoff
         max_attempts = int(os.getenv("RECONNECT_MAX_ATTEMPTS", "5"))
         min_sleep_s = float(os.getenv("RECONNECT_MIN_SLEEP_S", "0.5"))
+        ingest_poll_s = float(os.getenv("INGEST_ENABLED_POLL_S", "5"))
 
         # DRY_RUN can simulate quotes even without Alpaca credentials.
         if self.cfg.dry_run and (not alpaca.key_id or not alpaca.secret_key):
@@ -734,10 +751,7 @@ async def _amain() -> int:
     )
     try:
         fp = get_build_fingerprint()
-        print(
-            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
-            flush=True,
-        )
+        log_json("build_fingerprint", intent_type="build_fingerprint", service="market-data-ingest", **fp)
     except Exception:
         pass
     cfg = load_config_from_env()

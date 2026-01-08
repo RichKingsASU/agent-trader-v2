@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
+from backend.time.utc_audit import ensure_utc
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -20,10 +22,7 @@ def _parse_rfc3339_best_effort(value: Any) -> Optional[datetime]:
     if value is None:
         return None
     if isinstance(value, datetime):
-        dt = value
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+        return ensure_utc(value, source="backend.ops_dashboard_materializer.models._parse_rfc3339_best_effort", field="datetime")
     s = str(value).strip()
     if not s:
         return None
@@ -31,9 +30,7 @@ def _parse_rfc3339_best_effort(value: Any) -> Optional[datetime]:
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+        return ensure_utc(dt, source="backend.ops_dashboard_materializer.models._parse_rfc3339_best_effort", field="iso_string")
     except Exception:
         return None
 

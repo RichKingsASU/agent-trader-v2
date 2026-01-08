@@ -34,6 +34,9 @@ spec:
               value: REPLACE_ME_GIT_SHA
             - name: AGENT_MODE
               value: "OFF"
+            # Soft ingest pause switch (default enabled if unset)
+            # - name: INGEST_ENABLED
+            #   value: "1"
           command: ["uvicorn"]
           args:
             - backend.ingestion.market_data_ingest_service:app

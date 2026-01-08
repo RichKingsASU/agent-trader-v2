@@ -827,6 +827,8 @@ class ExecutionEngine:
                 ),
             )
         except Exception:
+            # Best-effort replay marker; never block engine startup.
+            logger.exception("exec.replay_startup_marker_failed")
             pass
 
     @property
@@ -875,6 +877,8 @@ class ExecutionEngine:
                 ),
             )
         except Exception:
+            # Best-effort replay telemetry; never fail execution.
+            logger.exception("exec.replay_intent_received_log_failed")
             pass
 
         # Smart routing: check transaction costs BEFORE risk validation
@@ -919,6 +923,7 @@ class ExecutionEngine:
                     ),
                 )
             except Exception:
+                logger.exception("exec.replay_smart_routing_checkpoint_log_failed")
                 pass
             
             if not routing_decision.should_execute:
@@ -944,6 +949,7 @@ class ExecutionEngine:
                         ),
                     )
                 except Exception:
+                    logger.exception("exec.replay_smart_routing_state_transition_log_failed")
                     pass
                 return ExecutionResult(
                     status="downgraded",
@@ -980,6 +986,7 @@ class ExecutionEngine:
                 ),
             )
         except Exception:
+            logger.exception("exec.replay_risk_checkpoint_log_failed")
             pass
 
         if not risk.allowed:
@@ -1004,6 +1011,7 @@ class ExecutionEngine:
                     ),
                 )
             except Exception:
+                logger.exception("exec.replay_rejected_state_transition_log_failed")
                 pass
             return ExecutionResult(status="rejected", risk=risk, routing=routing_decision, message=risk.reason)
 
@@ -1030,6 +1038,7 @@ class ExecutionEngine:
                     ),
                 )
             except Exception:
+                logger.exception("exec.replay_dry_run_state_transition_log_failed")
                 pass
             return ExecutionResult(status="dry_run", risk=risk, routing=routing_decision, message="dry_run_enabled")
 
@@ -1081,6 +1090,7 @@ class ExecutionEngine:
                 ),
             )
         except Exception:
+            logger.exception("exec.replay_broker_placed_log_failed")
             pass
 
         # If immediately filled (or partially filled), write to ledger AND portfolio history.

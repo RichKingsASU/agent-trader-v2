@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 
 _ALLOWED = {"OFF", "OBSERVE", "EVAL", "PAPER"}
 _logged_startup = False
@@ -33,7 +34,29 @@ def enforce_agent_mode_guard() -> str:
 
     if not _logged_startup:
         # This line is intentionally stable and easy to grep in container logs.
-        print(f"AGENT_STARTUP: mode={mode_for_log} execution_enabled=false", flush=True)
+        service = (
+            (os.getenv("SERVICE_NAME") or "").strip()
+            or (os.getenv("K_SERVICE") or "").strip()
+            or (os.getenv("AGENT_NAME") or "").strip()
+            or "unknown"
+        )
+        env = (
+            (os.getenv("ENVIRONMENT") or "").strip()
+            or (os.getenv("ENV") or "").strip()
+            or (os.getenv("APP_ENV") or "").strip()
+            or (os.getenv("DEPLOY_ENV") or "").strip()
+            or "unknown"
+        )
+        try:
+            sys.stdout.write(
+                f"AGENT_STARTUP: mode={mode_for_log} execution_enabled=false service={service} env={env}\n"
+            )
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+        except Exception:
+            pass
         _logged_startup = True
 
     logger = logging.getLogger(__name__)

@@ -19,15 +19,19 @@ from strategy import (
 )
 
 
+def out(msg: str = "") -> None:
+    sys.stdout.write(str(msg) + "\n")
+
+
 def test_basic_functionality():
     """Test basic strategy functionality."""
-    print("🧪 Running Smoke Test for 0DTE Gamma Scalper Strategy\n")
+    out("🧪 Running Smoke Test for 0DTE Gamma Scalper Strategy\n")
     
     # Reset state
     reset_strategy_state()
     
     # Test 1: Position tracking
-    print("Test 1: Position Tracking")
+    out("Test 1: Position Tracking")
     event = {
         "protocol": "v1",
         "type": "market_event",
@@ -44,27 +48,27 @@ def test_basic_functionality():
     }
     on_market_event(event)
     assert "SPY_CALL" in _portfolio_positions, "❌ Position not tracked"
-    print("✅ Position tracking works")
+    out("✅ Position tracking works")
     
     # Test 2: Net delta calculation
-    print("\nTest 2: Net Delta Calculation")
+    out("\nTest 2: Net Delta Calculation")
     net_delta = _get_net_portfolio_delta()
     expected_delta = Decimal("6.50")
     assert net_delta == expected_delta, f"❌ Expected {expected_delta}, got {net_delta}"
-    print(f"✅ Net delta calculated correctly: {net_delta}")
+    out(f"✅ Net delta calculated correctly: {net_delta}")
     
     # Test 3: Hedge order generation
-    print("\nTest 3: Hedge Order Generation")
+    out("\nTest 3: Hedge Order Generation")
     reset_strategy_state()
     event["payload"]["underlying_price"] = 495.50
     orders = on_market_event(event)
     assert orders is not None and len(orders) > 0, "❌ No hedge orders generated"
     assert orders[0]["symbol"] == "SPY", "❌ Wrong hedge symbol"
     assert orders[0]["side"] == "sell", "❌ Wrong hedge side"
-    print(f"✅ Hedge order generated: {orders[0]['side'].upper()} {orders[0]['qty']} {orders[0]['symbol']}")
+    out(f"✅ Hedge order generated: {orders[0]['side'].upper()} {orders[0]['qty']} {orders[0]['symbol']}")
     
     # Test 4: Market close exit
-    print("\nTest 4: Market Close Exit")
+    out("\nTest 4: Market Close Exit")
     reset_strategy_state()
     _portfolio_positions["SPY_CALL"] = {
         "delta": Decimal("0.65"),
@@ -90,21 +94,21 @@ def test_basic_functionality():
     assert exit_orders is not None and len(exit_orders) > 0, "❌ No exit orders generated"
     assert exit_orders[0]["client_tag"] == "0dte_gamma_scalper_exit", "❌ Wrong order tag"
     assert "SPY_CALL" not in _portfolio_positions, "❌ Position not cleared"
-    print(f"✅ Exit order generated at market close: {exit_orders[0]['side'].upper()} {exit_orders[0]['qty']} {exit_orders[0]['symbol']}")
+    out(f"✅ Exit order generated at market close: {exit_orders[0]['side'].upper()} {exit_orders[0]['qty']} {exit_orders[0]['symbol']}")
     
-    print("\n" + "="*60)
-    print("✅ All smoke tests passed!")
-    print("="*60)
+    out("\n" + "="*60)
+    out("✅ All smoke tests passed!")
+    out("="*60)
 
 
 if __name__ == "__main__":
     try:
         test_basic_functionality()
     except AssertionError as e:
-        print(f"\n❌ Test failed: {e}")
+        out(f"\n❌ Test failed: {e}")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        out(f"\n❌ Unexpected error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

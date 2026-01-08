@@ -8,6 +8,7 @@ from backend.common.logging import init_structured_logging, install_fastapi_requ
 init_structured_logging(service="marketdata-mcp-server")
 
 import asyncio
+import logging
 import os
 import time
 from datetime import datetime, timezone
@@ -27,7 +28,11 @@ from backend.utils.session import get_market_session
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 from backend.common.kill_switch import get_kill_switch_state
 
+logger = logging.getLogger(__name__)
+
 _PROCESS_START_MONOTONIC = time.monotonic()
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 install_fastapi_request_id_middleware(app, service="marketdata-mcp-server")
@@ -93,6 +98,7 @@ async def startup_event() -> None:
                 try:
                     app.state.ops_logger.heartbeat(kind="loop")  # type: ignore[attr-defined]
                 except Exception:
+                    logger.exception("marketdata_mcp.ops_logger_heartbeat_failed")
                     pass
             await asyncio.sleep(1.0)
 
@@ -104,6 +110,7 @@ async def startup_event() -> None:
     try:
         app.state.ops_logger.event("starting_streamer", severity="INFO")  # type: ignore[attr-defined]
     except Exception:
+        logger.exception("marketdata_mcp.ops_logger_starting_streamer_event_failed")
         pass
     stream_task: asyncio.Task = asyncio.create_task(alpaca_streamer_main(app.state.streamer_ready_event))
     app.state.stream_task = stream_task
@@ -114,7 +121,16 @@ async def startup_event() -> None:
         except Exception as e:  # pragma: no cover
             # Surface background streamer failures (and count them) instead of failing silently.
             errors_total.inc(labels={"component": "marketdata-mcp-server"})
-            print(f"[marketdata-mcp-server] alpaca_streamer_task_failed: {type(e).__name__}: {e}", flush=True)
+            logger.error(
+                "alpaca_streamer_task_failed",
+                exc_info=True,
+                extra={
+                    "event_type": "streamer.task_failed",
+                    "service": "marketdata-mcp-server",
+                    "errorType": type(e).__name__,
+                    "error": str(e),
+                },
+            )
 
     stream_task.add_done_callback(_done_callback)
 
@@ -130,6 +146,7 @@ async def startup_event() -> None:
         try:
             app.state.ops_logger.readiness(ready=True)  # type: ignore[attr-defined]
         except Exception:
+            logger.exception("marketdata_mcp.ops_logger_readiness_failed")
             pass
 
 
@@ -140,6 +157,7 @@ async def shutdown_event() -> None:
     try:
         app.state.ops_logger.shutdown(phase="initiated")  # type: ignore[attr-defined]
     except Exception:
+        logger.exception("marketdata_mcp.ops_logger_shutdown_failed")
         pass
 
     # Stop background tasks.
@@ -153,6 +171,7 @@ async def shutdown_event() -> None:
         try:
             t.cancel()
         except Exception:
+            logger.exception("marketdata_mcp.background_task_cancel_failed")
             pass
 
     tasks = [t for t in (ready_task, stream_task, loop_task) if t is not None]
@@ -162,6 +181,7 @@ async def shutdown_event() -> None:
         await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10.0)
     except Exception:
         # Best-effort; never hang shutdown.
+        logger.exception("marketdata_mcp.shutdown_task_wait_failed")
         pass
 
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
+logger = logging.getLogger(__name__)
 
 class FirecrackerAPIError(RuntimeError):
     pass
@@ -53,11 +55,18 @@ class UnixHTTPClient:
             s.connect(self.sock_path)
             s.sendall(req)
             buf = bytearray()
+            recv_iter = 0
             while True:
-                chunk = s.recv(65536)
+                recv_iter += 1
+                try:
+                    chunk = s.recv(65536)
+                except Exception:
+                    logger.exception("firecracker_api recv_error iteration=%d", recv_iter)
+                    raise
                 if not chunk:
                     break
                 buf.extend(chunk)
+            logger.info("firecracker_api recv_loop_iteration=%d", recv_iter)
         finally:
             try:
                 s.close()
