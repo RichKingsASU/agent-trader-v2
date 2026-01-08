@@ -8,6 +8,7 @@ from backend.common.logging import init_structured_logging, install_fastapi_requ
 init_structured_logging(service="marketdata-mcp-server")
 
 import asyncio
+import logging
 import os
 import time
 from datetime import datetime, timezone
@@ -28,6 +29,8 @@ from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops
 from backend.common.kill_switch import get_kill_switch_state
 
 _PROCESS_START_MONOTONIC = time.monotonic()
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 install_fastapi_request_id_middleware(app, service="marketdata-mcp-server")
@@ -114,7 +117,16 @@ async def startup_event() -> None:
         except Exception as e:  # pragma: no cover
             # Surface background streamer failures (and count them) instead of failing silently.
             errors_total.inc(labels={"component": "marketdata-mcp-server"})
-            print(f"[marketdata-mcp-server] alpaca_streamer_task_failed: {type(e).__name__}: {e}", flush=True)
+            logger.error(
+                "alpaca_streamer_task_failed",
+                exc_info=True,
+                extra={
+                    "event_type": "streamer.task_failed",
+                    "service": "marketdata-mcp-server",
+                    "errorType": type(e).__name__,
+                    "error": str(e),
+                },
+            )
 
     stream_task.add_done_callback(_done_callback)
 

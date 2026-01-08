@@ -4,10 +4,15 @@ import requests
 import psycopg
 from datetime import datetime
 from dotenv import load_dotenv
+import logging
 
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.time.providers import normalize_alpaca_timestamp
 from backend.utils.session import get_market_session
+from backend.common.logging import init_structured_logging
+
+init_structured_logging(service="test-live-quote-ingest")
+logger = logging.getLogger(__name__)
 
 # --- Environment Configuration ---
 load_dotenv() # Load environment variables from .env.local
@@ -32,23 +37,32 @@ def fetch_latest_quote(symbol: str):
         r.raise_for_status()
         return r.json().get("quote")
     except requests.RequestException as e:
-        print(f"Failed to fetch quote for {symbol}: {e}")
+        logger.exception(
+            "Failed to fetch quote",
+            extra={"event_type": "alpaca.quote_fetch_failed", "symbol": symbol, "error": str(e)},
+        )
         return None
 
 def main():
     """Fetches a single quote and upserts it to trigger a realtime event."""
-    print("--- Running Test Quote Ingest ---")
+    logger.info("Running test quote ingest", extra={"event_type": "test_quote_ingest.start"})
     try:
         conn = psycopg.connect(DATABASE_URL)
     except psycopg.OperationalError as e:
-        print(f"FATAL: Could not connect to database: {e}")
+        logger.critical(
+            "Could not connect to database",
+            extra={"event_type": "db.connect_failed", "error": str(e)},
+        )
         return
 
     symbol_to_test = SYMBOLS[0]
     quote = fetch_latest_quote(symbol_to_test)
 
     if not quote:
-        print(f"No quote found for {symbol_to_test}, cannot trigger realtime event.")
+        logger.warning(
+            "No quote found; cannot trigger realtime event",
+            extra={"event_type": "alpaca.no_quote", "symbol": symbol_to_test},
+        )
         return
 
     ts = normalize_alpaca_timestamp(quote["t"])
@@ -80,8 +94,11 @@ def main():
         )
     conn.commit()
     conn.close()
-    print(f"Upserted test quote for {symbol_to_test} to trigger change.")
-    print("--- Finished Test Quote Ingest ---")
+    logger.info(
+        "Upserted test quote to trigger change",
+        extra={"event_type": "db.upserted_test_quote", "symbol": symbol_to_test},
+    )
+    logger.info("Finished test quote ingest", extra={"event_type": "test_quote_ingest.end"})
 
 if __name__ == "__main__":
     main()

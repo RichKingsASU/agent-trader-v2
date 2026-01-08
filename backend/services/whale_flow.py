@@ -526,7 +526,8 @@ def get_recent_conviction(
         >>> from backend.services.whale_flow import get_recent_conviction
         >>> conviction = get_recent_conviction("user123", "AAPL", lookback_minutes=30)
         >>> if conviction["has_activity"] and conviction["avg_conviction"] > 0.7:
-        >>>     print(f"Strong whale activity detected: {conviction['dominant_sentiment']}")
+        >>>     # Use your service logger here (avoid print in production code).
+        >>>     _ = conviction["dominant_sentiment"]
     """
     service = WhaleFlowService(db=db)
     return service.get_recent_conviction(uid, ticker, lookback_minutes)

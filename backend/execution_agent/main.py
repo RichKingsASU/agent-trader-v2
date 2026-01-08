@@ -7,6 +7,7 @@ _enforce_agent_mode_guard()
 import json
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -103,7 +104,14 @@ def _json_log(event: dict[str, Any]) -> None:
         payload.setdefault("request_id", None)
         payload.setdefault("correlation_id", None)
 
-    print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+    try:
+        sys.stdout.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+    except Exception:
+        return
 
 
 def _decision_output_path(*, base_dir: Path, now: datetime) -> Path:

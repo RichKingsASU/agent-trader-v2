@@ -21,11 +21,19 @@ def _emit_json(*, service: str, intent_type: str, severity: str = "INFO", **fiel
     payload = {
         "ts": _utc_now_iso(),
         "service": service,
+        "env": (os.getenv("ENVIRONMENT") or os.getenv("ENV") or os.getenv("APP_ENV") or os.getenv("DEPLOY_ENV") or "unknown"),
         "intent_type": intent_type,
-        "severity": severity,
+        "severity": str(severity).upper(),
         **fields,
     }
-    print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+    try:
+        sys.stdout.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+    except Exception:
+        return
 
 
 def startup_banner(*, service: str, intent: str, **extra: Any) -> None:
