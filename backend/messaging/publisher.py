@@ -6,6 +6,11 @@ import time
 from typing import Any, Mapping, Optional
 
 from backend.messaging.envelope import EventEnvelope
+from backend.messaging.pubsub_attributes import (
+    EVENT_ENVELOPE_SCHEMA_VERSION,
+    build_standard_attributes,
+    resolve_environment,
+)
 from backend.observability.ops_json_logger import log as log_json
 
 
@@ -195,6 +200,21 @@ class PubSubPublisher:
         started = time.monotonic()
         last_exc: Optional[BaseException] = None
 
+        std_attrs = build_standard_attributes(
+            event_type=envelope.event_type,
+            schema_version=EVENT_ENVELOPE_SCHEMA_VERSION,
+            producer=envelope.agent_name,
+            environment=resolve_environment(),
+        )
+        # Keep existing non-standard attributes for filtering/debugging.
+        publish_attrs: dict[str, str] = {
+            **std_attrs,
+            "agent_name": envelope.agent_name,
+            "trace_id": envelope.trace_id,
+            "git_sha": envelope.git_sha,
+            "ts": envelope.ts,
+        }
+
         for attempt in range(1, max_attempts + 1):
             try:
                 remaining = max(0.0, deadline_s - (time.monotonic() - started))
@@ -203,12 +223,8 @@ class PubSubPublisher:
                 future = self._client.publish(
                     self._topic_path,
                     envelope.to_bytes(),
-                    # Also duplicate key fields as attributes for filtering/debugging.
-                    event_type=envelope.event_type,
-                    agent_name=envelope.agent_name,
-                    trace_id=envelope.trace_id,
-                    git_sha=envelope.git_sha,
-                    ts=envelope.ts,
+                    # Attributes only (payload bodies MUST NOT be mutated).
+                    **publish_attrs,
                 )
                 message_id = str(future.result(timeout=timeout_s))
 
@@ -218,8 +234,11 @@ class PubSubPublisher:
                     severity="INFO",
                     topic=self._topic_path,
                     message_id=message_id,
-                    event_type=envelope.event_type,
-                    agent_name=envelope.agent_name,
+                    event_type=std_attrs["event_type"],
+                    schema_version=std_attrs["schema_version"],
+                    producer=std_attrs["producer"],
+                    environment=std_attrs["environment"],
+                    agent_name=envelope.agent_name,  # legacy
                     trace_id=envelope.trace_id,
                     attempt=attempt,
                     elapsed_ms=int((time.monotonic() - started) * 1000),
@@ -235,8 +254,11 @@ class PubSubPublisher:
                     "pubsub_publish_failure",
                     severity="ERROR" if (not retryable or attempt == max_attempts) else "WARNING",
                     topic=self._topic_path,
-                    event_type=envelope.event_type,
-                    agent_name=envelope.agent_name,
+                    event_type=std_attrs["event_type"],
+                    schema_version=std_attrs["schema_version"],
+                    producer=std_attrs["producer"],
+                    environment=std_attrs["environment"],
+                    agent_name=envelope.agent_name,  # legacy
                     trace_id=envelope.trace_id,
                     attempt=attempt,
                     max_attempts=max_attempts,
