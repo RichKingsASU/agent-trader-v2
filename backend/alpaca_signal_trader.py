@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from backend.persistence.firebase_client import get_firestore_client
 from backend.persistence.firestore_retry import with_firestore_retry
+from backend.risk.risk_allocator import allocate_risk
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,13 @@ class TradeSignal:
     notional_usd: float
     reason: str
     raw_model_output: Optional[Dict[str, Any]] = None
+
+
+def _env_float(name: str, default: float) -> float:
+    v = os.getenv(name)
+    if v is None or str(v).strip() == "":
+        return float(default)
+    return float(str(v).strip())
 
 
 def enforce_affordability(*, signal: TradeSignal, buying_power_usd: float) -> TradeSignal:
@@ -295,10 +303,45 @@ Symbol: {symbol}
     signal = TradeSignal(
         action=str(parsed.get("action") or "flat").strip().lower(),
         symbol=str(parsed.get("symbol") or symbol).strip().upper(),
+        # Risk sizing is enforced deterministically below via allocate_risk().
         notional_usd=_as_float(parsed.get("notional_usd")),
         reason=str(parsed.get("reason") or "").strip() or "No reason provided.",
         raw_model_output=parsed,
     )
 
-    return enforce_affordability(signal=signal, buying_power_usd=buying_power_usd)
+    # --- Canonical deterministic risk allocation ---
+    #
+    # We treat the strategy/model "requested" notional as an input intent, but the final
+    # notional is *always* computed by the canonical allocator with portfolio-level caps.
+    #
+    # Env is read here (NOT inside allocate_risk) so the allocator itself has no hidden globals.
+    daily_cap_pct = _env_float("RISK_DAILY_CAP_PCT", 1.0)
+    max_strategy_pct = _env_float("RISK_MAX_STRATEGY_ALLOCATION_PCT", 1.0)
+    daily_cap_pct = max(0.0, min(1.0, daily_cap_pct))
+    max_strategy_pct = max(0.0, min(1.0, max_strategy_pct))
+
+    requested_notional = max(0.0, float(signal.notional_usd or 0.0))
+    allocated = allocate_risk(
+        strategy_id="vertex_ai_signal",
+        signal_confidence=1.0,
+        market_state={
+            "buying_power_usd": buying_power_usd,
+            "daily_risk_cap_pct": daily_cap_pct,
+            "max_strategy_allocation_pct": max_strategy_pct,
+            "current_allocations_usd": {},  # unknown in this context; caller/orchestrator may provide
+            "requested_notional_usd": requested_notional,
+            "confidence_scaling": False,  # preserve strategy-requested sizing; only constrain by caps
+        },
+    )
+
+    sized = TradeSignal(
+        action=signal.action,
+        symbol=signal.symbol,
+        notional_usd=float(allocated),
+        reason=signal.reason,
+        raw_model_output=signal.raw_model_output,
+    )
+
+    # Keep affordability as an additional hard gate (should be redundant if caps <= buying power).
+    return enforce_affordability(signal=sized, buying_power_usd=buying_power_usd)
 
