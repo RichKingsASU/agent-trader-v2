@@ -7,6 +7,8 @@ _enforce_agent_mode_guard()
 import json
 import logging
 import os
+import signal
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +23,7 @@ from backend.trading.execution.decider import decide_execution
 from backend.trading.execution.models import SafetySnapshot
 
 logger = logging.getLogger(__name__)
+_STOP_EVENT = threading.Event()
 
 
 def _utc_now() -> datetime:
@@ -153,18 +156,49 @@ def append_decision_ndjson(*, decisions_path: Path, decision_obj: dict[str, Any]
         return False
 
 
-def iter_ndjson_follow(*, path: Path, start_at_end: bool, poll_interval_s: float) -> Iterable[dict[str, Any]]:
+def iter_ndjson_follow(
+    *,
+    path: Path,
+    start_at_end: bool,
+    poll_interval_s: float,
+    stop_event: threading.Event | None = None,
+) -> Iterable[dict[str, Any]]:
     """
     Follow an NDJSON file and yield parsed objects.
     """
+    ev = stop_event or _STOP_EVENT
     with path.open("r", encoding="utf-8") as f:
         if start_at_end:
             f.seek(0, os.SEEK_END)
 
-        while True:
-            line = f.readline()
+        poll_iters = 0
+        yield_iters = 0
+        while not ev.is_set():
+            poll_iters += 1
+            try:
+                line = f.readline()
+            except Exception as e:
+                _json_log(
+                    {
+                        "ts": _utc_now().isoformat(),
+                        "intent_type": "proposal_follow_read_error",
+                        "error": f"{type(e).__name__}: {e}",
+                        "poll_iterations": int(poll_iters),
+                    }
+                )
+                ev.wait(timeout=float(poll_interval_s))
+                continue
             if not line:
-                time.sleep(poll_interval_s)
+                # Interruptible sleep (shutdown-friendly).
+                if poll_iters % 200 == 0:
+                    _json_log(
+                        {
+                            "ts": _utc_now().isoformat(),
+                            "intent_type": "proposal_follow_poll",
+                            "poll_iterations": int(poll_iters),
+                        }
+                    )
+                ev.wait(timeout=float(poll_interval_s))
                 continue
             s = line.strip()
             if not s:
@@ -181,6 +215,15 @@ def iter_ndjson_follow(*, path: Path, start_at_end: bool, poll_interval_s: float
                 )
                 continue
             if isinstance(obj, dict):
+                yield_iters += 1
+                if yield_iters % 1 == 0:
+                    _json_log(
+                        {
+                            "ts": _utc_now().isoformat(),
+                            "intent_type": "proposal_follow_iteration",
+                            "iteration": int(yield_iters),
+                        }
+                    )
                 yield obj
             else:
                 _json_log(
@@ -237,6 +280,28 @@ def main() -> None:
 
     start_at_end = (str(os.getenv("PROPOSALS_START_AT") or "end").strip().lower() == "end")
     poll_interval_s = float(os.getenv("PROPOSALS_POLL_INTERVAL_S") or "0.25")
+    stop_event = _STOP_EVENT
+
+    # Best-effort: allow SIGTERM/SIGINT to stop the follow loop.
+    def _handle_signal(signum, _frame=None):  # type: ignore[no-untyped-def]
+        try:
+            _json_log(
+                {
+                    "ts": _utc_now().isoformat(),
+                    "intent_type": "signal_received",
+                    "signum": int(signum),
+                }
+            )
+        except Exception:
+            pass
+        stop_event.set()
+
+    if threading.current_thread() is threading.main_thread():
+        for s in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(s, _handle_signal)
+            except Exception:
+                pass
 
     _json_log(
         {
@@ -253,7 +318,14 @@ def main() -> None:
     agent_name = str(os.getenv("AGENT_NAME") or "execution-agent").strip() or "execution-agent"
     agent_role = str(os.getenv("AGENT_ROLE") or "execution").strip() or "execution"
 
-    for proposal in iter_ndjson_follow(path=proposals_path, start_at_end=start_at_end, poll_interval_s=poll_interval_s):
+    for proposal in iter_ndjson_follow(
+        path=proposals_path,
+        start_at_end=start_at_end,
+        poll_interval_s=poll_interval_s,
+        stop_event=stop_event,
+    ):
+        if stop_event.is_set():
+            break
         proposal_id = str(proposal.get("proposal_id") or proposal.get("id") or "").strip() or "missing_proposal_id"
 
         if proposal_id in processed_ids:

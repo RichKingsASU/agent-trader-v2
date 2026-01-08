@@ -48,12 +48,18 @@ class NewsStreamClient:
     async def run_forever(self):
         if not self.cfg.news_stream_url:
             logger.warning("NEWS_STREAM_URL not set; news stream client idle.")
+            idle_iter = 0
             while True:
+                idle_iter += 1
+                logger.info("news_stream idle_loop_iteration=%d", idle_iter)
                 await asyncio.sleep(30)
             return
 
         attempt = 0
+        loop_iter = 0
         while True:
+            loop_iter += 1
+            logger.info("news_stream connect_loop_iteration=%d", loop_iter)
             try:
                 headers = {}
                 if self.cfg.news_stream_api_key:
@@ -75,6 +81,7 @@ class NewsStreamClient:
 
                 async with websockets.connect(self.cfg.news_stream_url, extra_headers=headers) as websocket:
                     attempt = 0
+                    recv_iter = 0
                     try:
                         log_event(
                             logger,
@@ -87,6 +94,9 @@ class NewsStreamClient:
                         pass
                     while True:
                         message = await websocket.recv()
+                        recv_iter += 1
+                        if recv_iter % 100 == 0:
+                            logger.info("news_stream recv_loop_iteration=%d", recv_iter)
                         self._recv_total += 1
                         self._recv_since_log += 1
                         try:

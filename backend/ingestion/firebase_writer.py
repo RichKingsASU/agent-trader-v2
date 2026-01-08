@@ -2,10 +2,41 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 import random
+import signal
+import threading
 from typing import Any
 
 from backend.time.nyse_time import parse_ts, utc_now
+
+logger = logging.getLogger(__name__)
+_SHUTDOWN_EVENT = threading.Event()
+_SHUTDOWN_HANDLERS_INSTALLED = False
+
+
+def _install_shutdown_handlers_once() -> None:
+    global _SHUTDOWN_HANDLERS_INSTALLED
+    if _SHUTDOWN_HANDLERS_INSTALLED:
+        return
+    if threading.current_thread() is not threading.main_thread():
+        return
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            prev = signal.getsignal(sig)
+
+            def _handler(signum, frame, _prev=prev) -> None:  # type: ignore[no-untyped-def]
+                _SHUTDOWN_EVENT.set()
+                try:
+                    if callable(_prev):
+                        _prev(signum, frame)
+                except Exception:
+                    pass
+
+            signal.signal(sig, _handler)
+        _SHUTDOWN_HANDLERS_INSTALLED = True
+    except Exception:
+        return
 
 @dataclass(frozen=True)
 class FirestorePaths:
@@ -116,6 +147,7 @@ class FirebaseWriter:
             gexc.TooManyRequests,
         )
 
+        _install_shutdown_handlers_once()
         attempt = 0
         while True:
             try:
@@ -125,9 +157,11 @@ class FirebaseWriter:
                     raise
                 sleep_s = min(max_delay_s, base_delay_s * (2**attempt))
                 # Full jitter: sleep uniformly in [0, sleep_s)
-                import time
-
-                time.sleep(random.random() * sleep_s)
+                attempt_n = attempt + 1
+                logger.info("firestore_retry iteration=%d sleep_s=%.3f", attempt_n, float(sleep_s))
+                if _SHUTDOWN_EVENT.is_set():
+                    raise InterruptedError("shutdown requested") from e
+                _SHUTDOWN_EVENT.wait(timeout=float(random.random() * float(sleep_s)))
                 attempt += 1
 
     def _normalize_latest_quote(self, symbol: str, payload: dict[str, Any]) -> dict[str, Any]:

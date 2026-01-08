@@ -94,7 +94,11 @@ async def main():
     await nc.subscribe(subject, cb=options_handler)
     print(f"🧠 Options Quant Bot Active. Subscribed to {subject}. Filtering for High Delta...")
 
+    loop_iter = 0
     while True:
+        loop_iter += 1
+        if loop_iter % 60 == 0:
+            print(f"[options_bot] loop_iteration={loop_iter}")
         await asyncio.sleep(1)
 
 if __name__ == "__main__":

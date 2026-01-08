@@ -11,7 +11,10 @@ class PriceStreamClient:
         self.writer = writer
 
     async def run_forever(self):
+        iteration = 0
         while True:
+            iteration += 1
+            logger.info("price_stream_client loop_iteration=%d", iteration)
             try:
                 # TODO: Wire this to the actual Developer Console WebSocket/API endpoint.
                 logger.info("stream_bridge: price stream client placeholder")

@@ -6,6 +6,7 @@ import logging
 import os
 from dataclasses import dataclass
 import random
+import threading
 import time
 from typing import Any, Iterable, Optional
 
@@ -47,6 +48,7 @@ class FirestoreWriter:
         self.project_id = project_id
         self.collections = collections or FirestoreCollections()
         self.dry_run = dry_run
+        self._shutdown_event = threading.Event()
 
         self._db = get_firestore_client(project_id=project_id)
 
@@ -54,6 +56,11 @@ class FirestoreWriter:
         """
         Best-effort close for the underlying Firestore client.
         """
+        # Mark shutdown first so retry loops can exit promptly.
+        try:
+            self._shutdown_event.set()
+        except Exception:
+            pass
         db = getattr(self, "_db", None)
         if db is None:
             return
@@ -81,7 +88,11 @@ class FirestoreWriter:
                 if (not isinstance(e, transient)) or attempt >= (max_attempts - 1):
                     raise
                 sleep_s = min(max_delay_s, base_delay_s * (2**attempt))
-                time.sleep(random.random() * sleep_s)
+                logger.info("stream_bridge firestore_retry iteration=%d sleep_s=%.3f", attempt + 1, float(sleep_s))
+                # Full jitter: random between 0 and sleep_s (interruptible).
+                if self._shutdown_event.is_set():
+                    raise InterruptedError("shutdown requested") from e
+                self._shutdown_event.wait(timeout=float(random.random() * float(sleep_s)))
                 attempt += 1
 
     @classmethod

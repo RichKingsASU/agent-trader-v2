@@ -51,12 +51,18 @@ class OptionsFlowClient:
     async def run_forever(self):
         if not self.cfg.options_flow_url:
             logger.warning("OPTIONS_FLOW_URL not set; options flow client idle.")
+            idle_iter = 0
             while True:
+                idle_iter += 1
+                logger.info("options_flow idle_loop_iteration=%d", idle_iter)
                 await asyncio.sleep(30)
             return
 
         attempt = 0
+        loop_iter = 0
         while True:
+            loop_iter += 1
+            logger.info("options_flow connect_loop_iteration=%d", loop_iter)
             try:
                 headers = {}
                 if self.cfg.options_flow_api_key:
@@ -78,6 +84,7 @@ class OptionsFlowClient:
 
                 async with websockets.connect(self.cfg.options_flow_url, extra_headers=headers) as websocket:
                     attempt = 0
+                    recv_iter = 0
                     try:
                         log_event(
                             logger,
@@ -94,6 +101,9 @@ class OptionsFlowClient:
                         pass
                     while True:
                         message = await websocket.recv()
+                        recv_iter += 1
+                        if recv_iter % 100 == 0:
+                            logger.info("options_flow recv_loop_iteration=%d", recv_iter)
                         self._recv_total += 1
                         self._recv_since_log += 1
                         try:
