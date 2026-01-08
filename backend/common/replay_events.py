@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sys
 import time
 import uuid
 from contextvars import ContextVar
@@ -126,6 +127,25 @@ def _default_agent_name(*, fallback: str = "agenttrader") -> str:
     )
 
 
+def _env_any(*names: str, default: str = "unknown") -> str:
+    for n in names:
+        v = os.getenv(n)
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s:
+            return s
+    return default
+
+
+def _default_service() -> str:
+    return _env_any("SERVICE_NAME", "SERVICE", "OTEL_SERVICE_NAME", "K_SERVICE", "AGENT_NAME", default="unknown")
+
+
+def _default_env() -> str:
+    return _env_any("ENVIRONMENT", "ENV", "APP_ENV", "DEPLOY_ENV", default="unknown")
+
+
 def _default_trace_id() -> str:
     return (_ctx_trace_id.get() or "").strip() or _PROCESS_TRACE_ID
 
@@ -146,6 +166,9 @@ def build_replay_event(
         "replay_schema": REPLAY_SCHEMA,
         "ts": _utc_now_iso(),
         "event": str(event),
+        # Required baseline identity fields (safe to add to replay schema; parsers can ignore).
+        "service": _default_service(),
+        "env": _default_env(),
         "trace_id": (trace_id or "").strip() or _default_trace_id(),
         "agent_name": (agent_name or "").strip() or _default_agent_name(),
     }
@@ -170,4 +193,18 @@ def dumps_replay_event(obj: Dict[str, Any]) -> str:
     Compact JSON string for embedding into normal logs.
     """
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+
+
+def emit_replay_event(obj: Dict[str, Any]) -> None:
+    """
+    Emit a replay event as a single JSON line to stdout (best-effort).
+    """
+    try:
+        sys.stdout.write(dumps_replay_event(obj) + "\n")
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+    except Exception:
+        return
 

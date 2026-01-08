@@ -41,3 +41,27 @@ def test_inmemory_store_updates_summary():
     assert s.latest_payload_by_event_type["a"]["n"] == 3
     assert s.latest_payload_by_event_type["b"]["n"] == 2
 
+
+def test_parse_pubsub_push_rejects_missing_message_id():
+    body = {
+        "message": {"data": base64.b64encode(b'{"x":1}').decode("ascii"), "publishTime": "2026-01-08T12:34:56Z"},
+        "subscription": "projects/p/subscriptions/s",
+    }
+    try:
+        parse_pubsub_push(body)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "messageId" in str(e)
+
+
+def test_parse_pubsub_push_rejects_invalid_base64():
+    body = {
+        "message": {"data": "!!!not-base64!!!", "messageId": "m1", "publishTime": "2026-01-08T12:34:56Z"},
+        "subscription": "projects/p/subscriptions/s",
+    }
+    try:
+        parse_pubsub_push(body)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "base64" in str(e)
+

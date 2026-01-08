@@ -115,6 +115,12 @@ jobs:
           python3 -m pip install --upgrade "pip==24.3.1"
           python3 -m pip install -r backend/requirements.lock
 
+      - name: Install vm_ingest minimal dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install -r backend/ingestion/requirements.txt
+
       - name: YAML syntax validation (no kubectl)
         shell: bash
         run: |

@@ -99,15 +99,33 @@ def parse_pubsub_push(body: dict[str, Any]) -> IngestedEvent:
       { "message": { "data": "base64...", "attributes": {...}, "messageId": "...", "publishTime": "..." },
         "subscription": "projects/.../subscriptions/..." }
     """
-    msg = body.get("message") if isinstance(body, dict) else None
+    if not isinstance(body, dict):
+        raise ValueError("invalid body (not object)")
+
+    subscription = body.get("subscription")
+    if not isinstance(subscription, str) or not subscription.strip():
+        raise ValueError("missing subscription")
+
+    msg = body.get("message")
     if not isinstance(msg, dict):
         raise ValueError("missing message")
+
+    message_id = msg.get("messageId") or msg.get("message_id") or None
+    if not isinstance(message_id, str) or not message_id.strip():
+        raise ValueError("missing message.messageId")
+
+    publish_time_raw = msg.get("publishTime") or msg.get("publish_time")
+    if not isinstance(publish_time_raw, str) or not publish_time_raw.strip():
+        raise ValueError("missing message.publishTime")
 
     data_b64 = msg.get("data")
     if not isinstance(data_b64, str) or not data_b64.strip():
         raise ValueError("missing message.data")
 
-    raw = base64.b64decode(data_b64)
+    try:
+        raw = base64.b64decode(data_b64.encode("ascii"), validate=True)
+    except Exception as e:
+        raise ValueError("invalid message.data (base64)") from e
     payload = _json_loads_best_effort(raw)
 
     attrs = msg.get("attributes") if isinstance(msg.get("attributes"), dict) else {}
@@ -115,9 +133,7 @@ def parse_pubsub_push(body: dict[str, Any]) -> IngestedEvent:
 
     event_type = extract_event_type(payload, attributes)
 
-    message_id = msg.get("messageId") or msg.get("message_id") or None
-    publish_time_utc = _parse_rfc3339_best_effort(msg.get("publishTime") or msg.get("publish_time"))
-    subscription = body.get("subscription") if isinstance(body.get("subscription"), str) else None
+    publish_time_utc = _parse_rfc3339_best_effort(publish_time_raw)
 
     # Prefer Pub/Sub messageId for idempotency.
     event_id = str(message_id).strip() if message_id else uuid.uuid4().hex
@@ -128,7 +144,7 @@ def parse_pubsub_push(body: dict[str, Any]) -> IngestedEvent:
         received_at_utc=_utcnow(),
         publish_time_utc=publish_time_utc,
         message_id=str(message_id).strip() if message_id else None,
-        subscription=subscription,
+        subscription=str(subscription).strip(),
         attributes=attributes,
         payload=payload,
     )

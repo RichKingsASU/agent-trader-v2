@@ -1,12 +1,42 @@
 from __future__ import annotations
 
+import logging
 import random
+import signal
+import threading
 import time
 from typing import Callable, TypeVar
 
 from google.api_core import exceptions as gexc
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
+_SHUTDOWN_EVENT = threading.Event()
+_SHUTDOWN_HANDLERS_INSTALLED = False
+
+
+def _install_shutdown_handlers_once() -> None:
+    global _SHUTDOWN_HANDLERS_INSTALLED
+    if _SHUTDOWN_HANDLERS_INSTALLED:
+        return
+    if threading.current_thread() is not threading.main_thread():
+        return
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            prev = signal.getsignal(sig)
+
+            def _handler(signum, frame, _prev=prev) -> None:  # type: ignore[no-untyped-def]
+                _SHUTDOWN_EVENT.set()
+                try:
+                    if callable(_prev):
+                        _prev(signum, frame)
+                except Exception:
+                    pass
+
+            signal.signal(sig, _handler)
+        _SHUTDOWN_HANDLERS_INSTALLED = True
+    except Exception:
+        return
 
 _TRANSIENT_EXCEPTIONS: tuple[type[BaseException], ...] = (
     gexc.Aborted,
@@ -30,6 +60,7 @@ def with_firestore_retry(
 
     Intended for Firestore write operations (set/create/update/batch.commit).
     """
+    _install_shutdown_handlers_once()
     attempt = 0
     while True:
         try:
@@ -40,6 +71,9 @@ def with_firestore_retry(
                 raise
 
             sleep_s = min(max_delay_s, base_delay_s * (2**attempt))
-            time.sleep(random.random() * sleep_s)
+            logger.info("firestore_retry iteration=%d sleep_s=%.3f", attempt + 1, float(sleep_s))
+            if _SHUTDOWN_EVENT.is_set():
+                raise InterruptedError("shutdown requested") from e
+            _SHUTDOWN_EVENT.wait(timeout=float(random.random() * float(sleep_s)))
             attempt += 1
 
