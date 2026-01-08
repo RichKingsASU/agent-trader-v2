@@ -1,20 +1,23 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Layout } from "@/components/Layout";
-import { OverviewPage } from "@/pages/OverviewPage";
-import { AgentDetailPage } from "@/pages/AgentDetailPage";
-import { DeployReportPage } from "@/pages/DeployReportPage";
+import { AuthGate } from "@/components/AuthGate";
+import { OverviewFirestorePage } from "@/pages/OverviewFirestorePage";
+import { IngestHealthPage } from "@/pages/IngestHealthPage";
+import { ServiceDetailPage } from "@/pages/ServiceDetailPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 
 export function App() {
   return (
     <BrowserRouter>
       <Layout>
-        <Routes>
-          <Route path="/" element={<OverviewPage />} />
-          <Route path="/agents/:name" element={<AgentDetailPage />} />
-          <Route path="/reports/deploy" element={<DeployReportPage />} />
-          <Route path="*" element={<NotFoundPage />} />
-        </Routes>
+        <AuthGate>
+          <Routes>
+            <Route path="/" element={<OverviewFirestorePage />} />
+            <Route path="/ingest" element={<IngestHealthPage />} />
+            <Route path="/services/:serviceId" element={<ServiceDetailPage />} />
+            <Route path="*" element={<NotFoundPage />} />
+          </Routes>
+        </AuthGate>
       </Layout>
     </BrowserRouter>
   );
