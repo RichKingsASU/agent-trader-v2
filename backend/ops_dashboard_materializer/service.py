@@ -5,6 +5,7 @@ from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce
 _enforce_agent_mode_guard()
 
 import json
+import hashlib
 import logging
 import os
 import time
@@ -28,10 +29,41 @@ logger = logging.getLogger("ops_dashboard_materializer")
 
 
 SERVICE_NAME = "ops-dashboard-materializer"
+DLQ_SAMPLE_RATE_DEFAULT = "0.01"
+DLQ_SAMPLE_TTL_HOURS_DEFAULT = "72"
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+def _float_env(name: str, *, default: str) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        raw = default
+    try:
+        return float(raw)
+    except Exception:
+        try:
+            return float(default)
+        except Exception:
+            return 0.0
+
+
+def _stable_sample(message_id: str, *, rate: float) -> bool:
+    try:
+        r = float(rate)
+    except Exception:
+        r = 0.0
+    if r <= 0.0:
+        return False
+    if r >= 1.0:
+        return True
+    mid = (message_id or "").strip()
+    if not mid:
+        return False
+    h = hashlib.sha1(mid.encode("utf-8", errors="ignore")).digest()
+    x = int.from_bytes(h[:4], "big") / float(2**32)
+    return x < r
 
 
 def _load_routes_from_env() -> list[RouteConfig]:
@@ -380,8 +412,51 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log_event(logger, "route.unknown_kind", severity="ERROR", kind=str(route.kind), subscription=subscription)
         raise HTTPException(status_code=500, detail="unknown_kind")
 
-    except HTTPException:
+    except HTTPException as he:
         # Non-2xx -> Pub/Sub retry + DLQ compatibility.
+        # For poison/permanent errors (4xx), emit an explicit DLQ-candidate log line
+        # and write a small sampled Firestore record (bounded by TTL) for debugging.
+        status_code = int(getattr(he, "status_code", 0) or 0)
+        if 400 <= status_code < 500:
+            detail = he.detail
+            log_event(
+                logger,
+                "pubsub.dlq_candidate",
+                severity="ERROR",
+                http_status=status_code,
+                subscription=subscription,
+                message_id=ev.message_id,
+                deliveryAttempt=delivery_attempt,
+                kind=(route.kind if route is not None else None),
+                schemaVersion=schema_version,
+                detail=str(detail),
+            )
+            sample_rate = _float_env("DLQ_SAMPLE_RATE", default=DLQ_SAMPLE_RATE_DEFAULT)
+            ttl_hours = _float_env("DLQ_SAMPLE_TTL_HOURS", default=DLQ_SAMPLE_TTL_HOURS_DEFAULT)
+            if _stable_sample(str(ev.message_id or ""), rate=sample_rate):
+                doc_id = writer.write_sampled_dlq_event(
+                    message_id=ev.message_id,
+                    subscription=subscription,
+                    delivery_attempt=delivery_attempt,
+                    http_status=status_code,
+                    reason=str(detail),
+                    error=str(detail),
+                    kind=(route.kind if route is not None else None),
+                    attributes=ev.attributes,
+                    payload=payload,
+                    ttl_hours=ttl_hours,
+                )
+                if doc_id:
+                    log_event(
+                        logger,
+                        "pubsub.dlq_sample_written",
+                        severity="NOTICE",
+                        sampled_doc_id=doc_id,
+                        message_id=ev.message_id,
+                        subscription=subscription,
+                        kind=(route.kind if route is not None else None),
+                        deliveryAttempt=delivery_attempt,
+                    )
         raise
     except Exception as e:
         log_event(

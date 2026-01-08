@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from contextlib import contextmanager
@@ -8,6 +9,7 @@ from typing import Any, Mapping, Optional
 
 
 _CORRELATION_ID: ContextVar[Optional[str]] = ContextVar("correlation_id", default=None)
+logger = logging.getLogger(__name__)
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
@@ -102,6 +104,7 @@ def install_fastapi_correlation_middleware(app: Any) -> None:
         # Avoid importing fastapi types at module import time.
         from starlette.requests import Request  # noqa: WPS433
     except Exception:
+        logger.exception("observability.correlation.middleware_import_failed")
         return
 
     @app.middleware("http")
@@ -113,6 +116,7 @@ def install_fastapi_correlation_middleware(app: Any) -> None:
                 resp.headers["X-Request-Id"] = cid
                 resp.headers["X-Correlation-Id"] = cid
             except Exception:
+                logger.exception("observability.correlation.response_header_set_failed")
                 pass
             return resp
 

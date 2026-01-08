@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+import traceback
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -16,6 +18,16 @@ from schema_router import route_payload
 
 
 SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"
+DLQ_SAMPLE_RATE_DEFAULT = "0.01"  # 1% (deterministic per messageId)
+DLQ_SAMPLE_TTL_HOURS_DEFAULT = "72"
+
+_logger = logging.getLogger("cloudrun_consumer")
+if not _logger.handlers:
+    _handler = logging.StreamHandler(stream=sys.stdout)
+    _handler.setFormatter(logging.Formatter("%(message)s"))
+    _logger.addHandler(_handler)
+_logger.setLevel(str(os.getenv("LOG_LEVEL") or "INFO").upper())
+_logger.propagate = False
 
 
 def _utc_now() -> datetime:
@@ -41,6 +53,7 @@ def _parse_rfc3339(value: Any) -> Optional[datetime]:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
     except Exception:
+        log("time.parse_failed", severity="ERROR", value=s, exception=traceback.format_exc()[-8000:])
         return None
 
 
@@ -54,9 +67,35 @@ def log(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
     }
     payload.update(fields)
     try:
-        print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+        sev = str(severity).upper()
+        if sev in {"ERROR", "CRITICAL", "ALERT", "EMERGENCY"}:
+            _logger.error(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+        elif sev in {"WARNING"}:
+            _logger.warning(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+        elif sev in {"DEBUG"}:
+            _logger.debug(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+        else:
+            _logger.info(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
     except Exception:
-        return
+        # Preserve stack traces even if stdout/serialization is broken.
+        try:
+            sys.stderr.write(
+                json.dumps(
+                    {
+                        "timestamp": _utc_now().isoformat(),
+                        "severity": "ERROR",
+                        "service": SERVICE_NAME,
+                        "event_type": "logging.emit_failed",
+                        "exception": traceback.format_exc()[-8000:],
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            return
 
 
 def _require_json_content_type(req: Request) -> None:
@@ -105,6 +144,18 @@ def _require_env(name: str, *, default: Optional[str] = None) -> str:
             return default
         raise RuntimeError(f"Missing required env var: {name}")
     return str(v).strip()
+
+def _float_env(name: str, *, default: str) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        raw = default
+    try:
+        return float(raw)
+    except Exception:
+        try:
+            return float(default)
+        except Exception:
+            return 0.0
 
 
 app = FastAPI(title="Cloud Run Pub/Sub → Firestore Materializer", version="0.1.0")
@@ -296,6 +347,49 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
                 continue
             attributes[str(k)] = "" if v is None else str(v)
 
+    writer: FirestoreWriter = app.state.firestore_writer
+    dlq_sample_rate = _float_env("DLQ_SAMPLE_RATE", default=DLQ_SAMPLE_RATE_DEFAULT)
+    dlq_sample_ttl_hours = _float_env("DLQ_SAMPLE_TTL_HOURS", default=DLQ_SAMPLE_TTL_HOURS_DEFAULT)
+
+    def _record_dlq_candidate(*, reason: str, error: str, handler_name: str, topic: str, payload: Optional[dict[str, Any]]) -> None:
+        # "DLQ" is enforced by Pub/Sub dead-letter policy; we log + sample so we can debug without relying on DLQ retention.
+        log(
+            "pubsub.dlq_candidate",
+            severity="ERROR",
+            messageId=message_id,
+            subscription=subscription_str,
+            topic=topic or "",
+            handler=handler_name,
+            reason=reason,
+            error=error,
+            http_status=400,
+            deliveryAttempt=delivery_attempt,
+            dlq_sample_rate=dlq_sample_rate,
+        )
+        wrote = writer.maybe_write_sampled_dlq_event(
+            message_id=message_id,
+            subscription=subscription_str,
+            topic=topic or "",
+            handler=handler_name,
+            http_status=400,
+            reason=reason,
+            error=error,
+            delivery_attempt=delivery_attempt,
+            attributes=attributes,
+            payload=payload,
+            sample_rate=dlq_sample_rate,
+            ttl_hours=dlq_sample_ttl_hours,
+        )
+        if wrote:
+            log(
+                "pubsub.dlq_sample_written",
+                severity="NOTICE",
+                messageId=message_id,
+                subscription=subscription_str,
+                handler=handler_name,
+                deliveryAttempt=delivery_attempt,
+            )
+
     data_b64 = message.get("data")
     if not isinstance(data_b64, str) or not data_b64.strip():
         log(
@@ -373,8 +467,6 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
     else:
         # For non-system streams, prefer the inferred topic (from attributes/payload/subscription mapping).
         source_topic = inferred_topic or ""
-
-    writer: FirestoreWriter = app.state.firestore_writer
 
     try:
         result = handler.handler(

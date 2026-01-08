@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import logging
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Optional, Tuple
@@ -9,6 +10,10 @@ from typing import Any, Dict, Optional, Tuple
 import requests
 
 from backend.common.env import get_alpaca_key_id, get_alpaca_secret_key, get_env
+from backend.common.logging import init_structured_logging
+
+init_structured_logging(service="alpaca-options-chain-ingest")
+logger = logging.getLogger(__name__)
 
 
 def _json_safe(v: Any) -> Any:
@@ -166,9 +171,16 @@ def main() -> int:
 
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
-        print(
-            f"OK: {underlying} snapshots={len(snapshots)} pages={pages_used} snapshot_time={snapshot_time.isoformat()} "
-            "(API-only mode; DATABASE_URL not set)"
+        logger.info(
+            "options_snapshots_fetched",
+            extra={
+                "event_type": "options_snapshots_fetched",
+                "mode": "api_only",
+                "underlying": underlying,
+                "snapshots": len(snapshots),
+                "pages_used": pages_used,
+                "snapshot_time": snapshot_time.isoformat(),
+            },
         )
         return 0
 
@@ -178,9 +190,16 @@ def main() -> int:
         underlying_symbol=underlying,
         snapshots=snapshots,
     )
-    print(
-        f"OK: {underlying} snapshots={len(snapshots)} upserted={upserted} pages={pages_used} "
-        f"snapshot_time={snapshot_time.isoformat()}"
+    logger.info(
+        "options_snapshots_upserted",
+        extra={
+            "event_type": "options_snapshots_upserted",
+            "underlying": underlying,
+            "snapshots": len(snapshots),
+            "upserted": upserted,
+            "pages_used": pages_used,
+            "snapshot_time": snapshot_time.isoformat(),
+        },
     )
     return 0
 

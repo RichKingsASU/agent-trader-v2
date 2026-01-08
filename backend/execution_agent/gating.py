@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from typing import Mapping, NoReturn
 
@@ -68,6 +69,9 @@ def refuse_startup(*, reason_codes: list[str]) -> NoReturn:
     payload = {
         "ts": _utc_now_iso(),
         "intent_type": "execution_agent_startup_refused",
+        "severity": "ERROR",
+        "service": (os.getenv("SERVICE_NAME") or os.getenv("K_SERVICE") or os.getenv("AGENT_NAME") or "execution-agent"),
+        "env": (os.getenv("ENVIRONMENT") or os.getenv("ENV") or os.getenv("APP_ENV") or os.getenv("DEPLOY_ENV") or "unknown"),
         "reason_codes": list(reason_codes),
         "required_gate": {
             "REPO_ID": "agent-trader-v2",
@@ -79,7 +83,14 @@ def refuse_startup(*, reason_codes: list[str]) -> NoReturn:
             "EXECUTION_ENABLED": "false",
         },
     }
-    print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+    try:
+        sys.stdout.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+    except Exception:
+        pass
     raise SystemExit(2)
 
 

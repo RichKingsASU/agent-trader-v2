@@ -39,11 +39,17 @@ async def main():
     ops = OpsLogger("stream-bridge")
     try:
         fp = get_build_fingerprint()
-        print(
-            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
-            flush=True,
+        logger.info(
+            "build_fingerprint",
+            extra={
+                "event_type": "build_fingerprint",
+                "intent_type": "build_fingerprint",
+                "service": "stream-bridge",
+                **fp,
+            },
         )
     except Exception:
+        logger.exception("stream_bridge.build_fingerprint_log_failed")
         pass
     logger.info("Starting Stream Bridge service...")
     cfg = load_config()
@@ -59,6 +65,7 @@ async def main():
     try:
         ops.readiness(ready=True)
     except Exception:
+        logger.exception("stream_bridge.ops_logger_readiness_failed")
         pass
 
     try:
@@ -69,11 +76,13 @@ async def main():
             try:
                 ops.shutdown(phase="initiated")
             except Exception:
+                logger.exception("stream_bridge.ops_logger_shutdown_failed")
                 pass
             for t in [heartbeat_task, *tasks]:
                 try:
                     t.cancel()
                 except Exception:
+                    logger.exception("stream_bridge.task_cancel_failed")
                     pass
 
         shutdown.add_callback(_initiate_shutdown)
@@ -88,18 +97,23 @@ async def main():
             try:
                 t.cancel()
             except Exception:
+                logger.exception("stream_bridge.task_cancel_failed")
                 pass
         await asyncio.gather(heartbeat_task, *tasks, return_exceptions=True)
         try:
             writer.close()
         except Exception:
+            logger.exception("stream_bridge.firestore_writer_close_failed")
             pass
         logger.info("Stream Bridge service stopped.")
 
 async def _heartbeat_loop(ops: OpsLogger) -> None:
     interval = float(os.getenv("OPS_HEARTBEAT_LOG_INTERVAL_S") or "60")
     interval = max(5.0, interval)
+    iteration = 0
     while True:
+        iteration += 1
+        logger.info("stream_bridge heartbeat_loop_iteration=%d", iteration)
         try:
             # Include a small, log-friendly snapshot of in-process counters so
             # operators can see traffic without an external metrics system.
@@ -123,7 +137,8 @@ async def _heartbeat_loop(ops: OpsLogger) -> None:
                 reconnect_attempts_total=_by_stream("reconnect_attempts_total"),
             )
         except Exception:
-            pass
+            # Never let the loop die silently or hide recurring failures.
+            logger.exception("stream_bridge heartbeat_loop_error iteration=%d", iteration)
         await asyncio.sleep(interval)
 
 if __name__ == "__main__":
