@@ -37,8 +37,8 @@ The backtesting engine allows you to test trading strategies on historical marke
 Ensure you have Alpaca API credentials:
 
 ```bash
-export ALPACA_API_KEY="your_api_key"
-export ALPACA_SECRET_KEY="your_secret_key"
+export APCA_API_KEY_ID="your_api_key"
+export APCA_API_SECRET_KEY="your_secret_key"
 ```
 
 ### 2. Run a Backtest (Python)
@@ -335,8 +335,8 @@ The backtesting page is available at `/backtesting` in the web app.
 
 **Solution:** Set environment variables:
 ```bash
-export ALPACA_API_KEY="your_key"
-export ALPACA_SECRET_KEY="your_secret"
+export APCA_API_KEY_ID="your_key"
+export APCA_API_SECRET_KEY="your_secret"
 ```
 
 ### Issue: "No data available for backtesting"

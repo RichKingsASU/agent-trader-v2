@@ -158,7 +158,7 @@ During the migration period, the system supports both models:
 ### Legacy Paths (Deprecated)
 These paths are still supported but will be removed in a future release:
 - `alpacaAccounts/snapshot` - Global account snapshot
-- Environment variables: `ALPACA_KEY_ID`, `ALPACA_SECRET_KEY`
+- Environment variables: `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`, `APCA_API_BASE_URL`
 
 ## Testing
 

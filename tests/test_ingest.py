@@ -21,8 +21,9 @@ def test_get_env_required(monkeypatch):
 def test_fetch_option_snapshots_paginates(monkeypatch):
     from backend.streams import alpaca_options_chain_ingest as mod
 
-    monkeypatch.setenv("ALPACA_KEY_ID", "mock_key")
-    monkeypatch.setenv("ALPACA_SECRET_KEY", "mock_secret")
+    monkeypatch.setenv("APCA_API_KEY_ID", "mock_key")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "mock_secret")
+    monkeypatch.setenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 
     r1 = MagicMock()
     r1.raise_for_status.return_value = None

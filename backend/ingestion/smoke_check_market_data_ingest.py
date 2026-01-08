@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 from backend.ingestion.market_data_ingest import MarketDataIngestor, load_config_from_env, log_json
 
@@ -10,6 +11,17 @@ async def _amain() -> int:
 
     # Force a bounded run for smoke checks.
     cfg.stop_after_seconds = 60.0
+
+    # Deterministic Alpaca auth smoke tests (startup gate).
+    if (
+        (not cfg.dry_run)
+        and os.getenv("SKIP_ALPACA_AUTH_SMOKE_TESTS", "").strip().lower() not in ("1", "true", "yes", "y")
+    ):
+        from backend.streams.alpaca_auth_smoke import run_alpaca_auth_smoke_tests_async  # noqa: WPS433
+
+        feed = getattr(cfg.feed, "value", None) or "iex"
+        timeout_s = float(os.getenv("ALPACA_AUTH_SMOKE_TIMEOUT_S", "5"))
+        await run_alpaca_auth_smoke_tests_async(feed=str(feed), timeout_s=timeout_s)
 
     ingestor = MarketDataIngestor(cfg)
     stats = await ingestor.run()

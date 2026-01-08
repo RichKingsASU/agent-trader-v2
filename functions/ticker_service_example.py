@@ -14,8 +14,9 @@ async def example_standalone():
     from functions.ticker_service import run_ticker_service
     
     # Set environment variables
-    os.environ["ALPACA_KEY_ID"] = "your_key_id"
-    os.environ["ALPACA_SECRET_KEY"] = "your_secret_key"
+    os.environ["APCA_API_KEY_ID"] = "your_key_id"
+    os.environ["APCA_API_SECRET_KEY"] = "your_secret_key"
+    os.environ["APCA_API_BASE_URL"] = "https://paper-api.alpaca.markets"
     os.environ["TICKER_SYMBOLS"] = "AAPL,NVDA,TSLA"
     
     # Run the service

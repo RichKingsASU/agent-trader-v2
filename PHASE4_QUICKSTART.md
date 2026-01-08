@@ -58,19 +58,20 @@ firebase deploy --only functions
 
 #### Option A: Environment Variables (Local Testing)
 ```bash
-export ALPACA_KEY_ID=your_key_id
-export ALPACA_SECRET_KEY=your_secret_key
-export ALPACA_API_BASE_URL=https://paper-api.alpaca.markets
+export APCA_API_KEY_ID=your_key_id
+export APCA_API_SECRET_KEY=your_secret_key
+export APCA_API_BASE_URL=https://paper-api.alpaca.markets
 ```
 
 #### Option B: Firebase Secret Manager (Production)
 ```bash
 # Set secrets
-firebase functions:secrets:set ALPACA_KEY_ID
-firebase functions:secrets:set ALPACA_SECRET_KEY
+firebase functions:secrets:set APCA_API_KEY_ID
+firebase functions:secrets:set APCA_API_SECRET_KEY
+firebase functions:secrets:set APCA_API_BASE_URL
 
 # Update function config in main.py (already done):
-@https_fn.on_call(secrets=["ALPACA_KEY_ID", "ALPACA_SECRET_KEY"])
+@https_fn.on_call(secrets=["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"])
 ```
 
 ### 4. Build & Deploy Frontend
@@ -344,8 +345,9 @@ firebase firestore:set systemStatus/trading_gate '{"trading_enabled": false}'
 ### Issue: "Missing Alpaca credentials"
 **Solution**: Set environment variables or Firebase secrets:
 ```bash
-firebase functions:secrets:set ALPACA_KEY_ID
-firebase functions:secrets:set ALPACA_SECRET_KEY
+firebase functions:secrets:set APCA_API_KEY_ID
+firebase functions:secrets:set APCA_API_SECRET_KEY
+firebase functions:secrets:set APCA_API_BASE_URL
 ```
 
 ### Issue: "Order validation failed: Notional too small"

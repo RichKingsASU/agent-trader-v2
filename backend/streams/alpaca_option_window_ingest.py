@@ -18,7 +18,7 @@ Fail-fast:
 - If total upserts == 0, exit non-zero.
 
 Env required:
-- ALPACA_KEY_ID, ALPACA_SECRET_KEY
+- APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL
 - DATABASE_URL
 
 Env read:
@@ -47,11 +47,10 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import requests
 
 # Task requirements: contracts from trading base; snapshots from Alpaca data host.
-TRADING_BASE = (
-    "https://paper-api.alpaca.markets"
-    if str(os.getenv("ALPACA_PAPER", "true")).lower() == "true"
-    else "https://api.alpaca.markets"
-)
+_trading_base = (os.getenv("APCA_API_BASE_URL") or "").strip()
+if not _trading_base:
+    raise RuntimeError("Missing required env var: APCA_API_BASE_URL")
+TRADING_BASE = _trading_base[:-1] if _trading_base.endswith("/") else _trading_base
 DATA_BASE = "https://data.alpaca.markets"
 
 from backend.common.agent_boot import configure_startup_logging

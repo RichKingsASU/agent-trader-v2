@@ -8,10 +8,8 @@ import yfinance as yf
 API_KEY = os.environ.get('APCA_API_KEY_ID')
 API_SECRET = os.environ.get('APCA_API_SECRET_KEY')
 BASE_URL = os.environ.get('APCA_API_BASE_URL')
-ALPACA_API_KEY = API_KEY
-ALPACA_SECRET_KEY = API_SECRET
 # --- Initialize Alpaca API ---
-api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, base_url=BASE_URL, api_version='v2')
+api = tradeapi.REST(API_KEY, API_SECRET, base_url=BASE_URL, api_version='v2')
 
 # --- Strategy Parameters ---
 DELTA_THRESHOLD = 0.15

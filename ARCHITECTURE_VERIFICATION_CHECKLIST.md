@@ -14,7 +14,7 @@ The `pulse` function remains fully intact and operational:
 ```python
 @scheduler_fn.on_schedule(
     schedule="* * * * *",  # Every 60 seconds
-    secrets=["ALPACA_KEY_ID", "ALPACA_SECRET_KEY"],
+    secrets=["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"],
 )
 def pulse(event: scheduler_fn.ScheduledEvent) -> None:
 ```

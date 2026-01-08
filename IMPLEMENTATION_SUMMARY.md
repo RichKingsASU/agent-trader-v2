@@ -233,8 +233,9 @@ firebase deploy --only functions:pulse,functions:emergency_liquidate
 ```
 
 **Secrets Required:**
-- `ALPACA_KEY_ID`
-- `ALPACA_SECRET_KEY`
+- `APCA_API_KEY_ID`
+- `APCA_API_SECRET_KEY`
+- `APCA_API_BASE_URL`
 
 ### 2. Deploy Frontend
 

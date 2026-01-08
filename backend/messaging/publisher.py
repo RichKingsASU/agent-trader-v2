@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
+import random
+import time
 from typing import Any, Mapping, Optional
 
 from backend.messaging.envelope import EventEnvelope
+from backend.observability.ops_json_logger import log as log_json
 
 
 class PubSubPublisher:
@@ -21,6 +25,7 @@ class PubSubPublisher:
         agent_name: str,
         git_sha: Optional[str] = None,
         publisher_client: Any = None,
+        validate_credentials: bool = True,
     ) -> None:
         self.project_id = str(project_id)
         self.topic_id = str(topic_id)
@@ -36,6 +41,10 @@ class PubSubPublisher:
                     "Install with: pip install google-cloud-pubsub"
                 ) from e
             publisher_client = pubsub_v1.PublisherClient()
+            if validate_credentials:
+                # Fail fast on invalid Application Default Credentials (ADC) /
+                # workload identity / service account configuration.
+                self._validate_credentials_or_raise()
 
         self._client = publisher_client
         self._topic_path = self._client.topic_path(self.project_id, self.topic_id)
@@ -44,6 +53,134 @@ class PubSubPublisher:
     def topic_path(self) -> str:
         return self._topic_path
 
+    def close(self) -> None:
+        """
+        Best-effort shutdown for publisher background resources.
+
+        Note: google-cloud-pubsub may maintain background threads for batching.
+        """
+        try:
+            # Preferred: GAPIC transport close.
+            transport = getattr(self._client, "transport", None)
+            if transport is not None and hasattr(transport, "close"):
+                transport.close()
+                return
+            # Fallback: direct close if exposed.
+            if hasattr(self._client, "close"):
+                self._client.close()  # type: ignore[no-untyped-call]
+        except Exception:
+            # Never raise during shutdown.
+            return
+
+    def _validate_credentials_or_raise(self) -> None:
+        """
+        Validate ADC can mint an access token for Pub/Sub.
+
+        This does not require any Pub/Sub permissions (beyond token minting),
+        and avoids emitting a real message.
+        """
+        try:
+            import google.auth  # type: ignore
+            from google.auth.transport.requests import Request  # type: ignore
+
+            creds, _ = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/pubsub"]
+            )
+            creds.refresh(Request())
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError(
+                "Pub/Sub credentials are invalid or unavailable. "
+                "Ensure Application Default Credentials are configured."
+            ) from e
+
+    def _publish_retry_config(self) -> dict[str, float | int]:
+        # Environment overrides allow safe tuning without infra edits.
+        def _env_int(name: str, default: int) -> int:
+            try:
+                return int(os.getenv(name, str(default)).strip())
+            except Exception:
+                return default
+
+        def _env_float(name: str, default: float) -> float:
+            try:
+                return float(os.getenv(name, str(default)).strip())
+            except Exception:
+                return default
+
+        return {
+            "max_attempts": max(1, _env_int("PUBSUB_PUBLISH_MAX_ATTEMPTS", 5)),
+            "initial_backoff_s": max(0.0, _env_float("PUBSUB_PUBLISH_INITIAL_BACKOFF_S", 0.25)),
+            "max_backoff_s": max(0.0, _env_float("PUBSUB_PUBLISH_MAX_BACKOFF_S", 5.0)),
+            "deadline_s": max(0.1, _env_float("PUBSUB_PUBLISH_DEADLINE_S", 15.0)),
+        }
+
+    def _exc_code(self, exc: BaseException) -> str:
+        """
+        Best-effort extraction of a stable error code string.
+        """
+        try:
+            code = getattr(exc, "code", None)
+            if callable(code):
+                code = code()
+            if code is None:
+                return ""
+            return str(code)
+        except Exception:
+            return ""
+
+    def _is_retryable_publish_error(self, exc: BaseException) -> bool:
+        # Never retry programming/validation errors.
+        if isinstance(exc, (ValueError, TypeError, AttributeError)):
+            return False
+
+        # Prefer explicit Google API codes when available.
+        code = self._exc_code(exc).upper()
+        retryable_codes = {
+            "UNAVAILABLE",
+            "DEADLINE_EXCEEDED",
+            "ABORTED",
+            "INTERNAL",
+            "RESOURCE_EXHAUSTED",
+            "UNKNOWN",
+        }
+        non_retryable_codes = {
+            "INVALID_ARGUMENT",
+            "PERMISSION_DENIED",
+            "UNAUTHENTICATED",
+            "FAILED_PRECONDITION",
+            "NOT_FOUND",
+            "ALREADY_EXISTS",
+        }
+        if code in retryable_codes:
+            return True
+        if code in non_retryable_codes:
+            return False
+
+        # Fallback by exception type name (avoid importing optional deps).
+        name = exc.__class__.__name__
+        if name in {
+            "ServiceUnavailable",
+            "DeadlineExceeded",
+            "InternalServerError",
+            "Aborted",
+            "ResourceExhausted",
+            "Unknown",
+        }:
+            return True
+        if name in {"Unauthenticated", "PermissionDenied", "InvalidArgument"}:
+            return False
+
+        # Default: be conservative and retry once for unknown transient-ish failures.
+        return True
+
+    def _sleep_backoff(self, *, attempt: int, initial_backoff_s: float, max_backoff_s: float) -> float:
+        base = initial_backoff_s * (2 ** max(0, attempt - 1))
+        backoff = min(max_backoff_s, base)
+        # Full jitter (avoid thundering herd).
+        sleep_s = backoff * random.uniform(0.5, 1.5)
+        time.sleep(max(0.0, sleep_s))
+        return sleep_s
+
     def publish_envelope(self, envelope: EventEnvelope) -> str:
         """
         Publish a fully-formed envelope.
@@ -51,17 +188,78 @@ class PubSubPublisher:
         Returns a Pub/Sub message id (string).
         """
 
-        future = self._client.publish(
-            self._topic_path,
-            envelope.to_bytes(),
-            # Also duplicate key fields as attributes for filtering/debugging.
-            event_type=envelope.event_type,
-            agent_name=envelope.agent_name,
-            trace_id=envelope.trace_id,
-            git_sha=envelope.git_sha,
-            ts=envelope.ts,
-        )
-        return str(future.result())
+        cfg = self._publish_retry_config()
+        max_attempts = int(cfg["max_attempts"])
+        deadline_s = float(cfg["deadline_s"])
+
+        started = time.monotonic()
+        last_exc: Optional[BaseException] = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                remaining = max(0.0, deadline_s - (time.monotonic() - started))
+                timeout_s = max(0.1, remaining)
+
+                future = self._client.publish(
+                    self._topic_path,
+                    envelope.to_bytes(),
+                    # Also duplicate key fields as attributes for filtering/debugging.
+                    event_type=envelope.event_type,
+                    agent_name=envelope.agent_name,
+                    trace_id=envelope.trace_id,
+                    git_sha=envelope.git_sha,
+                    ts=envelope.ts,
+                )
+                message_id = str(future.result(timeout=timeout_s))
+
+                log_json(
+                    None,
+                    "pubsub_publish_success",
+                    severity="INFO",
+                    topic=self._topic_path,
+                    message_id=message_id,
+                    event_type=envelope.event_type,
+                    agent_name=envelope.agent_name,
+                    trace_id=envelope.trace_id,
+                    attempt=attempt,
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                )
+                return message_id
+            except Exception as e:
+                last_exc = e
+                retryable = self._is_retryable_publish_error(e)
+                code = self._exc_code(e)
+
+                log_json(
+                    None,
+                    "pubsub_publish_failure",
+                    severity="ERROR" if (not retryable or attempt == max_attempts) else "WARNING",
+                    topic=self._topic_path,
+                    event_type=envelope.event_type,
+                    agent_name=envelope.agent_name,
+                    trace_id=envelope.trace_id,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    retryable=bool(retryable),
+                    error_type=e.__class__.__name__,
+                    error_code=code,
+                    error=str(e),
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                )
+
+                if (not retryable) or attempt >= max_attempts:
+                    raise
+
+                self._sleep_backoff(
+                    attempt=attempt,
+                    initial_backoff_s=float(cfg["initial_backoff_s"]),
+                    max_backoff_s=float(cfg["max_backoff_s"]),
+                )
+
+        # Defensive: should be unreachable due to raise/return in loop.
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Pub/Sub publish failed without exception")
 
     def publish_event(
         self,

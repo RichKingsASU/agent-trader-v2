@@ -42,8 +42,9 @@ def run_container():
     # or replace 'os.getenv' with actual test keys if safe.
     env_vars = [
         "-e", f"DATABASE_URL={os.getenv('DATABASE_URL', 'postgresql://user:pass@localhost:5432/db')}",
-        "-e", f"ALPACA_KEY_ID={os.getenv('ALPACA_KEY_ID', 'test_key')}",
-        "-e", f"ALPACA_SECRET_KEY={os.getenv('ALPACA_SECRET_KEY', 'test_secret')}",
+        "-e", f"APCA_API_KEY_ID={os.getenv('APCA_API_KEY_ID', 'test_key')}",
+        "-e", f"APCA_API_SECRET_KEY={os.getenv('APCA_API_SECRET_KEY', 'test_secret')}",
+        "-e", f"APCA_API_BASE_URL={os.getenv('APCA_API_BASE_URL', 'https://paper-api.alpaca.markets')}",
         "-e", "ALPACA_DATA_FEED=sip",
         "-e", "LOG_LEVEL=DEBUG",
         "-e", "PORT=8080",

@@ -97,7 +97,7 @@ grep "from strategies.base import BaseStrategy" functions/main.py
 **Function Signature**:
 ```python
 @https_fn.on_call(
-    secrets=["ALPACA_KEY_ID", "ALPACA_SECRET_KEY"],
+    secrets=["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"],
 )
 def generate_trading_signal(req: https_fn.CallableRequest) -> Dict[str, Any]:
 ```

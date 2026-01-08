@@ -245,6 +245,17 @@ async def main() -> None:
         raise RuntimeError("ALPACA_SYMBOLS resolved to empty list")
 
     alpaca = load_alpaca_env()
+
+    # Deterministic Alpaca auth smoke tests (startup gate).
+    # Runs before subscribing to trades.
+    if os.getenv("SKIP_ALPACA_AUTH_SMOKE_TESTS", "").strip().lower() not in ("1", "true", "yes", "y"):
+        from backend.streams.alpaca_auth_smoke import run_alpaca_auth_smoke_tests_async  # noqa: WPS433
+
+        feed = getattr(cfg.feed, "value", None) or "iex"
+        timeout_s = float(os.getenv("ALPACA_AUTH_SMOKE_TIMEOUT_S", "5"))
+        logger.info("Running Alpaca auth smoke tests (feed=%s, timeout_s=%s)...", feed, timeout_s)
+        await run_alpaca_auth_smoke_tests_async(feed=str(feed), timeout_s=timeout_s)
+
     logger.info(
         "Starting Alpaca trade candle aggregator | symbols=%s | timeframes=%s | lateness=%ss | feed=%s",
         ",".join(cfg.symbols),

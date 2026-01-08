@@ -17,27 +17,27 @@ def test_get_alpaca_credentials_success(monkeypatch):
     """Test credential retrieval with valid environment variables."""
     from functions.ticker_service import _get_alpaca_credentials
     
-    monkeypatch.setenv("ALPACA_KEY_ID", "test_key_id")
-    monkeypatch.setenv("ALPACA_SECRET_KEY", "test_secret_key")
+    monkeypatch.setenv("APCA_API_KEY_ID", "test_key_id")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "test_secret_key")
+    monkeypatch.setenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
     
     creds = _get_alpaca_credentials()
     
     assert creds["key_id"] == "test_key_id"
     assert creds["secret_key"] == "test_secret_key"
-    assert creds["base_url"] == "https://api.alpaca.markets"
+    assert creds["base_url"] == "https://paper-api.alpaca.markets"
 
 
 def test_get_alpaca_credentials_missing_key(monkeypatch):
-    """Test that missing credentials raise ValueError."""
+    """Test that missing credentials raise a RuntimeError."""
     from functions.ticker_service import _get_alpaca_credentials
     
     # Clear any existing credentials
-    monkeypatch.delenv("ALPACA_KEY_ID", raising=False)
-    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
     monkeypatch.delenv("APCA_API_KEY_ID", raising=False)
     monkeypatch.delenv("APCA_API_SECRET_KEY", raising=False)
+    monkeypatch.delenv("APCA_API_BASE_URL", raising=False)
     
-    with pytest.raises(ValueError, match="Missing Alpaca credentials"):
+    with pytest.raises(RuntimeError, match="Missing required env var"):
         _get_alpaca_credentials()
 
 

@@ -173,10 +173,11 @@ The strike where net GEX = 0. Acts as:
 cd /workspace/functions
 
 # Set Alpaca API credentials
-firebase functions:secrets:set ALPACA_API_KEY
+firebase functions:secrets:set APCA_API_KEY_ID
 # Paste your API key when prompted
 
-firebase functions:secrets:set ALPACA_SECRET_KEY
+firebase functions:secrets:set APCA_API_SECRET_KEY
+firebase functions:secrets:set APCA_API_BASE_URL
 # Paste your secret key when prompted
 ```
 
@@ -302,8 +303,9 @@ def adjust_strategy_for_regime():
 ```bash
 # Test locally (requires Firebase credentials)
 cd /workspace/functions
-export ALPACA_API_KEY="your_key"
-export ALPACA_SECRET_KEY="your_secret"
+export APCA_API_KEY_ID="your_key"
+export APCA_API_SECRET_KEY="your_secret"
+export APCA_API_BASE_URL="https://paper-api.alpaca.markets"
 python -m utils.gex_calculator
 ```
 
@@ -459,7 +461,7 @@ Weighted GEX: $89,123,456
 | Issue | Cause | Solution |
 |-------|-------|----------|
 | **Function not found** | Not deployed | `firebase deploy --only functions:update_gex_market_regime` |
-| **"Missing credentials"** | Secrets not set | `firebase functions:secrets:set ALPACA_API_KEY` |
+| **"Missing credentials"** | Secrets not set | `firebase functions:secrets:set APCA_API_KEY_ID` |
 | **No option snapshots** | Market closed | Expected outside 9:30 AM - 4:00 PM ET |
 | **Stale data** | Scheduler not running | Check `gcloud scheduler jobs list` |
 | **Empty Firestore doc** | Write permissions | Check Firestore security rules |
