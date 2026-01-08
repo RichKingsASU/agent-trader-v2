@@ -336,7 +336,7 @@ def recover(request: Request) -> dict[str, Any]:
 
 
 @app.post("/execute", response_model=ExecuteIntentResponse)
-def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
+def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentResponse:
     if bool(getattr(app.state, "shutting_down", False)):
         # Graceful shutdown contract: refuse new executions (prevents partial submissions).
         raise HTTPException(status_code=503, detail="shutting_down")
