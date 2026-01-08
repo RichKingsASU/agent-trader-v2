@@ -41,6 +41,7 @@ class AccountUpdatesClient:
                 published_since_last=int(self._pub_since_log),
             )
         except Exception:
+            logger.exception("stream_bridge.account_updates.log_stats_failed")
             pass
         self._recv_since_log = 0
         self._pub_since_log = 0
@@ -77,6 +78,7 @@ class AccountUpdatesClient:
                         url_configured=True,
                     )
                 except Exception:
+                    logger.exception("stream_bridge.account_updates.ws_connect_attempt_log_failed")
                     pass
 
                 async with websockets.connect(self.cfg.account_updates_url, extra_headers=headers) as websocket:
@@ -91,6 +93,7 @@ class AccountUpdatesClient:
                             stream="account_updates",
                         )
                     except Exception:
+                        logger.exception("stream_bridge.account_updates.ws_connected_log_failed")
                         pass
                     while True:
                         message = await websocket.recv()
@@ -105,6 +108,7 @@ class AccountUpdatesClient:
                                 labels={"component": "stream-bridge", "stream": "account_updates"},
                             )
                         except Exception:
+                            logger.exception("stream_bridge.account_updates.metrics_messages_received_inc_failed")
                             pass
                         payload = json.loads(message)
                         positions, balances, account_meta = map_devconsole_account_update(payload)
@@ -122,6 +126,7 @@ class AccountUpdatesClient:
                                 labels={"component": "stream-bridge", "stream": "account_updates"},
                             )
                         except Exception:
+                            logger.exception("stream_bridge.account_updates.metrics_messages_published_inc_failed")
                             pass
                         self._maybe_log_stats()
 
@@ -139,6 +144,7 @@ class AccountUpdatesClient:
                         error=f"{type(e).__name__}: {e}",
                     )
                 except Exception:
+                    logger.exception("stream_bridge.account_updates.ws_disconnected_log_failed")
                     pass
                 logger.exception(f"AccountUpdatesClient error: {e}")
                 attempt += 1
@@ -149,5 +155,6 @@ class AccountUpdatesClient:
                         labels={"component": "stream-bridge", "stream": "account_updates"},
                     )
                 except Exception:
+                    logger.exception("stream_bridge.account_updates.metrics_reconnect_attempt_inc_failed")
                     pass
                 await asyncio.sleep(5)

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import traceback
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -32,6 +34,24 @@ def parse_ts(value: Any) -> Optional[datetime]:
         try:
             return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
         except Exception:
+            try:
+                sys.stderr.write(
+                    json.dumps(
+                        {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "severity": "ERROR",
+                            "event_type": "event_utils.parse_ts_epoch_failed",
+                            "value_type": type(value).__name__,
+                            "exception": traceback.format_exc()[-8000:],
+                        },
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
             return None
     s = str(value).strip()
     if not s:
@@ -42,6 +62,24 @@ def parse_ts(value: Any) -> Optional[datetime]:
         dt = datetime.fromisoformat(s)
         return as_utc(dt)
     except Exception:
+        try:
+            sys.stderr.write(
+                json.dumps(
+                    {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "severity": "ERROR",
+                        "event_type": "event_utils.parse_ts_iso_failed",
+                        "value": s[:256],
+                        "exception": traceback.format_exc()[-8000:],
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
         return None
 
 
@@ -117,6 +155,23 @@ def infer_topic(
     try:
         mapping = json.loads(raw)
     except Exception:
+        try:
+            sys.stderr.write(
+                json.dumps(
+                    {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "severity": "ERROR",
+                        "event_type": "event_utils.subscription_topic_map_parse_failed",
+                        "exception": traceback.format_exc()[-8000:],
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
         return None
     if not isinstance(mapping, dict):
         return None

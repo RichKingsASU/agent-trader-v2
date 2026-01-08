@@ -64,6 +64,7 @@ async def readyz(response) -> dict[str, Any]:
     try:
         response.status_code = 200 if ok else 503
     except Exception:
+        logger.exception("market_ingest_service.set_readyz_status_failed")
         pass
     return {"status": "ok" if ok else "not_ready", "service": "market-ingest"}
 
@@ -81,6 +82,7 @@ async def livez(response) -> dict[str, Any]:
     try:
         response.status_code = 200 if ok else 503
     except Exception:
+        logger.exception("market_ingest_service.set_livez_status_failed")
         pass
     return {
         "status": "alive" if ok else ("ingest_dead" if not ingest_ok else "wedged"),
@@ -117,6 +119,7 @@ async def _startup() -> None:
             },
         )
     except Exception:
+        logger.exception("market_ingest_service.build_fingerprint_log_failed")
         pass
 
     cfg = load_config_from_env()
@@ -155,6 +158,7 @@ async def _startup() -> None:
                 try:
                     app.state.ops_logger.heartbeat(kind="loop")  # type: ignore[attr-defined]
                 except Exception:
+                    logger.exception("market_ingest_service.ops_logger_heartbeat_failed")
                     pass
             await asyncio.sleep(1.0)
 
@@ -177,6 +181,7 @@ async def _startup() -> None:
     try:
         app.state.ops_logger.readiness(ready=True)  # type: ignore[attr-defined]
     except Exception:
+        logger.exception("market_ingest_service.ops_logger_readiness_failed")
         pass
 
 
@@ -186,6 +191,7 @@ async def _shutdown() -> None:
     try:
         app.state.ops_logger.shutdown(phase="initiated")  # type: ignore[attr-defined]
     except Exception:
+        logger.exception("market_ingest_service.ops_logger_shutdown_failed")
         pass
     ingestor: MarketDataIngestor | None = getattr(app.state, "ingestor", None)
     task: asyncio.Task | None = getattr(app.state, "ingest_task", None)
@@ -195,6 +201,7 @@ async def _shutdown() -> None:
         if ingestor is not None:
             ingestor.request_stop()
     except Exception:
+        logger.exception("market_ingest_service.request_stop_failed")
         pass
 
     if task is not None:
@@ -202,6 +209,7 @@ async def _shutdown() -> None:
         try:
             await task
         except Exception:
+            logger.exception("market_ingest_service.ingest_task_shutdown_failed")
             pass
 
     if loop_task is not None:
@@ -209,6 +217,7 @@ async def _shutdown() -> None:
         try:
             await loop_task
         except Exception:
+            logger.exception("market_ingest_service.loop_task_shutdown_failed")
             pass
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
+import traceback
 import os
 import sys
 import time
@@ -53,6 +53,7 @@ def _parse_rfc3339(value: Any) -> Optional[datetime]:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
     except Exception:
+        log("time.parse_failed", severity="ERROR", value=s, exception=traceback.format_exc()[-8000:])
         return None
 
 
@@ -76,7 +77,25 @@ def log(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
         else:
             _logger.info(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
     except Exception:
-        return
+        # Preserve stack traces even if stdout/serialization is broken.
+        try:
+            sys.stderr.write(
+                json.dumps(
+                    {
+                        "timestamp": _utc_now().isoformat(),
+                        "severity": "ERROR",
+                        "service": SERVICE_NAME,
+                        "event_type": "logging.emit_failed",
+                        "exception": traceback.format_exc()[-8000:],
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            return
 
 
 def _require_env(name: str, *, default: Optional[str] = None) -> str:

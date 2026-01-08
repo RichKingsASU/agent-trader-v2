@@ -44,6 +44,7 @@ class OptionsFlowClient:
                 published_since_last=int(self._pub_since_log),
             )
         except Exception:
+            logger.exception("stream_bridge.options_flow.log_stats_failed")
             pass
         self._recv_since_log = 0
         self._pub_since_log = 0
@@ -80,6 +81,7 @@ class OptionsFlowClient:
                         url_configured=True,
                     )
                 except Exception:
+                    logger.exception("stream_bridge.options_flow.ws_connect_attempt_log_failed")
                     pass
 
                 async with websockets.connect(self.cfg.options_flow_url, extra_headers=headers) as websocket:
@@ -94,10 +96,12 @@ class OptionsFlowClient:
                             stream="options_flow",
                         )
                     except Exception:
+                        logger.exception("stream_bridge.options_flow.ws_connected_log_failed")
                         pass
                     try:
                         self._ops.event("connected", stream="options_flow")
                     except Exception:
+                        logger.exception("stream_bridge.options_flow.ops_connected_event_failed")
                         pass
                     while True:
                         message = await websocket.recv()
@@ -109,6 +113,7 @@ class OptionsFlowClient:
                         try:
                             messages_received_total.inc(1.0, labels={"component": "stream-bridge", "stream": "options_flow"})
                         except Exception:
+                            logger.exception("stream_bridge.options_flow.metrics_messages_received_inc_failed")
                             pass
                         payload = json.loads(message)
                         # Handle both single and array payloads
@@ -124,6 +129,7 @@ class OptionsFlowClient:
                                 labels={"component": "stream-bridge", "stream": "options_flow"},
                             )
                         except Exception:
+                            logger.exception("stream_bridge.options_flow.metrics_messages_published_inc_failed")
                             pass
                         self._maybe_log_stats()
             except Exception as e:
@@ -137,6 +143,7 @@ class OptionsFlowClient:
                         error=f"{type(e).__name__}: {e}",
                     )
                 except Exception:
+                    logger.exception("stream_bridge.options_flow.ws_disconnected_log_failed")
                     pass
                 logger.exception(f"OptionsFlowClient error: {e}")
                 attempt += 1
@@ -144,10 +151,12 @@ class OptionsFlowClient:
                 try:
                     reconnect_attempts_total.inc(1.0, labels={"component": "stream-bridge", "stream": "options_flow"})
                 except Exception:
+                    logger.exception("stream_bridge.options_flow.metrics_reconnect_attempt_inc_failed")
                     pass
                 sleep_s = 5.0
                 try:
                     self._ops.reconnect_attempt(attempt=attempt, sleep_s=sleep_s, stream="options_flow", error=str(e))
                 except Exception:
+                    logger.exception("stream_bridge.options_flow.ops_reconnect_attempt_log_failed")
                     pass
                 await asyncio.sleep(sleep_s)

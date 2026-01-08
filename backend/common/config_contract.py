@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import traceback
 from datetime import datetime, timezone
 from typing import Iterable, Mapping, Sequence
 
@@ -123,6 +124,12 @@ def validate_or_exit(service: str, *, env: Mapping[str, str] | None = None) -> N
         except Exception:
             pass
     except Exception:
-        pass
+        # Preserve traceback if stdout logging fails.
+        try:
+            sys.stderr.write("CONTRACT_FAIL\n")
+            sys.stderr.write(traceback.format_exc() + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
     raise SystemExit(1)
 

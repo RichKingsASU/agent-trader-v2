@@ -69,6 +69,7 @@ class FirestoreWriter:
             if callable(close):
                 close()
         except Exception:
+            logger.exception("stream_bridge.firestore_client_close_failed")
             pass
 
     def _retry(self, fn, *, max_attempts: int = 6, base_delay_s: float = 0.2, max_delay_s: float = 5.0):

@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+import json
+import sys
+import traceback
 from typing import Any, Optional, Tuple
 
 from idempotency import ensure_message_once
@@ -29,6 +32,24 @@ def _parse_rfc3339(value: Any) -> Optional[datetime]:
         dt = datetime.fromisoformat(s)
         return _as_utc(dt)
     except Exception:
+        try:
+            sys.stderr.write(
+                json.dumps(
+                    {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "severity": "ERROR",
+                        "event_type": "firestore_writer.parse_rfc3339_failed",
+                        "value": s[:256],
+                        "exception": traceback.format_exc()[-8000:],
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
         return None
 
 

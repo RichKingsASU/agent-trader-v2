@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+import sys
+import traceback
 from typing import Any, Optional
 
 from firestore_writer import SourceInfo
@@ -21,6 +24,24 @@ def _parse_ts(value: Any) -> Optional[datetime]:
         try:
             return _as_utc(datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc))
         except Exception:
+            try:
+                sys.stderr.write(
+                    json.dumps(
+                        {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "severity": "ERROR",
+                            "event_type": "system_events.parse_ts_epoch_failed",
+                            "value_type": type(value).__name__,
+                            "exception": traceback.format_exc()[-8000:],
+                        },
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
             return None
     s = str(value).strip()
     if not s:
@@ -31,6 +52,24 @@ def _parse_ts(value: Any) -> Optional[datetime]:
         dt = datetime.fromisoformat(s)
         return _as_utc(dt)
     except Exception:
+        try:
+            sys.stderr.write(
+                json.dumps(
+                    {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "severity": "ERROR",
+                        "event_type": "system_events.parse_ts_iso_failed",
+                        "value": s[:256],
+                        "exception": traceback.format_exc()[-8000:],
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
         return None
 
 

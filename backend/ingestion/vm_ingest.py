@@ -18,6 +18,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -267,7 +268,26 @@ def run() -> int:
                     },
                 )
             except Exception:
-                pass
+                # Preserve stack traces when structured stdout logging fails.
+                try:
+                    sys.stderr.write(
+                        json.dumps(
+                            {
+                                "event_type": "vm_ingest.error_log_failed",
+                                "ts": _utcnow_iso(),
+                                "service": "vm-ingest",
+                                "severity": "ERROR",
+                                "messageId": message_id,
+                                "exception": traceback.format_exc()[-8000:],
+                            },
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
             message.nack()
 
     flow = pubsub_v1.types.FlowControl(max_messages=cfg.max_messages)
@@ -280,12 +300,44 @@ def run() -> int:
         try:
             future.result(timeout=10)
         except Exception:
-            pass
+            try:
+                print(
+                    json.dumps(
+                        {
+                            "event_type": "vm_ingest.subscription_future_failed",
+                            "ts": _utcnow_iso(),
+                            "service": "vm-ingest",
+                            "severity": "ERROR",
+                            "exception": traceback.format_exc()[-8000:],
+                        },
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
     finally:
         try:
             sub.close()
         except Exception:
-            pass
+            try:
+                print(
+                    json.dumps(
+                        {
+                            "event_type": "vm_ingest.subscriber_close_failed",
+                            "ts": _utcnow_iso(),
+                            "service": "vm-ingest",
+                            "severity": "ERROR",
+                            "exception": traceback.format_exc()[-8000:],
+                        },
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
 
     log_event(
         logger,

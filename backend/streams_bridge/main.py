@@ -49,6 +49,7 @@ async def main():
             },
         )
     except Exception:
+        logger.exception("stream_bridge.build_fingerprint_log_failed")
         pass
     logger.info("Starting Stream Bridge service...")
     cfg = load_config()
@@ -64,6 +65,7 @@ async def main():
     try:
         ops.readiness(ready=True)
     except Exception:
+        logger.exception("stream_bridge.ops_logger_readiness_failed")
         pass
 
     try:
@@ -74,11 +76,13 @@ async def main():
             try:
                 ops.shutdown(phase="initiated")
             except Exception:
+                logger.exception("stream_bridge.ops_logger_shutdown_failed")
                 pass
             for t in [heartbeat_task, *tasks]:
                 try:
                     t.cancel()
                 except Exception:
+                    logger.exception("stream_bridge.task_cancel_failed")
                     pass
 
         shutdown.add_callback(_initiate_shutdown)
@@ -93,11 +97,13 @@ async def main():
             try:
                 t.cancel()
             except Exception:
+                logger.exception("stream_bridge.task_cancel_failed")
                 pass
         await asyncio.gather(heartbeat_task, *tasks, return_exceptions=True)
         try:
             writer.close()
         except Exception:
+            logger.exception("stream_bridge.firestore_writer_close_failed")
             pass
         logger.info("Stream Bridge service stopped.")
 
