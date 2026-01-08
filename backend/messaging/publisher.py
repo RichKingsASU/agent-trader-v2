@@ -12,6 +12,8 @@ from backend.messaging.pubsub_attributes import (
     build_standard_attributes,
     resolve_environment,
 )
+from backend.contracts.registry import validate_topic_event
+from backend.contracts.ops_alerts import try_write_contract_violation_alert
 from backend.observability.ops_json_logger import log as log_json
 from backend.observability.ops_json_logger import log_once as log_json_once
 
@@ -215,6 +217,38 @@ class PubSubPublisher:
         schema_version = int(getattr(envelope, "schemaVersion", 0) or 0)
         if schema_version != 1:
             raise ValueError(f"Unsupported schemaVersion for EventEnvelope: {schema_version}")
+
+        # Contract unification gate (topic-specific): validate the JSON we will emit.
+        # Only applies to canonical topics; other topics are ignored (no-op) to keep
+        # this publisher usable for non-gated internal streams.
+        try:
+            errors = validate_topic_event(topic=self.topic_id, event=envelope.to_dict())
+        except Exception:
+            errors = None  # unknown topic / validator unavailable => do not block publish
+        if errors:
+            # Record for ops and fail fast (do not publish invalid events).
+            log_json(
+                None,
+                "pubsub_contract_invalid",
+                severity="ERROR",
+                topic=self._topic_path,
+                topic_id=self.topic_id,
+                event_type=envelope.event_type,
+                agent_name=envelope.agent_name,
+                trace_id=envelope.trace_id,
+                schemaVersion=int(envelope.schemaVersion),
+                error_count=len(errors),
+                errors=errors[:10],
+            )
+            try_write_contract_violation_alert(
+                topic=str(self.topic_id),
+                producer=str(envelope.agent_name),
+                event_type=str(envelope.event_type),
+                message="publisher_rejected_invalid_event",
+                errors=errors,
+                sample={"event": envelope.to_dict()},
+            )
+            raise ValueError("contract_validation_failed")
 
         cfg = self._publish_retry_config()
         max_attempts = int(cfg["max_attempts"])
