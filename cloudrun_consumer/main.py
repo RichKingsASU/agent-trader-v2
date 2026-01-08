@@ -124,6 +124,49 @@ def _parse_rfc3339(value: Any) -> Optional[datetime]:
         return None
 
 
+def _maybe_unwrap_event_envelope(payload: dict[str, Any]) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
+    """
+    Back-compat adapter:
+    - If message.data is an EventEnvelope (v1), validate schemaVersion and unwrap to its `payload`.
+    - Otherwise, treat message.data as payload-only (legacy producers).
+    """
+    # Heuristic: require both an envelope discriminator + a nested payload object.
+    if not isinstance(payload.get("payload"), dict):
+        return payload, None
+
+    if not (
+        isinstance(payload.get("event_type"), str)
+        or isinstance(payload.get("eventType"), str)
+        or isinstance(payload.get("agent_name"), str)
+        or isinstance(payload.get("agentName"), str)
+    ):
+        return payload, None
+
+    schema_v = payload.get("schemaVersion")
+    if schema_v is None:
+        schema_v = payload.get("schema_version")
+    if schema_v is None:
+        raise ValueError("missing_schemaVersion")
+
+    try:
+        sv_int = int(schema_v)
+    except Exception as e:
+        raise ValueError("invalid_schemaVersion") from e
+
+    if sv_int != 1:
+        raise ValueError(f"unsupported_schemaVersion:{sv_int}")
+
+    inner = payload.get("payload")
+    assert isinstance(inner, dict)  # guarded above
+
+    # Preserve envelope timestamp for ordering if the payload doesn't already carry it.
+    ts = payload.get("ts")
+    if isinstance(ts, str) and ts.strip():
+        inner.setdefault("producedAt", ts.strip())
+
+    return inner, payload
+
+
 def log(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
     payload: dict[str, Any] = {
         "timestamp": _utc_now().isoformat(),
@@ -535,6 +578,12 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             subscription=subscription_str,
         )
         raise HTTPException(status_code=400, detail="payload_not_object")
+
+    try:
+        payload, envelope = _maybe_unwrap_event_envelope(payload)
+    except ValueError as e:
+        log("pubsub.invalid_event_envelope", severity="ERROR", error=str(e), messageId=message_id)
+        raise HTTPException(status_code=400, detail="invalid_event_envelope") from e
 
     inferred_topic = infer_topic(attributes=attributes, payload=payload, subscription=subscription_str)
     handler = route_payload(payload=payload, attributes=attributes, topic=inferred_topic)

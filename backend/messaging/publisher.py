@@ -211,6 +211,10 @@ class PubSubPublisher:
 
         Returns a Pub/Sub message id (string).
         """
+        # Contract guardrail: schemaVersion is REQUIRED and must be supported.
+        schema_version = int(getattr(envelope, "schemaVersion", 0) or 0)
+        if schema_version != 1:
+            raise ValueError(f"Unsupported schemaVersion for EventEnvelope: {schema_version}")
 
         cfg = self._publish_retry_config()
         max_attempts = int(cfg["max_attempts"])
@@ -246,8 +250,13 @@ class PubSubPublisher:
                 future = self._client.publish(
                     self._topic_path,
                     envelope.to_bytes(),
-                    # Attributes only (payload bodies MUST NOT be mutated).
-                    **publish_attrs,
+                    # Also duplicate key fields as attributes for filtering/debugging.
+                    schemaVersion=str(schema_version),
+                    event_type=envelope.event_type,
+                    agent_name=envelope.agent_name,
+                    trace_id=envelope.trace_id,
+                    git_sha=envelope.git_sha,
+                    ts=envelope.ts,
                 )
                 message_id = str(future.result(timeout=timeout_s))
 
