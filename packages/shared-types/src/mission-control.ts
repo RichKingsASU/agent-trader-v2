@@ -1,4 +1,6 @@
-export type OpsState = "OK" | "DEGRADED" | "HALTED" | "OFFLINE" | "UNKNOWN";
+// NOTE: Keep aligned with the UI-facing ops contract in `frontend/shared/ops-api-contract`.
+// This is a type-only widening; it must not change runtime behavior.
+export type OpsState = "OK" | "DEGRADED" | "HALTED" | "MARKET_CLOSED" | "OFFLINE" | "UNKNOWN";
 
 export type Agent = {
   name: string;
