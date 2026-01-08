@@ -43,6 +43,7 @@ from backend.execution.marketdata_health import check_market_ingest_heartbeat
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 from backend.safety.shutdown_gate import request_shutdown as _request_shutdown, wait_for_inflight_zero as _wait_for_inflight_zero
+from backend.common.execution_confirm import ExecutionConfirmTokenError, require_confirm_token_for_live_execution
 from backend.safety.strategy_breakers import check_consecutive_losses_from_ledger_trades
 from backend.safety.startup_validation import (
     validate_agent_mode_or_exit,
@@ -334,7 +335,7 @@ def recover(request: Request) -> dict[str, Any]:
 
 
 @app.post("/execute", response_model=ExecuteIntentResponse)
-def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
+def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentResponse:
     if bool(getattr(app.state, "shutting_down", False)):
         # Graceful shutdown contract: refuse new executions (prevents partial submissions).
         raise HTTPException(status_code=503, detail="shutting_down")
@@ -357,6 +358,23 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
         client_intent_id=req.client_intent_id or None,
         metadata=req.metadata,
     )
+
+    # Future-proof live mode: require an explicit confirmation token for any
+    # non-dry-run broker routing when TRADING_MODE=live.
+    #
+    # NOTE: Live trading is code-disabled by default via the startup hard lock
+    # in `backend.common.agent_mode_guard`. This remains here to ensure that if
+    # live mode is ever enabled, execution still requires an explicit operator
+    # confirmation step beyond env/config.
+    trading_mode = str(os.getenv("TRADING_MODE") or "").strip().lower()
+    if not bool(getattr(app.state.engine, "dry_run", True)) and trading_mode == "live":
+        provided = str(request.headers.get("X-Exec-Confirm-Token") or "").strip() or str(
+            req.metadata.get("confirm_token") or ""
+        ).strip()
+        try:
+            require_confirm_token_for_live_execution(provided_token=provided)
+        except ExecutionConfirmTokenError as e:
+            raise HTTPException(status_code=409, detail={"refused": True, "reason": "confirm_token_required", "message": str(e)}) from e
 
     # --- Update state machine inputs for this request ---
     agent_mode = read_agent_mode()
