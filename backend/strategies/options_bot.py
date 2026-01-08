@@ -2,6 +2,8 @@ import asyncio
 import os
 import time
 import logging
+import signal
+from typing import Any
 from nats.aio.client import Client as NATS
 
 from backend.common.nats.subjects import market_wildcard_subject, signals_subject
@@ -9,6 +11,7 @@ from backend.common.schemas.codec import decode_message, encode_message
 from backend.common.schemas.models import MarketEventV1, SignalEventV1
 from backend.alpaca_signal_trader import get_warm_cache_buying_power_usd
 from backend.common.logging import init_structured_logging
+from backend.common.kill_switch import get_kill_switch_state
 
 init_structured_logging(service="options-bot")
 logger = logging.getLogger(__name__)
@@ -16,6 +19,30 @@ logger = logging.getLogger(__name__)
 async def main():
     nc = NATS()
     await nc.connect("nats://localhost:4222")
+    stop = asyncio.Event()
+
+    # Best-effort SIGTERM/SIGINT handling (K8s/Cloud Run friendly).
+    def _handle_signal(signum: int, _frame: Any = None) -> None:  # type: ignore[no-untyped-def]
+        try:
+            logger.warning("options_bot.signal_received signum=%s; initiating shutdown", int(signum))
+        except Exception:
+            pass
+        try:
+            stop.set()
+        except Exception:
+            pass
+
+    if asyncio.get_running_loop() is not None:
+        loop = asyncio.get_running_loop()
+        for s in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(s, _handle_signal, int(s), None)
+            except NotImplementedError:
+                # Fallback for platforms without add_signal_handler.
+                try:
+                    signal.signal(s, _handle_signal)
+                except Exception:
+                    pass
 
     tenant_id = (os.getenv("TENANT_ID") or "local").strip() or "local"
     strategy_id = (os.getenv("STRATEGY_ID") or "options_delta_momentum").strip() or "options_delta_momentum"
@@ -38,6 +65,14 @@ async def main():
         return cached_buying_power
 
     async def options_handler(msg):
+        # Global kill switch: stop emitting new signals if execution is halted.
+        kill, source = get_kill_switch_state()
+        if kill:
+            try:
+                logger.warning("options_bot.kill_switch_active enabled=true source=%s; dropping market event", source)
+            except Exception:
+                pass
+            return
         # Validate incoming market messages.
         evt = decode_message(MarketEventV1, msg.data)
         data = evt.data or {}
@@ -111,11 +146,31 @@ async def main():
     )
 
     loop_iter = 0
-    while True:
+    while not stop.is_set():
+        # Global kill switch: exit loop promptly (safe shutdown).
+        kill, source = get_kill_switch_state()
+        if kill:
+            try:
+                logger.warning("options_bot.kill_switch_active enabled=true source=%s; exiting", source)
+            except Exception:
+                pass
+            break
         loop_iter += 1
         if loop_iter % 60 == 0:
             print(f"[options_bot] loop_iteration={loop_iter}")
-        await asyncio.sleep(1)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+
+    # Graceful close (best-effort).
+    try:
+        await nc.drain()
+    except Exception:
+        try:
+            await nc.close()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     asyncio.run(main())

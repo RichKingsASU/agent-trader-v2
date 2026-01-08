@@ -3,7 +3,7 @@ from pydantic import BaseModel
 import requests
 import os
 from uuid import UUID, uuid4
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 import logging
 
@@ -13,8 +13,12 @@ from backend.persistence.firebase_client import get_firestore_client
 from backend.persistence.firestore_retry import with_firestore_retry
 from backend.common.kill_switch import get_kill_switch_state
 from google.cloud import firestore
+from google.api_core.exceptions import AlreadyExists
+
+from backend.risk.loss_acceleration_guard import LossAccelerationGuard
 
 from ..db import build_raw_order, insert_paper_order
+from ..db import insert_paper_order_idempotent
 from ..models import PaperOrderCreate
 
 router = APIRouter()
@@ -32,6 +36,7 @@ class TradeRequest(BaseModel):
     time_in_force: str = "day"
     notional: float
     quantity: float = None
+    idempotency_key: str | None = None
 
 
 def get_shadow_mode_flag() -> bool:
@@ -99,7 +104,7 @@ def get_current_price(symbol: str) -> Decimal:
         return Decimal("0")
 
 
-def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict:
+def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, shadow_id: str | None = None) -> dict:
     """
     Create a synthetic shadow trade and log it to user-scoped shadowTradeHistory collection.
     
@@ -114,7 +119,8 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict
     """
     try:
         db = get_firestore_client()
-        shadow_id = str(uuid4())
+        if shadow_id is None:
+            shadow_id = str(uuid4())
         
         # Get current price for fill simulation
         fill_price = get_current_price(trade_request.symbol)
@@ -155,13 +161,19 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict
         }
         
         # Write to user-scoped shadowTradeHistory collection
-        with_firestore_retry(
-            lambda: db.collection("users")
+        ref = (
+            db.collection("users")
             .document(ctx.uid)
             .collection("shadowTradeHistory")
             .document(shadow_id)
-            .set(shadow_trade, merge=False)
         )
+        try:
+            with_firestore_retry(lambda: ref.create(shadow_trade))
+        except AlreadyExists:
+            # Retry/restart-safe behavior: return the existing record.
+            snap = with_firestore_retry(lambda: ref.get())
+            if snap.exists:
+                return snap.to_dict() or shadow_trade
         
         logger.info(f"Shadow trade created: {shadow_id} - {trade_request.symbol} {trade_request.side} qty={qty} @ ${fill_price}")
         
@@ -193,6 +205,7 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     Fail-safe: On any error reading the shadow mode flag, defaults to shadow mode = True
     """
     ctx: TenantContext = get_tenant_context(request)
+    idem = (trade_request.idempotency_key or request.headers.get("Idempotency-Key") or "").strip() or None
     
     # Check shadow mode flag (fail-safe: defaults to True)
     is_shadow_mode = get_shadow_mode_flag()
@@ -237,7 +250,12 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     # SHADOW MODE: Create synthetic order without contacting broker
     if is_shadow_mode:
         try:
-            shadow_trade = create_shadow_trade(trade_request, ctx)
+            shadow_id = None
+            if idem:
+                from backend.common.idempotency import stable_uuid_from_key
+
+                shadow_id = str(stable_uuid_from_key(key=f"{ctx.tenant_id}:{ctx.uid}:shadow_trade:{idem}"))
+            shadow_trade = create_shadow_trade(trade_request, ctx, shadow_id=shadow_id)
             logger.info(f"Shadow trade executed successfully: {shadow_trade['shadow_id']}")
             
             # Return shadow trade in a format similar to paper order
@@ -291,7 +309,12 @@ def execute_trade(trade_request: TradeRequest, request: Request):
                 status="simulated",  # TODO: Change to "submitted" when live Alpaca integration is complete
             )
             
-            result = insert_paper_order(tenant_id=ctx.tenant_id, payload=payload)
+            if idem:
+                result = insert_paper_order_idempotent(
+                    tenant_id=ctx.tenant_id, payload=payload, idempotency_key=idem
+                )
+            else:
+                result = insert_paper_order(tenant_id=ctx.tenant_id, payload=payload)
             logger.info(f"Live/Paper trade executed successfully: {result.id}")
             return result
             

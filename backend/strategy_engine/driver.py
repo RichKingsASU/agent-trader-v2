@@ -23,6 +23,7 @@ from .config import config
 from .models import fetch_recent_bars, fetch_recent_options_flow
 from .risk import can_place_trade, get_or_create_strategy_definition, log_decision
 from .strategies.naive_flow_trend import make_decision
+from backend.safety.strategy_breakers import check_abnormal_volatility, check_missing_market_data
 
 _last_cycle_at_iso: str | None = None
 
@@ -131,6 +132,59 @@ async def run_strategy(execute: bool):
             except Exception:
                 pass
             continue
+
+        # --- Per-strategy circuit breakers (safety-only; disabled unless configured) ---
+        # Missing market data (objective, no market assumptions).
+        md_missing = check_missing_market_data(bars=bars, source="bars:public.market_data_1m")
+        if md_missing.triggered:
+            strategy_cycles_skipped_total.inc(1.0)
+            try:
+                log_json(
+                    intent_type="circuit_breaker_triggered",
+                    severity="WARNING",
+                    breaker_type="missing_market_data",
+                    reason_codes=[md_missing.reason_code],
+                    symbol=symbol,
+                    strategy=config.STRATEGY_NAME,
+                    iteration_id=iteration_id,
+                    details=md_missing.details,
+                )
+            except Exception:
+                pass
+            await log_decision(strategy_id, symbol, "flat", md_missing.message, {"reason_code": md_missing.reason_code}, False)
+            continue
+
+        # Abnormal volatility (ratio-based; threshold is operator-configured, default disabled).
+        try:
+            ratio_thr_raw = (os.getenv("STRATEGY_CB_VOL_RATIO_THRESHOLD") or "").strip()
+            ratio_thr = float(ratio_thr_raw) if ratio_thr_raw else 0.0
+        except Exception:
+            ratio_thr = 0.0
+        if ratio_thr > 0:
+            vol_cb = check_abnormal_volatility(
+                bars=bars,
+                source="bars:public.market_data_1m",
+                recent_n=int(os.getenv("STRATEGY_CB_VOL_RECENT_N") or "5"),
+                baseline_n=int(os.getenv("STRATEGY_CB_VOL_BASELINE_N") or "30"),
+                ratio_threshold=ratio_thr,
+            )
+            if vol_cb.triggered:
+                strategy_cycles_skipped_total.inc(1.0)
+                try:
+                    log_json(
+                        intent_type="circuit_breaker_triggered",
+                        severity="WARNING",
+                        breaker_type="abnormal_volatility",
+                        reason_codes=[vol_cb.reason_code],
+                        symbol=symbol,
+                        strategy=config.STRATEGY_NAME,
+                        iteration_id=iteration_id,
+                        details=vol_cb.details,
+                    )
+                except Exception:
+                    pass
+                await log_decision(strategy_id, symbol, "flat", vol_cb.message, {"reason_code": vol_cb.reason_code}, False)
+                continue
 
         # Freshness contract: refuse to evaluate if latest bar timestamp is stale.
         latest_bar_ts = bars[0].ts if bars else None
