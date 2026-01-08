@@ -4,6 +4,7 @@ import { missionControlApi } from "@/api/client";
 import type { Agent, Event, MissionControlAgentsResponse, MissionControlEventsResponse, OpsState } from "@/api/types";
 import { Badge } from "@/components/Badge";
 import { ErrorBanner } from "@/components/ErrorBanner";
+import { OpsSignalsPanel } from "@/components/OpsSignalsPanel";
 import { usePolling } from "@/hooks/usePolling";
 import { formatAgeMs, formatIso, parseTimestamp } from "@/utils/time";
 
@@ -86,6 +87,8 @@ export function OverviewPage() {
           Last refreshed: <span className="mono">{formatIso(lastRefreshed)}</span>
         </div>
       </div>
+
+      <OpsSignalsPanel />
 
       <div className="card" style={{ gridColumn: "span 12" }}>
         <h2>System status</h2>
