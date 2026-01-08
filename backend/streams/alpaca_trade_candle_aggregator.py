@@ -153,7 +153,10 @@ class MarketCandlesWriter:
 
 async def _db_consumer(queue: asyncio.Queue[Candle], writer: MarketCandlesWriter, *, batch_max: int) -> None:
     buf: list[Candle] = []
+    iteration = 0
     while True:
+        iteration += 1
+        logger.info("market_candles db_consumer_loop_iteration=%d", iteration)
         try:
             item = await queue.get()
             buf.append(item)
@@ -185,7 +188,10 @@ async def _periodic_flush(
     interval_sec: float,
     candle_store: FileCandleStore | None = None,
 ) -> None:
+    iteration = 0
     while True:
+        iteration += 1
+        logger.info("candle_flush_loop_iteration=%d", iteration)
         await asyncio.sleep(interval_sec)
         try:
             now = utc_now()
@@ -218,7 +224,10 @@ async def _periodic_ops(agg: CandleAggregator, *, interval_sec: float = 30.0) ->
         logger.info("ops markers disabled (DATABASE_URL not set or driver missing)")
         return
 
+    iteration = 0
     while True:
+        iteration += 1
+        logger.info("candle_ops_loop_iteration=%d", iteration)
         await asyncio.sleep(interval_sec)
         try:
             snap = agg.ops_snapshot()

@@ -41,6 +41,7 @@ class NewsStreamClient:
                 published_since_last=int(self._pub_since_log),
             )
         except Exception:
+            logger.exception("stream_bridge.news.log_stats_failed")
             pass
         self._recv_since_log = 0
         self._pub_since_log = 0
@@ -48,12 +49,18 @@ class NewsStreamClient:
     async def run_forever(self):
         if not self.cfg.news_stream_url:
             logger.warning("NEWS_STREAM_URL not set; news stream client idle.")
+            idle_iter = 0
             while True:
+                idle_iter += 1
+                logger.info("news_stream idle_loop_iteration=%d", idle_iter)
                 await asyncio.sleep(30)
             return
 
         attempt = 0
+        loop_iter = 0
         while True:
+            loop_iter += 1
+            logger.info("news_stream connect_loop_iteration=%d", loop_iter)
             try:
                 headers = {}
                 if self.cfg.news_stream_api_key:
@@ -71,10 +78,12 @@ class NewsStreamClient:
                         url_configured=True,
                     )
                 except Exception:
+                    logger.exception("stream_bridge.news.ws_connect_attempt_log_failed")
                     pass
 
                 async with websockets.connect(self.cfg.news_stream_url, extra_headers=headers) as websocket:
                     attempt = 0
+                    recv_iter = 0
                     try:
                         log_event(
                             logger,
@@ -84,14 +93,19 @@ class NewsStreamClient:
                             stream="news",
                         )
                     except Exception:
+                        logger.exception("stream_bridge.news.ws_connected_log_failed")
                         pass
                     while True:
                         message = await websocket.recv()
+                        recv_iter += 1
+                        if recv_iter % 100 == 0:
+                            logger.info("news_stream recv_loop_iteration=%d", recv_iter)
                         self._recv_total += 1
                         self._recv_since_log += 1
                         try:
                             messages_received_total.inc(1.0, labels={"component": "stream-bridge", "stream": "news"})
                         except Exception:
+                            logger.exception("stream_bridge.news.metrics_messages_received_inc_failed")
                             pass
                         payload = json.loads(message)
                         event = map_devconsole_news(payload)
@@ -101,6 +115,7 @@ class NewsStreamClient:
                         try:
                             messages_published_total.inc(1.0, labels={"component": "stream-bridge", "stream": "news"})
                         except Exception:
+                            logger.exception("stream_bridge.news.metrics_messages_published_inc_failed")
                             pass
                         self._maybe_log_stats()
             except Exception as e:
@@ -114,6 +129,7 @@ class NewsStreamClient:
                         error=f"{type(e).__name__}: {e}",
                     )
                 except Exception:
+                    logger.exception("stream_bridge.news.ws_disconnected_log_failed")
                     pass
                 logger.exception(f"NewsStreamClient error: {e}")
                 attempt += 1
@@ -121,5 +137,6 @@ class NewsStreamClient:
                 try:
                     reconnect_attempts_total.inc(1.0, labels={"component": "stream-bridge", "stream": "news"})
                 except Exception:
+                    logger.exception("stream_bridge.news.metrics_reconnect_attempt_inc_failed")
                     pass
                 await asyncio.sleep(5)

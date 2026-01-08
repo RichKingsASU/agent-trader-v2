@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from datetime import datetime, timezone
 from typing import Iterable, Mapping, NoReturn, Sequence
 
@@ -27,6 +28,19 @@ def _fatal_exit(*, intent_type: str, reason_codes: Sequence[str], details: dict 
         "intent_type": intent_type,
         "reason_codes": list(reason_codes),
     }
+    payload["service"] = (
+        (os.getenv("SERVICE_NAME") or "").strip()
+        or (os.getenv("K_SERVICE") or "").strip()
+        or (os.getenv("AGENT_NAME") or "").strip()
+        or "unknown"
+    )
+    payload["env"] = (
+        (os.getenv("ENVIRONMENT") or "").strip()
+        or (os.getenv("ENV") or "").strip()
+        or (os.getenv("APP_ENV") or "").strip()
+        or (os.getenv("DEPLOY_ENV") or "").strip()
+        or "unknown"
+    )
     if details:
         payload["details"] = details
 
@@ -35,7 +49,14 @@ def _fatal_exit(*, intent_type: str, reason_codes: Sequence[str], details: dict 
     try:
         logger.fatal("%s", msg)
     finally:
-        print(msg, flush=True)
+        try:
+            sys.stdout.write(msg + "\n")
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+        except Exception:
+            pass
     raise SystemExit(2)
 
 
