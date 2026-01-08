@@ -7,7 +7,7 @@ from nats.aio.client import Client as NATS
 from backend.common.nats.subjects import market_wildcard_subject, signals_subject
 from backend.common.schemas.codec import decode_message, encode_message
 from backend.common.schemas.models import MarketEventV1, SignalEventV1
-from backend.alpaca_signal_trader import get_warm_cache_buying_power_usd
+from backend.risk.capital_state import get_warm_cache_available_capital_usd
 from backend.common.logging import init_structured_logging
 
 init_structured_logging(service="options-bot")
@@ -32,7 +32,7 @@ async def main():
             return cached_buying_power
 
         # Firestore client is synchronous; offload to a thread so we don't block the event loop.
-        buying_power, _ = await asyncio.to_thread(get_warm_cache_buying_power_usd)
+        buying_power, _ = await asyncio.to_thread(get_warm_cache_available_capital_usd)
         cached_buying_power = float(buying_power or 0.0)
         cached_at_mono = now
         return cached_buying_power
