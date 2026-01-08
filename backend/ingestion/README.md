@@ -2,6 +2,32 @@
 
 Cloud Run–friendly ingestion jobs owned by `backend/`.
 
+## Pub/Sub event ingestion (Pub/Sub → Firestore summary → UI)
+
+This service is **visibility-first**:
+- Accepts a **Pub/Sub push subscription** at `POST /pubsub/push`
+- Persists raw events (best-effort) into Firestore collection: `pubsub_events`
+- Maintains an aggregated summary doc for fast reads: `ops/pubsub_event_ingestion`
+- Exposes a read API at `GET /api/v1/pubsub/summary` for:
+  - last event time
+  - message count
+  - latest payload per `eventType`
+
+### Required environment variables
+
+- `AGENT_MODE=OFF` (guardrail enforced at import/startup)
+
+### Optional environment variables
+
+- `FIREBASE_PROJECT_ID` (enables Firestore persistence via ADC)
+- `EVENT_STORE=memory` (forces in-memory mock store)
+
+### Run (local)
+
+```bash
+AGENT_MODE=OFF EVENT_STORE=memory uvicorn backend.ingestion.pubsub_event_ingestion_service:app --host 0.0.0.0 --port 8080
+```
+
 ## Market data ingest (Alpaca → Firestore → UI)
 
 This job:
