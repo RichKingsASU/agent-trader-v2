@@ -37,6 +37,40 @@ def _max_dt(*values: Optional[datetime]) -> Optional[datetime]:
     return max(_as_utc(v) for v in xs)
 
 
+OPS_SERVICE_STATUSES = ("healthy", "degraded", "down", "unknown", "maintenance")
+
+
+def _normalize_ops_service_status(raw: Any) -> tuple[str, str]:
+    raw_s = "" if raw is None else str(raw)
+    s = raw_s.strip().lower()
+    if not s:
+        return "unknown", raw_s
+
+    if s in {"ok", "okay", "healthy", "running", "up", "online", "alive", "serving", "ready"}:
+        return "healthy", raw_s
+    if s in {"degraded", "warn", "warning", "partial", "slow", "lagging"}:
+        return "degraded", raw_s
+    if s in {"down", "offline", "error", "failed", "failure", "fatal", "critical", "unhealthy", "crashloop"}:
+        return "down", raw_s
+    if s in {"maintenance", "maint", "draining", "paused", "pause"}:
+        return "maintenance", raw_s
+    if s in {"unknown", "n/a", "na", "none", "null", "undefined", "?"}:
+        return "unknown", raw_s
+    if s in set(OPS_SERVICE_STATUSES):
+        return s, raw_s
+    return "unknown", raw_s
+
+
+def _transition_allowed(prev: str, nxt: str) -> bool:
+    p = (prev or "unknown").strip().lower() or "unknown"
+    n = (nxt or "unknown").strip().lower() or "unknown"
+    if p == n:
+        return True
+    if p in {"healthy", "degraded", "down", "maintenance"} and n == "unknown":
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class SourceInfo:
     topic: str
@@ -219,22 +253,43 @@ class FirestoreWriter:
             snap = ref.get(transaction=txn)
             existing = snap.to_dict() if snap.exists else {}
 
+            existing_source_pub = None
+            if isinstance(existing, dict):
+                src = existing.get("source")
+                if isinstance(src, dict):
+                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
+
             existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
+            existing_lh_sc = _parse_rfc3339(existing.get("last_heartbeat_at")) if isinstance(existing, dict) else None
             existing_u = _parse_rfc3339(existing.get("updatedAt")) if isinstance(existing, dict) else None
-            existing_max = _max_dt(existing_lh, existing_u)
+            existing_u_sc = _parse_rfc3339(existing.get("updated_at")) if isinstance(existing, dict) else None
+            existing_max = _max_dt(existing_lh, existing_lh_sc, existing_u, existing_u_sc, existing_source_pub)
 
             incoming = _as_utc(updated_at)
-            if existing_max is not None and incoming < existing_max:
+            incoming_eff = _max_dt(incoming, last_heartbeat_at, source.published_at) or incoming
+            if existing_max is not None and incoming_eff < existing_max:
                 return False, "stale_event_ignored"
+
+            prev_status, _ = _normalize_ops_service_status(existing.get("status") if isinstance(existing, dict) else None)
+            next_status, raw_status = _normalize_ops_service_status(status)
+            if not _transition_allowed(prev_status, next_status):
+                next_status = prev_status
+            if next_status == "unknown" and prev_status != "unknown":
+                next_status = prev_status
 
             doc = {
                 "serviceId": str(service_id),
+                "service_id": str(service_id),
                 "env": str(env),
-                "status": str(status),
+                "environment": str(env),
+                "status": str(next_status),
+                "status_raw": str(raw_status),
                 "lastHeartbeatAt": last_heartbeat_at,
+                "last_heartbeat_at": last_heartbeat_at,
                 "version": str(version),
                 "region": str(region),
-                "updatedAt": incoming,
+                "updatedAt": incoming_eff,
+                "updated_at": incoming_eff,
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
@@ -277,23 +332,44 @@ class FirestoreWriter:
             snap = service_ref.get(transaction=txn)
             existing = snap.to_dict() if snap.exists else {}
 
+            existing_source_pub = None
+            if isinstance(existing, dict):
+                src = existing.get("source")
+                if isinstance(src, dict):
+                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
+
             existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
+            existing_lh_sc = _parse_rfc3339(existing.get("last_heartbeat_at")) if isinstance(existing, dict) else None
             existing_u = _parse_rfc3339(existing.get("updatedAt")) if isinstance(existing, dict) else None
-            existing_max = _max_dt(existing_lh, existing_u)
+            existing_u_sc = _parse_rfc3339(existing.get("updated_at")) if isinstance(existing, dict) else None
+            existing_max = _max_dt(existing_lh, existing_lh_sc, existing_u, existing_u_sc, existing_source_pub)
 
             incoming = _as_utc(updated_at)
-            if existing_max is not None and incoming < existing_max:
+            incoming_eff = _max_dt(incoming, last_heartbeat_at, source.published_at) or incoming
+            if existing_max is not None and incoming_eff < existing_max:
                 # Marked dedupe already; do not reprocess on retries.
                 return False, "stale_event_ignored"
 
+            prev_status, _ = _normalize_ops_service_status(existing.get("status") if isinstance(existing, dict) else None)
+            next_status, raw_status = _normalize_ops_service_status(status)
+            if not _transition_allowed(prev_status, next_status):
+                next_status = prev_status
+            if next_status == "unknown" and prev_status != "unknown":
+                next_status = prev_status
+
             doc = {
                 "serviceId": str(service_id),
+                "service_id": str(service_id),
                 "env": str(env),
-                "status": str(status),
+                "environment": str(env),
+                "status": str(next_status),
+                "status_raw": str(raw_status),
                 "lastHeartbeatAt": last_heartbeat_at,
+                "last_heartbeat_at": last_heartbeat_at,
                 "version": str(version),
                 "region": str(region),
-                "updatedAt": incoming,
+                "updatedAt": incoming_eff,
+                "updated_at": incoming_eff,
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
