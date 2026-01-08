@@ -12,6 +12,7 @@ from fastapi.responses import Response
 
 from event_utils import infer_topic
 from firestore_writer import FirestoreWriter
+from replay_support import ReplayContext, write_replay_marker
 from schema_router import route_payload
 
 
@@ -78,7 +79,8 @@ async def _startup() -> None:
         raise RuntimeError("Missing GCP_PROJECT (or GOOGLE_CLOUD_PROJECT).")
 
     database = os.getenv("FIRESTORE_DATABASE") or "(default)"
-    app.state.firestore_writer = FirestoreWriter(project_id=project_id, database=database)
+    collection_prefix = os.getenv("FIRESTORE_COLLECTION_PREFIX") or ""
+    app.state.firestore_writer = FirestoreWriter(project_id=project_id, database=database, collection_prefix=collection_prefix)
     app.state.loop_heartbeat_monotonic = time.monotonic()
 
     log(
@@ -86,6 +88,7 @@ async def _startup() -> None:
         severity="INFO",
         gcp_project=project_id,
         firestore_database=database,
+        firestore_collection_prefix=collection_prefix,
         env=os.getenv("ENV") or "unknown",
         default_region=os.getenv("DEFAULT_REGION") or "unknown",
         system_events_topic=os.getenv("SYSTEM_EVENTS_TOPIC") or "",
@@ -200,6 +203,10 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         source_topic = inferred_topic or ""
 
     writer: FirestoreWriter = app.state.firestore_writer
+    replay_run_id = (os.getenv("REPLAY_RUN_ID") or "").strip() or None
+    replay: ReplayContext | None = None
+    if replay_run_id and source_topic:
+        replay = ReplayContext(run_id=replay_run_id, consumer=SERVICE_NAME, topic=str(source_topic))
 
     try:
         result = handler.handler(
@@ -210,7 +217,23 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             message_id=message_id,
             pubsub_published_at=publish_time,
             firestore_writer=writer,
+            replay=replay,
         )
+        if replay is not None:
+            try:
+                # Best-effort markers; never fail the message due to marker writes.
+                write_replay_marker(
+                    db=writer._db,  # intentionally internal; minimal hook
+                    replay=replay,
+                    message_id=message_id,
+                    pubsub_published_at=publish_time,
+                    event_time=_parse_rfc3339(result.get("eventTime") or result.get("updatedAt")) or publish_time,
+                    handler=handler.name,
+                    applied=bool(result.get("applied")),
+                    reason=str(result.get("reason") or ""),
+                )
+            except Exception:
+                pass
         log(
             "materialize.ok",
             severity="INFO",

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from firestore_writer import SourceInfo
+from replay_support import ReplayContext
 
 def _as_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
@@ -54,6 +55,7 @@ def handle_system_event(
     message_id: str,
     pubsub_published_at: datetime,
     firestore_writer: Any,
+    replay: ReplayContext | None = None,
 ) -> dict[str, Any]:
     """
     Materialize `SystemEventPayload` into `ops_services/{serviceId}`.
@@ -94,8 +96,18 @@ def handle_system_event(
         published_at=_as_utc(pubsub_published_at),
     )
 
+    # Best-effort stable key for replay-mode dedupe.
+    # Prefer a producer-issued eventId if present; otherwise fall back to a tuple-ish key.
+    replay_key = None
+    if isinstance(payload.get("eventId"), str) and str(payload.get("eventId")).strip():
+        replay_key = str(payload.get("eventId")).strip()
+    else:
+        replay_key = f"{env}__{service_id}__{updated_at.isoformat()}"
+
     applied, reason = firestore_writer.dedupe_and_upsert_ops_service(
         message_id=str(message_id),
+        replay=replay,
+        replay_dedupe_key=replay_key,
         service_id=service_id,
         env=str(env or "unknown"),
         status=status,
