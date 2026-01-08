@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "./envelope";
+import type { EventEnvelopeV1 } from "./envelope";
 import type { MarketBar1mPayload } from "./market-bars";
 import { MARKET_BARS_1M_EVENT_TYPE } from "./market-bars";
 
@@ -7,7 +7,7 @@ import { MARKET_BARS_1M_EVENT_TYPE } from "./market-bars";
  *
  * Note: this is type-only; no runtime behavior.
  */
-export type MarketBar1mEvent = EventEnvelope<MarketBar1mPayload> & {
+export type MarketBar1mEvent = EventEnvelopeV1<MarketBar1mPayload> & {
   event_type: typeof MARKET_BARS_1M_EVENT_TYPE;
 };
 

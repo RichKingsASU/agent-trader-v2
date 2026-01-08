@@ -20,8 +20,43 @@ import time
 import uuid
 from typing import Any
 
+# --- Env normalization + validation (log presence, fail fast) ---
+def _normalize_env_alias(target: str, aliases: list[str]) -> None:
+    """
+    Ensures `target` is present by copying from the first present alias.
+    Logs nothing and never exposes values.
+    """
+    v = os.getenv(target)
+    if v is not None and str(v).strip():
+        return
+    for a in aliases:
+        av = os.getenv(a)
+        if av is not None and str(av).strip():
+            os.environ[target] = str(av).strip()
+            return
+
+
+def _validate_required_env(required: list[str]) -> dict[str, bool]:
+    return {name: bool((os.getenv(name) or "").strip()) for name in required}
+
+
 # --- Structured Logging & Pre-run Configuration ---
 # This must run before any other modules are imported to ensure logging is configured correctly.
+
+# Set up structured logging with the google-cloud-logging library.
+# In CI/local environments, Application Default Credentials may be unavailable; in that case,
+# fall back to standard logging rather than crashing at import-time.
+try:
+    import google.cloud.logging  # type: ignore
+
+    logging_client = google.cloud.logging.Client()
+    logging_client.setup_logging()
+except Exception as e:  # noqa: BLE001 - best-effort logging initialization
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+    logging.getLogger(__name__).warning(
+        "google-cloud-logging unavailable; using std logging: %s",
+        e,
+    )
 
 # Set up a logger adapter to inject custom static fields into all log messages.
 LOG_EXTRA = {
@@ -30,87 +65,29 @@ LOG_EXTRA = {
 }
 logger = logging.getLogger(__name__)
 
-# Provide a minimal fallback handler early so CRITICAL logs are visible even if
-# structured logging dependencies are missing/misconfigured.
-logging.basicConfig(level=logging.INFO)
-
-# Log Python import/resolve context as early as possible (before structured logging setup),
-# so failures in logging initialization still have `sys.path` visibility.
-logger.info(
-    "Python startup diagnostics (pre-logging setup). sys.path=%s",
-    list(sys.path),
-    extra={
-        **LOG_EXTRA,
-        "event_type": "python.startup",
-        "python_executable": sys.executable,
-        "python_version": sys.version,
-        "cwd": os.getcwd(),
-        "pythonpath_env": os.getenv("PYTHONPATH") or "",
-        "sys_path": list(sys.path),
-        "pythonpath_assumption": "Repo root (containing `backend/`) must be on sys.path (often via PYTHONPATH).",
-    },
-)
-
-# Set up structured logging with the google-cloud-logging library.
-# This will automatically format logs as JSON and include standard Cloud Run fields.
 try:
-    import google.cloud.logging
+    from backend.common.cloudrun_perf import identity_fields as _identity_fields  # noqa: WPS433
+    from backend.common.cloudrun_perf import instance_uptime_ms as _instance_uptime_ms  # noqa: WPS433
 
-    logging_client = google.cloud.logging.Client()
-    logging_client.setup_logging()
-except Exception as e:
-    logger.critical(
-        "Failed to initialize structured logging (google-cloud-logging): %s",
-        e,
-        extra={
-            **LOG_EXTRA,
-            "event_type": "python.logging_setup_failed",
-            "errorType": e.__class__.__name__,
-            "error": str(e),
-            "cwd": os.getcwd(),
-            "pythonpath_env": os.getenv("PYTHONPATH") or "",
-            "sys_path": list(sys.path),
-        },
-        exc_info=True,
+    logger.info(
+        "Cloud Run process start",
+        extra={**LOG_EXTRA, "event_type": "cloudrun.process_start", "instance_uptime_ms": _instance_uptime_ms(), **_identity_fields()},
     )
-    sys.exit(1)
-
-def _fail_fast_import(error: BaseException, *, context: str, failed_import: str) -> None:
-    logger.critical(
-        "Import failure (%s): %s",
-        failed_import,
-        error,
-        extra={
-            **LOG_EXTRA,
-            "event_type": "python.import_failed",
-            "context": context,
-            "failed_import": failed_import,
-            "errorType": error.__class__.__name__,
-            "error": str(error),
-            "cwd": os.getcwd(),
-            "pythonpath_env": os.getenv("PYTHONPATH") or "",
-            "sys_path": list(sys.path),
-        },
-        exc_info=True,
-    )
-    sys.exit(1)
+except Exception:
+    pass
 
 
 def override_config():
     """Overrides hardcoded config from vm_ingest with environment variables."""
     try:
         import backend.ingestion.config as config_module
-        logger.info(
-            "Imported backend.ingestion.config successfully.",
-            extra={**LOG_EXTRA, "module": "backend.ingestion.config", "module_file": getattr(config_module, "__file__", None)},
-        )
-        config_module.PROJECT_ID = os.environ["GCP_PROJECT_ID"]
+        config_module.PROJECT_ID = os.environ["GCP_PROJECT"]
         config_module.SYSTEM_EVENTS_TOPIC = os.environ["SYSTEM_EVENTS_TOPIC"]
         config_module.MARKET_TICKS_TOPIC = os.environ["MARKET_TICKS_TOPIC"]
         config_module.MARKET_BARS_1M_TOPIC = os.environ["MARKET_BARS_1M_TOPIC"]
         config_module.TRADE_SIGNALS_TOPIC = os.environ["TRADE_SIGNALS_TOPIC"]
         config_module.INGEST_FLAG_SECRET_ID = os.environ["INGEST_FLAG_SECRET_ID"]
-        logger.info("Configuration overridden for project: %s", config_module.PROJECT_ID, extra=LOG_EXTRA)
+        logger.info("Configuration overridden from environment.", extra={**LOG_EXTRA, "config_overridden": True})
     except KeyError as e:
         logger.critical("Missing required environment variable: %s", e, extra=LOG_EXTRA)
         sys.exit(1)
@@ -166,109 +143,89 @@ def ingestion_worker():
             HEARTBEAT_INTERVAL_SECONDS,
             FLAG_CHECK_INTERVAL_SECONDS,
         )
+        from backend.common.ingest_switch import get_effective_ingest_enabled_state
     except ImportError as e:
-        # This is unrecoverable: fail fast so Cloud Run restarts with a clear signal.
-        logger.critical(
-            "Failed to import ingestion dependencies: %s",
-            e,
-            extra={
-                **LOG_EXTRA,
-                "event_type": "python.import_failed",
-                "context": "ingestion_worker",
-                "cwd": os.getcwd(),
-                "pythonpath_env": os.getenv("PYTHONPATH") or "",
-                "sys_path": list(sys.path),
-            },
-            exc_info=True,
-        )
-        os._exit(1)
+        logger.critical("Failed to import ingestion service: %s", e, extra=LOG_EXTRA)
+        return
 
     logger.info("Ingestion worker thread started.", extra=LOG_EXTRA)
     service = IngestionService()
     service.health_checker.sanity_checks()
 
-    # Supervisor loop: the worker must not exit unless shutdown is requested.
+    # Startup gate: log effective ingest enabled state.
+    eff_enabled, eff_source = get_effective_ingest_enabled_state(default_enabled=True)
+    logger.info(
+        "INGEST_ENABLED startup state: enabled=%s source=%s",
+        bool(eff_enabled),
+        str(eff_source or ""),
+        extra=LOG_EXTRA,
+    )
+
+    last_effective_enabled: bool | None = None
+    last_effective_source: str | None = None
+
     while not SHUTDOWN_FLAG.is_set():
         try:
-            from backend.ingestion.vm_ingest import IngestionService
-            import backend.ingestion.config as config_module
-            from backend.ingestion.config import (
-                HEARTBEAT_INTERVAL_SECONDS,
-                FLAG_CHECK_INTERVAL_SECONDS,
-            )
+            # Combine the repo-wide kill switch with the operator ingest switch.
+            effective_enabled, effective_source = get_effective_ingest_enabled_state(default_enabled=True)
+            if last_effective_enabled is None or effective_enabled != last_effective_enabled:
+                last_effective_enabled = bool(effective_enabled)
+                last_effective_source = str(effective_source or "")
+                if effective_enabled:
+                    logger.info(
+                        "INGEST_ENABLED transition: enabled=%s source=%s",
+                        bool(effective_enabled),
+                        str(effective_source or ""),
+                        extra=loop_log_extra,
+                    )
+                else:
+                    logger.warning(
+                        "INGEST_ENABLED transition: enabled=%s source=%s",
+                        bool(effective_enabled),
+                        str(effective_source or ""),
+                        extra=loop_log_extra,
+                    )
 
-            logger.info(
-                "Imported ingestion modules successfully.",
-                extra={
-                    **LOG_EXTRA,
-                    "module": "backend.ingestion.config",
-                    "module_file": getattr(config_module, "__file__", None),
-                },
-            )
+            # Check for kill switch
+            if time.time() - service.last_flag_check > FLAG_CHECK_INTERVAL_SECONDS:
+                service.ingest_enabled = service.health_checker.check_ingest_flag()
+                service.last_flag_check = time.time()
 
-            service = IngestionService()
-            service.health_checker.sanity_checks()
-            logger.info("Ingestion worker initialized.", extra=LOG_EXTRA)
-        except Exception:
-            # Log full stack trace; keep process alive and retry until shutdown.
-            retry_seconds = 5
-            logger.exception(
-                "Failed to initialize ingestion worker; retrying.",
-                extra={**LOG_EXTRA, "retry_in_seconds": retry_seconds},
-            )
-            SHUTDOWN_FLAG.wait(timeout=retry_seconds)
-            continue
-
-        while not SHUTDOWN_FLAG.is_set():
-            iteration_id = uuid.uuid4().hex
-            loop_log_extra = {**LOG_EXTRA, "iteration_id": iteration_id}
-
+            # Always emit a lightweight system heartbeat (even when disabled) for visibility.
             try:
-                # Check for kill switch
-                if time.time() - service.last_flag_check > FLAG_CHECK_INTERVAL_SECONDS:
-                    service.ingest_enabled = service.health_checker.check_ingest_flag()
-                    service.last_flag_check = time.time()
-
-                if not service.ingest_enabled:
-                    logger.warning("Ingestion is disabled via feature flag. Sleeping.", extra=loop_log_extra)
-                    time.sleep(HEARTBEAT_INTERVAL_SECONDS)
-                    continue
-
-                # Publish events (business logic is unchanged)
-                service.publish_system_event("info", "Ingestion heartbeat.")
-                logger.info(
-                    "Published system heartbeat.",
-                    extra={**loop_log_extra, "published_topic": service.system_events_topic_path},
+                service.publish_system_event(
+                    "info",
+                    "Ingestion heartbeat (enabled=%s, source=%s)." % (bool(effective_enabled and service.ingest_enabled), str(last_effective_source or "")),
                 )
-
-                service.publish_market_tick()
-                logger.info(
-                    "Published market tick.",
-                    extra={**loop_log_extra, "published_topic": service.market_ticks_topic_path},
-                )
-
-                service.publish_market_bar_1m()
-                logger.info(
-                    "Published market bar.",
-                    extra={**loop_log_extra, "published_topic": service.market_bars_1m_topic_path},
-                )
-
-                service.publish_trade_signal()
-                logger.info(
-                    "Published trade signal.",
-                    extra={**loop_log_extra, "published_topic": service.trade_signals_topic_path},
-                )
-
             except Exception:
-                # Log full stack trace; keep the loop alive.
-                logger.exception("Error in ingestion loop.", extra=loop_log_extra)
+                # Heartbeat must be best-effort; don't break the loop.
+                pass
 
-            # Wait for the next iteration or shutdown signal
-            SHUTDOWN_FLAG.wait(timeout=HEARTBEAT_INTERVAL_SECONDS)
+            if (not effective_enabled) or (not service.ingest_enabled):
+                # Log only on transitions to avoid log storms.
+                if not service.ingest_enabled:
+                    logger.warning("Ingestion is disabled via feature flag.", extra=loop_log_extra)
+                # Sleep can be interrupted by shutdown.
+                SHUTDOWN_FLAG.wait(timeout=HEARTBEAT_INTERVAL_SECONDS)
+                continue
 
-        if not SHUTDOWN_FLAG.is_set():
-            # Defensive: the publish loop should only exit on shutdown.
-            logger.error("Ingestion loop exited without shutdown; restarting.", extra=LOG_EXTRA)
+            # Publish events (business logic is unchanged)
+            logger.info("Published system heartbeat.", extra={**loop_log_extra, "published_topic": service.system_events_topic_path})
+            
+            service.publish_market_tick()
+            logger.info("Published market tick.", extra={**loop_log_extra, "published_topic": service.market_ticks_topic_path})
+
+            service.publish_market_bar_1m()
+            logger.info("Published market bar.", extra={**loop_log_extra, "published_topic": service.market_bars_1m_topic_path})
+
+            service.publish_trade_signal()
+            logger.info("Published trade signal.", extra={**loop_log_extra, "published_topic": service.trade_signals_topic_path})
+
+        except Exception as e:
+            logger.error("Error in ingestion loop: %s", e, extra=loop_log_extra, exc_info=True)
+
+        # Wait for the next iteration or shutdown signal
+        SHUTDOWN_FLAG.wait(timeout=HEARTBEAT_INTERVAL_SECONDS)
 
     logger.warning("Ingestion worker shutting down.", extra=LOG_EXTRA)
 
@@ -281,6 +238,27 @@ try:
 except Exception as e:
     _fail_fast_import(e, context="startup", failed_import="flask.Flask")
 app = Flask(__name__)
+
+try:
+    from backend.common.cloudrun_perf import classify_request as _classify_request  # noqa: WPS433
+
+    @app.before_request
+    def _cloudrun_request_perf_hook():  # type: ignore[no-redef]
+        # Minimal noise: still logs once per request (health checks are low-QPS here).
+        c = _classify_request()
+        logger.info(
+            "Request handled",
+            extra={
+                **LOG_EXTRA,
+                "event_type": "cloudrun.http_request",
+                "cold_start": bool(c.cold_start),
+                "request_ordinal": int(c.request_ordinal),
+                "instance_uptime_ms": int(c.instance_uptime_ms),
+            },
+        )
+
+except Exception:
+    pass
 
 @app.route("/")
 def index():

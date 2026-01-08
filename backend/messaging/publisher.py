@@ -7,7 +7,13 @@ import time
 from typing import Any, Mapping, Optional
 
 from backend.messaging.envelope import EventEnvelope
+from backend.messaging.pubsub_attributes import (
+    EVENT_ENVELOPE_SCHEMA_VERSION,
+    build_standard_attributes,
+    resolve_environment,
+)
 from backend.observability.ops_json_logger import log as log_json
+from backend.observability.ops_json_logger import log_once as log_json_once
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +211,10 @@ class PubSubPublisher:
 
         Returns a Pub/Sub message id (string).
         """
+        # Contract guardrail: schemaVersion is REQUIRED and must be supported.
+        schema_version = int(getattr(envelope, "schemaVersion", 0) or 0)
+        if schema_version != 1:
+            raise ValueError(f"Unsupported schemaVersion for EventEnvelope: {schema_version}")
 
         cfg = self._publish_retry_config()
         max_attempts = int(cfg["max_attempts"])
@@ -212,6 +222,21 @@ class PubSubPublisher:
 
         started = time.monotonic()
         last_exc: Optional[BaseException] = None
+
+        std_attrs = build_standard_attributes(
+            event_type=envelope.event_type,
+            schema_version=EVENT_ENVELOPE_SCHEMA_VERSION,
+            producer=envelope.agent_name,
+            environment=resolve_environment(),
+        )
+        # Keep existing non-standard attributes for filtering/debugging.
+        publish_attrs: dict[str, str] = {
+            **std_attrs,
+            "agent_name": envelope.agent_name,
+            "trace_id": envelope.trace_id,
+            "git_sha": envelope.git_sha,
+            "ts": envelope.ts,
+        }
 
         for attempt in range(1, max_attempts + 1):
             try:
@@ -226,16 +251,37 @@ class PubSubPublisher:
                     self._topic_path,
                     envelope.to_bytes(),
                     # Also duplicate key fields as attributes for filtering/debugging.
+                    schemaVersion=str(schema_version),
                     event_type=envelope.event_type,
                     agent_name=envelope.agent_name,
-                    producer=producer,
-                    environment=environment,
-                    schema_version=schema_version,
                     trace_id=envelope.trace_id,
                     git_sha=envelope.git_sha,
                     ts=envelope.ts,
                 )
                 message_id = str(future.result(timeout=timeout_s))
+
+                # Cloud Run performance marker: time-to-first-publish (logging-only).
+                try:
+                    from backend.common.cloudrun_perf import identity_fields, mark_first_publish  # noqa: WPS433
+
+                    marker = mark_first_publish()
+                    if marker.first_publish:
+                        log_json_once(
+                            None,
+                            key="cloudrun.first_publish",
+                            event="cloudrun.first_publish",
+                            severity="INFO",
+                            topic=self._topic_path,
+                            message_id=message_id,
+                            event_type=envelope.event_type,
+                            agent_name=envelope.agent_name,
+                            trace_id=envelope.trace_id,
+                            time_to_first_publish_ms=int(marker.time_to_first_publish_ms or 0),
+                            instance_uptime_ms=int(marker.instance_uptime_ms),
+                            **identity_fields(),
+                        )
+                except Exception:
+                    pass
 
                 log_json(
                     None,
@@ -244,11 +290,11 @@ class PubSubPublisher:
                     metric="pubsub_publish_success",
                     topic=self._topic_path,
                     message_id=message_id,
-                    event_type=envelope.event_type,
-                    agent_name=envelope.agent_name,
-                    producer=producer,
-                    environment=environment,
-                    schema_version=schema_version,
+                    event_type=std_attrs["event_type"],
+                    schema_version=std_attrs["schema_version"],
+                    producer=std_attrs["producer"],
+                    environment=std_attrs["environment"],
+                    agent_name=envelope.agent_name,  # legacy
                     trace_id=envelope.trace_id,
                     attempt=attempt,
                     elapsed_ms=int((time.monotonic() - started) * 1000),
@@ -265,11 +311,11 @@ class PubSubPublisher:
                     severity="ERROR" if (not retryable or attempt == max_attempts) else "WARNING",
                     metric="pubsub_publish_failure",
                     topic=self._topic_path,
-                    event_type=envelope.event_type,
-                    agent_name=envelope.agent_name,
-                    producer=str(envelope.agent_name),
-                    environment=self._default_environment(),
-                    schema_version=self._schema_version(),
+                    event_type=std_attrs["event_type"],
+                    schema_version=std_attrs["schema_version"],
+                    producer=std_attrs["producer"],
+                    environment=std_attrs["environment"],
+                    agent_name=envelope.agent_name,  # legacy
                     trace_id=envelope.trace_id,
                     attempt=attempt,
                     max_attempts=max_attempts,

@@ -22,6 +22,7 @@ from backend.common.logging import init_structured_logging, install_fastapi_requ
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.observability.ops_json_logger import OpsLogger
 from backend.common.kill_switch import get_kill_switch_state
+from backend.common.ingest_switch import get_effective_ingest_enabled_state
 from backend.common.ops_metrics import REGISTRY
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 from backend.ingestion.market_data_ingest import (
@@ -123,6 +124,15 @@ async def _startup() -> None:
         pass
 
     cfg = load_config_from_env()
+
+    # Startup gate: record the current ingest switch state.
+    enabled, source = get_effective_ingest_enabled_state(default_enabled=True)
+    log_json(
+        "ingest_enabled_startup",
+        enabled=bool(enabled),
+        source=str(source or ""),
+        severity="INFO" if enabled else "WARNING",
+    )
 
     # Deterministic Alpaca auth smoke tests (startup gate).
     # If these fail, crash the container so Cloud Run/K8s restarts it.
