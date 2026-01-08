@@ -1,11 +1,11 @@
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-import requests
 import os
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
 from decimal import Decimal
 import logging
+import httpx
 
 from backend.tenancy.auth import get_tenant_context
 from backend.tenancy.context import TenantContext
@@ -13,6 +13,8 @@ from backend.persistence.firebase_client import get_firestore_client
 from backend.persistence.firestore_retry import with_firestore_retry
 from backend.common.kill_switch import get_kill_switch_state
 from google.cloud import firestore
+from backend.common.a2a_sdk import RiskAgentSyncClient
+from backend.contracts.risk import TradeCheckRequest
 
 from ..db import build_raw_order, insert_paper_order
 from ..models import PaperOrderCreate
@@ -208,31 +210,28 @@ def execute_trade(trade_request: TradeRequest, request: Request):
         )
     
     # Risk check (always performed regardless of mode)
-    risk_check_payload = {
-        "broker_account_id": str(trade_request.broker_account_id),
-        "strategy_id": str(trade_request.strategy_id),
-        "symbol": trade_request.symbol,
-        "notional": str(trade_request.notional),
-        "side": trade_request.side,
-        "current_open_positions": 0,
-        "current_trades_today": 0,
-        "current_day_loss": "0.0",
-        "current_day_drawdown": "0.0",
-    }
-
     try:
-        response = requests.post(
-            f"{RISK_SERVICE_URL}/risk/check-trade",
-            json=risk_check_payload,
-            headers={"Authorization": request.headers.get("Authorization", "")},
+        risk_req = TradeCheckRequest(
+            broker_account_id=trade_request.broker_account_id,
+            strategy_id=trade_request.strategy_id,
+            symbol=trade_request.symbol,
+            notional=str(trade_request.notional),
+            side=trade_request.side,
+            current_open_positions=0,
+            current_trades_today=0,
+            current_day_loss="0.0",
+            current_day_drawdown="0.0",
         )
-        response.raise_for_status()
-        risk_result = response.json()
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Risk service request failed: {e}")
+        risk_client = RiskAgentSyncClient(RISK_SERVICE_URL)
+        risk_result = risk_client.check_trade(
+            risk_req,
+            authorization=request.headers.get("Authorization", ""),
+        )
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=500, detail=f"Risk service request failed: {e}") from e
 
-    if not risk_result.get("allowed"):
-        raise HTTPException(status_code=400, detail=f"Trade not allowed by risk service: {risk_result.get('reason')}")
+    if not risk_result.allowed:
+        raise HTTPException(status_code=400, detail=f"Trade not allowed by risk service: {risk_result.reason}")
 
     # SHADOW MODE: Create synthetic order without contacting broker
     if is_shadow_mode:
@@ -285,8 +284,8 @@ def execute_trade(trade_request: TradeRequest, request: Request):
                 notional=trade_request.notional,
                 quantity=trade_request.quantity,
                 risk_allowed=True,
-                risk_scope=risk_result.get("scope"),
-                risk_reason=risk_result.get("reason") or "Allowed by risk check",
+                risk_scope=risk_result.scope,
+                risk_reason=risk_result.reason or "Allowed by risk check",
                 raw_order=build_raw_order(logical_order),
                 status="simulated",  # TODO: Change to "submitted" when live Alpaca integration is complete
             )

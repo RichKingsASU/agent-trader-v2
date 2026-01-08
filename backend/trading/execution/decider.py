@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from backend.trading.execution.models import ExecutionDecision, SafetySnapshot
+from backend.trading.proposals.models import OrderProposal
 
 
 def _coerce_dt(value: Any) -> datetime | None:
@@ -26,47 +27,30 @@ def _coerce_dt(value: Any) -> datetime | None:
     return None
 
 
-def _compact_recommended_order(proposal: dict[str, Any]) -> dict[str, Any]:
+def _compact_recommended_order(proposal: OrderProposal) -> dict[str, Any]:
     """
     Produce a compact, audit-friendly order summary.
 
-    - Prefers proposal["order"] if present and dict-like
-    - Otherwise uses an allowlist of common order fields
+    Uses a stable subset of the proposal contract fields only.
     """
-    order = proposal.get("order")
-    if isinstance(order, dict):
-        return dict(order)
-
-    allow = [
-        "symbol",
-        "side",
-        "qty",
-        "quantity",
-        "order_type",
-        "type",
-        "time_in_force",
-        "tif",
-        "limit_price",
-        "stop_price",
-        "asset_class",
-        "broker_account_id",
-        "strategy_id",
-    ]
-    out: dict[str, Any] = {}
-    for k in allow:
-        if k in proposal:
-            out[k] = proposal.get(k)
-    if not out:
-        # Fall back to minimal traceability only (do NOT embed entire proposal).
-        for k in ("proposal_id", "id", "correlation_id", "run_id"):
-            if k in proposal:
-                out[k] = proposal.get(k)
-    return out
+    return {
+        "proposal_id": str(proposal.proposal_id),
+        "correlation_id": proposal.correlation_id,
+        "strategy_name": proposal.strategy_name,
+        "symbol": proposal.symbol,
+        "asset_type": proposal.asset_type.value,
+        "side": proposal.side.value,
+        "quantity": int(proposal.quantity),
+        "limit_price": proposal.limit_price,
+        "time_in_force": proposal.time_in_force.value,
+        "valid_until_utc": proposal.constraints.valid_until_utc.isoformat(),
+        "requires_human_approval": bool(proposal.constraints.requires_human_approval),
+    }
 
 
 def decide_execution(
     *,
-    proposal: dict[str, Any],
+    proposal: OrderProposal,
     safety: SafetySnapshot,
     agent_name: str,
     agent_role: str,
@@ -79,17 +63,10 @@ def decide_execution(
     """
     now_dt = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
-    proposal_id = str(proposal.get("proposal_id") or proposal.get("id") or "").strip()
-    correlation_id = (
-        str(proposal.get("correlation_id") or proposal.get("run_id") or proposal.get("trace_id") or "").strip()
-        or None
-    )
+    proposal_id = str(proposal.proposal_id)
+    correlation_id = str(proposal.correlation_id or "").strip() or None
 
     reject: list[str] = []
-
-    if not proposal_id:
-        reject.append("proposal_missing_id")
-        proposal_id = "missing_proposal_id"
 
     # Rule: kill switch => reject
     if safety.kill_switch:
@@ -100,23 +77,17 @@ def decide_execution(
         reject.append("marketdata_stale_or_missing")
 
     # Rule: requires_human_approval => reject (default True)
-    rha = proposal.get("requires_human_approval")
-    requires_human_approval = True if rha is None else bool(rha)
-    if requires_human_approval:
+    if bool(proposal.constraints.requires_human_approval):
         reject.append("requires_human_approval")
 
     # Rule: proposal valid_until expired => reject (missing/unparseable => reject)
-    valid_until_raw = proposal.get("valid_until_utc") or proposal.get("valid_until") or proposal.get("valid_until_ts")
-    valid_until_dt = _coerce_dt(valid_until_raw)
-    if valid_until_dt is None:
-        reject.append("proposal_valid_until_missing_or_unparseable")
-    else:
-        if valid_until_dt < now_dt:
-            reject.append("proposal_expired")
+    valid_until_dt = proposal.constraints.valid_until_utc
+    if valid_until_dt.astimezone(timezone.utc) < now_dt:
+        reject.append("proposal_expired")
 
     decision = "REJECT" if reject else "APPROVE"
 
-    notes = str(proposal.get("notes") or "").strip()
+    notes = ""
     if not notes and decision == "APPROVE":
         notes = "Approved by deterministic stub (NO ORDER WILL BE PLACED)."
     if not notes and decision == "REJECT":

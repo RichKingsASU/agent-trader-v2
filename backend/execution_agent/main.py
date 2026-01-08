@@ -20,7 +20,8 @@ from backend.common.kill_switch import get_kill_switch_state
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.execution_agent.gating import enforce_startup_gate_or_exit
 from backend.trading.execution.decider import decide_execution
-from backend.trading.execution.models import SafetySnapshot
+from backend.trading.execution.models import ExecutionDecision, SafetySnapshot
+from backend.trading.proposals.models import OrderProposal
 
 logger = logging.getLogger(__name__)
 _STOP_EVENT = threading.Event()
@@ -333,7 +334,23 @@ def main() -> None:
     ):
         if stop_event.is_set():
             break
-        proposal_id = str(proposal.get("proposal_id") or proposal.get("id") or "").strip() or "missing_proposal_id"
+        # Contract gate: proposals MUST conform to the shared OrderProposal schema.
+        # If a record does not, fail-safe to a REJECT decision and keep processing.
+        proposal_id_guess = str(proposal.get("proposal_id") or proposal.get("id") or "").strip()
+        parsed: OrderProposal | None = None
+        try:
+            parsed = OrderProposal.model_validate(proposal)
+            proposal_id = str(parsed.proposal_id)
+        except Exception as e:
+            proposal_id = proposal_id_guess or "missing_proposal_id"
+            _json_log(
+                {
+                    "ts": _utc_now().isoformat(),
+                    "intent_type": "proposal_schema_invalid",
+                    "proposal_id": proposal_id,
+                    "error": f"{type(e).__name__}: {e}",
+                }
+            )
 
         if proposal_id in processed_ids:
             _json_log(
@@ -350,12 +367,29 @@ def main() -> None:
 
         duplicate_seen = proposal_id in prior_ids_today
         safety = build_safety_snapshot()
-        decision = decide_execution(
-            proposal=proposal,
-            safety=safety,
-            agent_name=agent_name,
-            agent_role=agent_role,
-        )
+        if parsed is None:
+            decision = ExecutionDecision(
+                proposal_id=proposal_id,
+                correlation_id=str(proposal.get("correlation_id") or "") or None,
+                agent_name=agent_name,
+                agent_role=agent_role,
+                decision="REJECT",
+                reject_reason_codes=["proposal_schema_invalid"],
+                notes="Rejected: proposal did not match OrderProposal schema.",
+                recommended_order={
+                    "proposal_id": proposal_id,
+                    "symbol": proposal.get("symbol"),
+                    "side": proposal.get("side"),
+                },
+                safety_snapshot=safety,
+            )
+        else:
+            decision = decide_execution(
+                proposal=parsed,
+                safety=safety,
+                agent_name=agent_name,
+                agent_role=agent_role,
+            )
         decision_obj = decision.to_dict()
 
         # Emit intent log (always).

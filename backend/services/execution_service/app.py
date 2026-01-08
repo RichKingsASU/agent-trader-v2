@@ -229,10 +229,23 @@ def ops_metrics() -> Response:
 
 
 @app.get("/state")
-def state() -> dict[str, Any]:
+def state(request: Request) -> dict[str, Any]:
     """
     Inspect execution-agent state machine and gating inputs.
+
+    Security/contract rule:
+    - This endpoint exposes INTERNAL state intended only for on-call debugging.
+    - Other agents/services MUST NOT depend on it.
+    - It is disabled unless `EXEC_AGENT_ADMIN_KEY` is explicitly configured.
     """
+    required = str(os.getenv("EXEC_AGENT_ADMIN_KEY") or "").strip()
+    if not required:
+        # Hide the endpoint unless explicitly enabled.
+        raise HTTPException(status_code=404, detail="not_found")
+    provided = str(request.headers.get("X-Exec-Agent-Key") or "").strip()
+    if provided != required:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
     sm: AgentStateMachine = app.state.agent_sm
     risk: RiskManager = app.state.risk
 
