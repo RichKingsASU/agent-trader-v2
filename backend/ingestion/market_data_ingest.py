@@ -640,10 +640,7 @@ async def _amain() -> int:
     )
     try:
         fp = get_build_fingerprint()
-        print(
-            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
-            flush=True,
-        )
+        log_json("build_fingerprint", intent_type="build_fingerprint", service="market-data-ingest", **fp)
     except Exception:
         pass
     cfg = load_config_from_env()

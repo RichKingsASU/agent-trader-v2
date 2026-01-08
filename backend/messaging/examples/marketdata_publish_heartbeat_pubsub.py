@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from backend.messaging.publisher import PubSubPublisher
+from backend.common.ops_log import log_json
 
 
 HEARTBEAT_EVENT_TYPE = "marketdata.heartbeat"
@@ -30,7 +31,14 @@ def main() -> None:
         event_type=HEARTBEAT_EVENT_TYPE,
         payload={"status": "ok", "service": "marketdata"},
     )
-    print("published message_id:", message_id)
+    log_json(
+        intent_type="pubsub.published",
+        severity="INFO",
+        event_type=HEARTBEAT_EVENT_TYPE,
+        message_id=message_id,
+        topic_id=topic_id,
+        project_id=project_id,
+    )
 
 
 if __name__ == "__main__":

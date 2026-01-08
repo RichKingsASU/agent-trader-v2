@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import os
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 from backend.common.agent_boot import configure_startup_logging
@@ -71,8 +72,12 @@ async def run_strategy(execute: bool):
     # Registry-backed identity in the risk/audit subsystem.
     strategy_id = await get_or_create_strategy_definition(config.STRATEGY_NAME)
     today = date.today()
+    iteration_id = uuid.uuid4().hex
 
-    print(f"Running strategy '{config.STRATEGY_NAME}' for {today}...")
+    try:
+        log_json(intent_type="strategy_run_start", severity="INFO", strategy=config.STRATEGY_NAME, date=str(today), iteration_id=iteration_id)
+    except Exception:
+        pass
 
     # Data freshness policy: market_data_1m => 60s bars; stale if age > 2x interval.
     # Override via env if needed (seconds).
@@ -94,7 +99,16 @@ async def run_strategy(execute: bool):
         global _last_cycle_at_iso
         _last_cycle_at_iso = _utc_now_iso()
 
-        print(f"Processing symbol: {symbol}")
+        try:
+            log_json(
+                intent_type="strategy_symbol_start",
+                severity="INFO",
+                symbol=symbol,
+                strategy=config.STRATEGY_NAME,
+                iteration_id=iteration_id,
+            )
+        except Exception:
+            pass
 
         try:
             bars = await fetch_recent_bars(symbol, config.STRATEGY_BAR_LOOKBACK_MINUTES)
@@ -103,7 +117,6 @@ async def run_strategy(execute: bool):
             # Skip this cycle on internal failures (SLO-aligned).
             strategy_cycles_skipped_total.inc(1.0)
             errors_total.inc(labels={"component": "strategy-engine"})
-            print(f"  Cycle skipped due to error: {type(e).__name__}: {e}")
             try:
                 log_json(
                     intent_type="strategy_cycle_skipped",
@@ -113,6 +126,7 @@ async def run_strategy(execute: bool):
                     error=str(e),
                     symbol=symbol,
                     strategy=config.STRATEGY_NAME,
+                    iteration_id=iteration_id,
                 )
             except Exception:
                 pass
@@ -134,6 +148,7 @@ async def run_strategy(execute: bool):
                     reason_codes=["stale_data" if freshness.reason_code == "STALE_DATA" else "missing_timestamp"],
                     symbol=symbol,
                     strategy=config.STRATEGY_NAME,
+                    iteration_id=iteration_id,
                     latest_ts_utc=(freshness.latest_ts_utc.isoformat() if freshness.latest_ts_utc else None),
                     now_utc=freshness.now_utc.isoformat(),
                     age_seconds=(float(freshness.age.total_seconds()) if freshness.age is not None else None),
@@ -150,7 +165,18 @@ async def run_strategy(execute: bool):
                 f"threshold_s={freshness.details.get('threshold_seconds')}"
             )
             await log_decision(strategy_id, symbol, "flat", reason, {"reason_code": freshness.reason_code}, False)
-            print(f"  Decision: flat. Reason: {reason}")
+            try:
+                log_json(
+                    intent_type="strategy_decision",
+                    severity="INFO",
+                    symbol=symbol,
+                    strategy=config.STRATEGY_NAME,
+                    action="flat",
+                    reason=reason,
+                    iteration_id=iteration_id,
+                )
+            except Exception:
+                pass
             continue
 
         decision = make_decision(bars, flow_events)
@@ -158,7 +184,18 @@ async def run_strategy(execute: bool):
 
         if action == "flat":
             await log_decision(strategy_id, symbol, "flat", decision["reason"], decision["signal_payload"], False)
-            print(f"  Decision: flat. Reason: {decision['reason']}")
+            try:
+                log_json(
+                    intent_type="strategy_decision",
+                    severity="INFO",
+                    symbol=symbol,
+                    strategy=config.STRATEGY_NAME,
+                    action="flat",
+                    reason=decision.get("reason"),
+                    iteration_id=iteration_id,
+                )
+            except Exception:
+                pass
             continue
         else:
             # We proposed an order (even if later blocked by risk / kill switch).
@@ -171,6 +208,7 @@ async def run_strategy(execute: bool):
                     action=action,
                     strategy=config.STRATEGY_NAME,
                     reason=decision.get("reason"),
+                    iteration_id=iteration_id,
                 )
             except Exception:
                 pass
@@ -183,7 +221,20 @@ async def run_strategy(execute: bool):
         if not risk_allowed:
             reason = "Risk limit exceeded."
             await log_decision(strategy_id, symbol, action, reason, decision.get("signal_payload") or {}, False)
-            print(f"  Decision: {action}, but blocked. Reason: {reason}")
+            try:
+                log_json(
+                    intent_type="strategy_decision",
+                    severity="WARNING",
+                    symbol=symbol,
+                    strategy=config.STRATEGY_NAME,
+                    action=action,
+                    reason=reason,
+                    blocked=True,
+                    block_reason="risk_limit",
+                    iteration_id=iteration_id,
+                )
+            except Exception:
+                pass
             continue
 
         # Proposal emitted only (no execution in this service).
@@ -195,7 +246,18 @@ async def run_strategy(execute: bool):
             decision.get("signal_payload") or {},
             False,
         )
-        print(f"  Decision: {action}. Reason: {decision.get('reason')}")
+        try:
+            log_json(
+                intent_type="strategy_decision",
+                severity="INFO",
+                symbol=symbol,
+                strategy=config.STRATEGY_NAME,
+                action=action,
+                reason=decision.get("reason"),
+                iteration_id=iteration_id,
+            )
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
@@ -213,7 +275,16 @@ if __name__ == "__main__":
         srv.start()
     except Exception as e:
         errors_total.inc(labels={"component": "strategy-engine"})
-        print(f"[strategy-engine] ops_http_server_failed: {type(e).__name__}: {e}", flush=True)
+        try:
+            log_json(
+                intent_type="ops_http_server_failed",
+                severity="ERROR",
+                service="strategy-engine",
+                error_type=type(e).__name__,
+                error=str(e),
+            )
+        except Exception:
+            pass
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
