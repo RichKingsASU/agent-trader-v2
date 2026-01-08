@@ -6,15 +6,17 @@ _enforce_agent_mode_guard()
 
 import os
 import time
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import Response
 
-from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware
+from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware, log_event
 from backend.common.ops_metrics import REGISTRY
 from backend.ingestion.pubsub_event_store import build_event_store, parse_pubsub_push
+from backend.ingestion.pubsub_push_validation import validate_pubsub_push_headers
 from backend.ingestion.ingest_heartbeat_handler import (
     apply_ingest_heartbeat_to_firestore,
     extract_subscription_id,
@@ -29,6 +31,7 @@ def _utcnow_iso() -> str:
 app = FastAPI(title="Pub/Sub Event Ingestion (Visibility)", version="0.1.0")
 init_structured_logging(service="pubsub-event-ingestion")
 install_fastapi_request_id_middleware(app, service="pubsub-event-ingestion")
+logger = logging.getLogger("pubsub_event_ingestion")
 
 
 @app.on_event("startup")
@@ -94,8 +97,84 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
 
     This intentionally does NOT do auth hardening yet (visibility-first).
     """
-    body = await req.json()
-    ev = parse_pubsub_push(body)
+    # Validate Pub/Sub headers (no auth decisions).
+    try:
+        hdr = validate_pubsub_push_headers(req, subscription_from_body=None)
+    except HTTPException as e:
+        log_event(
+            logger,
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_headers",
+            error=str(getattr(e, "detail", "")),
+            subscription=None,
+            messageId=None,
+            publishTime=None,
+        )
+        raise
+
+    try:
+        body = await req.json()
+    except Exception as e:
+        log_event(
+            logger,
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_json",
+            error=str(e),
+            subscription=hdr.get("header_subscription"),
+            messageId=None,
+            publishTime=None,
+        )
+        raise HTTPException(status_code=400, detail="invalid_json") from e
+
+    subscription_raw = body.get("subscription") if isinstance(body, dict) else None
+    subscription_s = subscription_raw.strip() if isinstance(subscription_raw, str) else None
+    msg = body.get("message") if isinstance(body, dict) else None
+    message_id_raw = msg.get("messageId") if isinstance(msg, dict) else None
+    publish_time_raw = msg.get("publishTime") if isinstance(msg, dict) else None
+
+    # Validate header/body consistency when possible.
+    try:
+        hdr = validate_pubsub_push_headers(req, subscription_from_body=subscription_s)
+    except HTTPException as e:
+        log_event(
+            logger,
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_headers",
+            error=str(getattr(e, "detail", "")),
+            subscription=subscription_s,
+            messageId=str(message_id_raw).strip() if isinstance(message_id_raw, str) and message_id_raw.strip() else None,
+            publishTime=str(publish_time_raw).strip() if isinstance(publish_time_raw, str) and publish_time_raw.strip() else None,
+        )
+        raise
+
+    try:
+        ev = parse_pubsub_push(body)
+    except Exception as e:
+        log_event(
+            logger,
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_envelope",
+            error=str(e),
+            subscription=subscription_s or hdr.get("header_subscription"),
+            messageId=str(message_id_raw).strip() if isinstance(message_id_raw, str) and message_id_raw.strip() else None,
+            publishTime=str(publish_time_raw).strip() if isinstance(publish_time_raw, str) and publish_time_raw.strip() else None,
+        )
+        raise HTTPException(status_code=400, detail="invalid_envelope") from e
+
+    log_event(
+        logger,
+        "pubsub.accepted",
+        severity="INFO",
+        subscription=ev.subscription,
+        messageId=ev.message_id,
+        publishTime=(str(publish_time_raw).strip() if isinstance(publish_time_raw, str) else None),
+        header_subscription=hdr.get("header_subscription"),
+        header_topic=hdr.get("header_topic"),
+    )
 
     # Mark loop heartbeat so /livez shows recent request handling.
     app.state.loop_heartbeat_monotonic = time.monotonic()
