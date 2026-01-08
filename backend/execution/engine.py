@@ -6,6 +6,7 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Optional, Protocol, runtime_checkable
 
 import requests
@@ -50,6 +51,139 @@ def _to_jsonable(value: Any) -> Any:
     if hasattr(value, "__dict__"):
         return _to_jsonable(vars(value))
     return str(value)
+
+
+class InvariantViolation(RuntimeError):
+    """
+    Raised when a risk/capital invariant is violated.
+
+    Important: these are *not* normal risk rejections; they indicate internal
+    accounting/state corruption or a contract breach between components.
+    """
+
+
+def _as_money_decimal(v: Any, *, name: str) -> Decimal:
+    """
+    Convert a numeric-ish value to Decimal for invariant checks.
+
+    We accept string/float/int/Decimal since upstream may serialize money as strings.
+    """
+    if v is None:
+        raise InvariantViolation(f"Missing required invariant field: {name}")
+    if isinstance(v, Decimal):
+        return v
+    if isinstance(v, (int, float)):
+        # NOTE: float->str preserves human-visible value, not binary float;
+        # this is best-effort for invariant checking.
+        return Decimal(str(v))
+    if isinstance(v, str):
+        s = v.strip()
+        if s == "":
+            raise InvariantViolation(f"Empty string is not a valid money value for {name}")
+        return Decimal(s)
+    raise InvariantViolation(f"Unsupported type for {name}: {type(v).__name__}")
+
+
+def _fail_invariant(*, name: str, message: str, context: dict[str, Any]) -> None:
+    ctx = {"invariant": name, **context}
+    # Log at CRITICAL and then crash loudly.
+    try:
+        logger.critical("INVARIANT_VIOLATION %s %s", name, json.dumps(_to_jsonable(ctx)))
+    except Exception:
+        # Never swallow the crash if logging fails.
+        pass
+    raise InvariantViolation(f"{name}: {message} | context={ctx}")
+
+
+def _enforce_risk_invariants_from_intent(*, intent: "OrderIntent") -> None:
+    """
+    Enforce risk/capital invariants encoded as intent metadata.
+
+    Contract:
+    - If a field is present, it MUST satisfy its invariant.
+    - No silent correction; violations crash via InvariantViolation.
+    - These checks are for *internal consistency* and "should never happen" states.
+    """
+    md = dict(intent.metadata or {})
+
+    def _get_any(*keys: str) -> Any:
+        for k in keys:
+            if k in md:
+                return md.get(k)
+        return None
+
+    # Invariant: available_capital >= 0
+    av = _get_any("available_capital", "buying_power")
+    if av is not None:
+        available_capital = _as_money_decimal(av, name="available_capital")
+        if available_capital < 0:
+            _fail_invariant(
+                name="available_capital_non_negative",
+                message=f"available_capital is negative ({available_capital})",
+                context={"available_capital": available_capital},
+            )
+
+    # Invariant: total_reserved <= daily_capital
+    tr = _get_any("total_reserved", "reserved_capital")
+    dc = _get_any("daily_capital")
+    if tr is not None or dc is not None:
+        if tr is None or dc is None:
+            _fail_invariant(
+                name="total_reserved_lte_daily_capital",
+                message="partial reservation state: both total_reserved and daily_capital must be provided together",
+                context={"total_reserved_present": tr is not None, "daily_capital_present": dc is not None},
+            )
+        total_reserved = _as_money_decimal(tr, name="total_reserved")
+        daily_capital = _as_money_decimal(dc, name="daily_capital")
+        if total_reserved < 0:
+            _fail_invariant(
+                name="total_reserved_non_negative",
+                message=f"total_reserved is negative ({total_reserved})",
+                context={"total_reserved": total_reserved, "daily_capital": daily_capital},
+            )
+        if daily_capital < 0:
+            _fail_invariant(
+                name="daily_capital_non_negative",
+                message=f"daily_capital is negative ({daily_capital})",
+                context={"total_reserved": total_reserved, "daily_capital": daily_capital},
+            )
+        if total_reserved > daily_capital:
+            _fail_invariant(
+                name="total_reserved_lte_daily_capital",
+                message=f"total_reserved ({total_reserved}) exceeds daily_capital ({daily_capital})",
+                context={"total_reserved": total_reserved, "daily_capital": daily_capital},
+            )
+
+    # Invariant: daily_risk_used <= cap
+    dru = _get_any("daily_risk_used")
+    drc = _get_any("daily_risk_cap", "daily_risk_limit")
+    if dru is not None or drc is not None:
+        if dru is None or drc is None:
+            _fail_invariant(
+                name="daily_risk_used_lte_cap",
+                message="partial daily risk state: both daily_risk_used and daily_risk_cap must be provided together",
+                context={"daily_risk_used_present": dru is not None, "daily_risk_cap_present": drc is not None},
+            )
+        daily_risk_used = _as_money_decimal(dru, name="daily_risk_used")
+        daily_risk_cap = _as_money_decimal(drc, name="daily_risk_cap")
+        if daily_risk_used < 0:
+            _fail_invariant(
+                name="daily_risk_used_non_negative",
+                message=f"daily_risk_used is negative ({daily_risk_used})",
+                context={"daily_risk_used": daily_risk_used, "daily_risk_cap": daily_risk_cap},
+            )
+        if daily_risk_cap < 0:
+            _fail_invariant(
+                name="daily_risk_cap_non_negative",
+                message=f"daily_risk_cap is negative ({daily_risk_cap})",
+                context={"daily_risk_used": daily_risk_used, "daily_risk_cap": daily_risk_cap},
+            )
+        if daily_risk_used > daily_risk_cap:
+            _fail_invariant(
+                name="daily_risk_used_lte_cap",
+                message=f"daily_risk_used ({daily_risk_used}) exceeds daily_risk_cap ({daily_risk_cap})",
+                context={"daily_risk_used": daily_risk_used, "daily_risk_cap": daily_risk_cap},
+            )
 
 
 @dataclass(frozen=True)
@@ -681,6 +815,9 @@ class RiskManager:
         intent = intent.normalized()
         checks: list[dict[str, Any]] = []
 
+        # Hard invariants (crash loud on internal inconsistencies).
+        _enforce_risk_invariants_from_intent(intent=intent)
+
         # Kill switch
         enabled = self.kill_switch_enabled()
         checks.append({"check": "kill_switch", "enabled": enabled})
@@ -761,6 +898,52 @@ class RiskManager:
             checks.append({"check": "max_position_size", "error": str(e)})
             if not self._config.fail_open:
                 return RiskDecision(allowed=False, reason="risk_data_unavailable", checks=checks)
+
+        # Enforce max_risk_per_trade if provided (soft-fail via rejection),
+        # but ALSO treat "allowed=True while exceeding" as a postcondition violation below.
+        try:
+            md = dict(intent.metadata or {})
+            if "max_risk_per_trade" in md and "proposed_trade_risk" in md:
+                max_risk_per_trade = _as_money_decimal(md.get("max_risk_per_trade"), name="max_risk_per_trade")
+                proposed_trade_risk = _as_money_decimal(md.get("proposed_trade_risk"), name="proposed_trade_risk")
+                checks.append(
+                    {
+                        "check": "max_risk_per_trade",
+                        "max_risk_per_trade": float(max_risk_per_trade),
+                        "proposed_trade_risk": float(proposed_trade_risk),
+                    }
+                )
+                if proposed_trade_risk > max_risk_per_trade:
+                    return RiskDecision(allowed=False, reason="max_risk_per_trade_exceeded", checks=checks)
+        except InvariantViolation:
+            # If metadata is malformed for risk checking, that's an invariant breach.
+            raise
+        except Exception as e:
+            checks.append({"check": "max_risk_per_trade", "error": str(e)})
+            if not self._config.fail_open:
+                return RiskDecision(allowed=False, reason="risk_data_unavailable", checks=checks)
+
+        # Postcondition (crash loudly if a bypass is possible):
+        # If we say "allowed", then max_risk_per_trade MUST be satisfied when provided.
+        md = dict(intent.metadata or {})
+        if "max_risk_per_trade" in md and "proposed_trade_risk" in md:
+            max_risk_per_trade = _as_money_decimal(md.get("max_risk_per_trade"), name="max_risk_per_trade")
+            proposed_trade_risk = _as_money_decimal(md.get("proposed_trade_risk"), name="proposed_trade_risk")
+            if proposed_trade_risk > max_risk_per_trade:
+                _fail_invariant(
+                    name="max_risk_per_trade_enforced",
+                    message=(
+                        f"risk.allowed=True would violate max_risk_per_trade "
+                        f"({proposed_trade_risk} > {max_risk_per_trade})"
+                    ),
+                    context={
+                        "max_risk_per_trade": max_risk_per_trade,
+                        "proposed_trade_risk": proposed_trade_risk,
+                        "symbol": intent.symbol,
+                        "strategy_id": intent.strategy_id,
+                        "client_intent_id": intent.client_intent_id,
+                    },
+                )
 
         return RiskDecision(allowed=True, reason="ok", checks=checks)
 
