@@ -13,10 +13,12 @@ from backend.persistence.firebase_client import get_firestore_client
 from backend.persistence.firestore_retry import with_firestore_retry
 from backend.common.kill_switch import get_kill_switch_state
 from google.cloud import firestore
+from google.api_core.exceptions import AlreadyExists
 
 from backend.risk.loss_acceleration_guard import LossAccelerationGuard
 
 from ..db import build_raw_order, insert_paper_order
+from ..db import insert_paper_order_idempotent
 from ..models import PaperOrderCreate
 
 router = APIRouter()
@@ -34,6 +36,7 @@ class TradeRequest(BaseModel):
     time_in_force: str = "day"
     notional: float
     quantity: float = None
+    idempotency_key: str | None = None
 
 
 def get_shadow_mode_flag() -> bool:
@@ -101,7 +104,7 @@ def get_current_price(symbol: str) -> Decimal:
         return Decimal("0")
 
 
-def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict:
+def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, shadow_id: str | None = None) -> dict:
     """
     Create a synthetic shadow trade and log it to user-scoped shadowTradeHistory collection.
     
@@ -116,7 +119,8 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict
     """
     try:
         db = get_firestore_client()
-        shadow_id = str(uuid4())
+        if shadow_id is None:
+            shadow_id = str(uuid4())
         
         # Get current price for fill simulation
         fill_price = get_current_price(trade_request.symbol)
@@ -157,13 +161,19 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict
         }
         
         # Write to user-scoped shadowTradeHistory collection
-        with_firestore_retry(
-            lambda: db.collection("users")
+        ref = (
+            db.collection("users")
             .document(ctx.uid)
             .collection("shadowTradeHistory")
             .document(shadow_id)
-            .set(shadow_trade, merge=False)
         )
+        try:
+            with_firestore_retry(lambda: ref.create(shadow_trade))
+        except AlreadyExists:
+            # Retry/restart-safe behavior: return the existing record.
+            snap = with_firestore_retry(lambda: ref.get())
+            if snap.exists:
+                return snap.to_dict() or shadow_trade
         
         logger.info(f"Shadow trade created: {shadow_id} - {trade_request.symbol} {trade_request.side} qty={qty} @ ${fill_price}")
         
@@ -195,169 +205,7 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     Fail-safe: On any error reading the shadow mode flag, defaults to shadow mode = True
     """
     ctx: TenantContext = get_tenant_context(request)
-
-    # --- Loss acceleration guardrails (independent of strategy logic) ---
-    # Enforces:
-    # - rolling drawdown velocity monitoring (loss/time)
-    # - automatic throttling (HTTP 429 + Retry-After)
-    # - automatic pausing (disable trading + switch strategies to SHADOW_MODE)
-    try:
-        db = get_firestore_client()
-        now = datetime.now(timezone.utc)
-
-        # 1) Honor existing pause state (with optional auto-resume).
-        trading_status_ref = (
-            db.collection("users").document(ctx.uid).collection("status").document("trading")
-        )
-        trading_status_doc = with_firestore_retry(lambda: trading_status_ref.get())
-        if trading_status_doc.exists:
-            st = trading_status_doc.to_dict() or {}
-            enabled = bool(st.get("enabled", True))
-            disabled_until = st.get("disabled_until")
-            if not enabled:
-                if isinstance(disabled_until, datetime) and now >= disabled_until.astimezone(timezone.utc):
-                    # Auto-resume after cooldown.
-                    with_firestore_retry(
-                        lambda: trading_status_ref.set(
-                            {
-                                "enabled": True,
-                                "disabled_by": None,
-                                "disabled_at": None,
-                                "disabled_until": None,
-                                "reason": None,
-                                "last_resumed_at": firestore.SERVER_TIMESTAMP,
-                            },
-                            merge=True,
-                        )
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "error": "trading_paused",
-                            "message": st.get("reason") or "Trading is paused by risk guardrails.",
-                            "disabled_until": disabled_until.isoformat() if isinstance(disabled_until, datetime) else None,
-                        },
-                    )
-
-        # 2) Honor existing throttle state.
-        throttle_ref = (
-            db.collection("users").document(ctx.uid).collection("status").document("trade_throttle")
-        )
-        throttle_doc = with_firestore_retry(lambda: throttle_ref.get())
-        if throttle_doc.exists:
-            td = throttle_doc.to_dict() or {}
-            next_allowed_at = td.get("next_allowed_at")
-            if isinstance(next_allowed_at, datetime) and now < next_allowed_at.astimezone(timezone.utc):
-                retry_after_s = max(1, int((next_allowed_at.astimezone(timezone.utc) - now).total_seconds()))
-                raise HTTPException(
-                    status_code=429,
-                    detail={
-                        "error": "trade_throttled",
-                        "message": td.get("reason") or "Trade throttled due to loss acceleration.",
-                        "retry_after_seconds": retry_after_s,
-                        "next_allowed_at": next_allowed_at.isoformat(),
-                    },
-                    headers={"Retry-After": str(retry_after_s)},
-                )
-
-        # 3) Compute drawdown velocity and apply conservative guardrails.
-        guard = LossAccelerationGuard()
-        decision = guard.decide(uid=ctx.uid)
-        m = decision.metrics
-        metrics_payload = (
-            {
-                "window_seconds": m.window_seconds,
-                "points_used": m.points_used,
-                "hwm_equity": m.hwm_equity,
-                "current_equity": m.current_equity,
-                "current_drawdown_pct": m.current_drawdown_pct,
-                "velocity_pct_per_min": m.velocity_pct_per_min,
-                "window_start": m.window_start.isoformat(),
-                "window_end": m.window_end.isoformat(),
-            }
-            if m is not None
-            else None
-        )
-
-        if decision.action == "pause" and decision.pause_until is not None:
-            # Persist pause state (auto-resume supported by disabled_until).
-            pause_until = decision.pause_until.astimezone(timezone.utc)
-            with_firestore_retry(
-                lambda: trading_status_ref.set(
-                    {
-                        "enabled": False,
-                        "disabled_by": "loss_acceleration_guard",
-                        "disabled_at": firestore.SERVER_TIMESTAMP,
-                        "disabled_until": pause_until,
-                        "reason": "Paused due to dangerous loss acceleration (drawdown velocity).",
-                        "metrics": metrics_payload,
-                    },
-                    merge=True,
-                )
-            )
-
-            # Switch all active strategies to SHADOW_MODE (best-effort).
-            try:
-                strategies_ref = (
-                    db.collection("tenants")
-                    .document(ctx.tenant_id)
-                    .collection("users")
-                    .document(ctx.uid)
-                    .collection("strategies")
-                )
-                for doc in strategies_ref.where("status", "==", "active").stream():
-                    strategies_ref.document(doc.id).set(
-                        {
-                            "execution_mode": "SHADOW_MODE",
-                            "shadow_mode_reason": "loss_acceleration_pause",
-                            "shadow_mode_activated_at": firestore.SERVER_TIMESTAMP,
-                        },
-                        merge=True,
-                    )
-            except Exception:
-                logger.exception("loss_accel: failed to switch strategies to SHADOW_MODE (best-effort)")
-
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "loss_acceleration_pause",
-                    "message": "Trading paused due to dangerous loss acceleration.",
-                    "paused_until": pause_until.isoformat(),
-                    "metrics": metrics_payload,
-                },
-            )
-
-        if decision.action == "throttle" and decision.retry_after_seconds is not None:
-            # Persist throttle state and reject with Retry-After (conservative).
-            next_allowed = now + timedelta(seconds=int(decision.retry_after_seconds))
-            with_firestore_retry(
-                lambda: throttle_ref.set(
-                    {
-                        "next_allowed_at": next_allowed,
-                        "reason": "Throttled due to elevated drawdown velocity (loss acceleration).",
-                        "throttled_at": firestore.SERVER_TIMESTAMP,
-                        "metrics": metrics_payload,
-                    },
-                    merge=True,
-                )
-            )
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "error": "loss_acceleration_throttle",
-                    "message": "Trade throttled due to loss acceleration.",
-                    "retry_after_seconds": int(decision.retry_after_seconds),
-                    "next_allowed_at": next_allowed.isoformat(),
-                    "metrics": metrics_payload,
-                },
-                headers={"Retry-After": str(int(decision.retry_after_seconds))},
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        # Fail-safe: if guardrail evaluation fails, do NOT block trading here.
-        logger.warning("loss_accel: guard evaluation failed (non-fatal): %s", e)
+    idem = (trade_request.idempotency_key or request.headers.get("Idempotency-Key") or "").strip() or None
     
     # Check shadow mode flag (fail-safe: defaults to True)
     is_shadow_mode = get_shadow_mode_flag()
@@ -402,7 +250,12 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     # SHADOW MODE: Create synthetic order without contacting broker
     if is_shadow_mode:
         try:
-            shadow_trade = create_shadow_trade(trade_request, ctx)
+            shadow_id = None
+            if idem:
+                from backend.common.idempotency import stable_uuid_from_key
+
+                shadow_id = str(stable_uuid_from_key(key=f"{ctx.tenant_id}:{ctx.uid}:shadow_trade:{idem}"))
+            shadow_trade = create_shadow_trade(trade_request, ctx, shadow_id=shadow_id)
             logger.info(f"Shadow trade executed successfully: {shadow_trade['shadow_id']}")
             
             # Return shadow trade in a format similar to paper order
@@ -456,7 +309,12 @@ def execute_trade(trade_request: TradeRequest, request: Request):
                 status="simulated",  # TODO: Change to "submitted" when live Alpaca integration is complete
             )
             
-            result = insert_paper_order(tenant_id=ctx.tenant_id, payload=payload)
+            if idem:
+                result = insert_paper_order_idempotent(
+                    tenant_id=ctx.tenant_id, payload=payload, idempotency_key=idem
+                )
+            else:
+                result = insert_paper_order(tenant_id=ctx.tenant_id, payload=payload)
             logger.info(f"Live/Paper trade executed successfully: {result.id}")
             return result
             

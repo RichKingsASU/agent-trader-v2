@@ -11,6 +11,7 @@ from backend.tenancy.auth import get_tenant_context
 from backend.tenancy.context import TenantContext
 
 from ..db import build_raw_order, insert_paper_order
+from ..db import insert_paper_order_idempotent
 from ..models import PaperOrderCreate
 
 router = APIRouter()
@@ -28,11 +29,14 @@ class PaperOrderRequest(BaseModel):
     time_in_force: str = "day"
     notional: float
     quantity: float | None = None
+    idempotency_key: str | None = None
 
 
 @router.post("/paper_orders", tags=["paper_orders"])
 async def create_paper_order(order: PaperOrderRequest, request: Request):
     ctx: TenantContext = get_tenant_context(request)
+    # Prefer explicit idempotency key; fall back to header.
+    idem = (order.idempotency_key or request.headers.get("Idempotency-Key") or "").strip() or None
     # 1. Run risk check
     async with httpx.AsyncClient() as client:
         try:
@@ -95,6 +99,10 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
             raw_order=build_raw_order(logical_order),
             status="simulated",
         )
+        # Restart-safe behavior: if the caller retries after a crash/timeout,
+        # we deterministically reuse the same order id and return the existing record.
+        if idem:
+            return insert_paper_order_idempotent(tenant_id=ctx.tenant_id, payload=payload, idempotency_key=idem)
         return insert_paper_order(tenant_id=ctx.tenant_id, payload=payload)
     else:
         # If risk check fails, return the reason
