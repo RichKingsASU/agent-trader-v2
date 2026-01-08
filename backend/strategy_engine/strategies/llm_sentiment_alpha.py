@@ -14,7 +14,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+import httpx
+
 from backend.common.a2a_sdk import RiskAgentClient
+from backend.contracts.risk import TradeCheckRequest
 
 logger = logging.getLogger(__name__)
 
@@ -266,43 +269,56 @@ async def make_decision(
             f"Reasoning: {analysis.reasoning}"
         )
 
-    # Perform risk check if client is provided
-    if risk_agent_client:
-        try:
-            RISK_SERVICE_URL = os.getenv("RISK_SERVICE_URL", "http://localhost:8002")
-            risk_agent_client = RiskAgentClient(RISK_SERVICE_URL)
+    risk_checked = False
+    risk_approved = None
 
-            risk_check_payload = {
-                "tenant_id": "default_tenant",  # Placeholder, replace with actual tenant_id
-                "broker_account_id": "default_broker", # Placeholder
-                "strategy_id": "llm_sentiment_alpha",
-                "symbol": symbol,
-                "trade_type": action,
-                "requested_size": 1, # Placeholder
-                "sentiment_score": analysis.sentiment_score,
-                "confidence": analysis.confidence
-            }
-            risk_result = await risk_agent_client.check_trade(risk_check_payload)
+    # Perform risk check only when:
+    # - a trade action is proposed (buy/sell)
+    # - and the caller provided a RiskAgentClient
+    # - and required request context is available (no guessing/placeholder ids)
+    if risk_agent_client and action in {"buy", "sell"}:
+        broker_account_id = str(os.getenv("RISK_BROKER_ACCOUNT_ID") or "").strip()
+        strategy_id = str(os.getenv("RISK_STRATEGY_ID") or "").strip()
+        auth = str(os.getenv("RISK_AUTHORIZATION") or "").strip() or None
+        notional = str(os.getenv("RISK_NOTIONAL_USD") or "1000.0").strip()
 
-            if not risk_result.get("allowed"):
-                action = "flat"
-                reason = f"Trade blocked by Risk Agent: {risk_result.get('reason', 'Unknown reason')}"
-                logger.warning(f"Risk Agent blocked trade for {symbol}: {risk_result.get('reason')}")
-            else:
-                logger.info(f"Risk Agent approved trade for {symbol}.")
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error during risk check: {e}")
-            reason = f"Risk check failed (HTTP error): {e.response.status_code} - {e.response.text}"
-            action = "flat" # Fail safe
-        except httpx.RequestError as e:
-            logger.error(f"Network error during risk check: {e}")
-            reason = f"Risk check failed (network error): {e}"
-            action = "flat" # Fail safe
-        except Exception as e:
-            logger.exception(f"Unexpected error during risk check: {e}")
-            reason = f"Risk check failed (unexpected error): {e}"
-            action = "flat" # Fail safe
+        if not broker_account_id or not strategy_id:
+            # Fail-safe: do not assume tenant/broker identifiers.
+            risk_checked = False
+            risk_approved = False
+            action = "flat"
+            reason = "Risk check context missing (set RISK_BROKER_ACCOUNT_ID and RISK_STRATEGY_ID); refusing trade."
+        else:
+            try:
+                req = TradeCheckRequest(
+                    broker_account_id=broker_account_id,
+                    strategy_id=strategy_id,
+                    symbol=symbol,
+                    notional=notional,
+                    side=action,
+                    current_open_positions=0,
+                    current_trades_today=0,
+                    current_day_loss="0.0",
+                    current_day_drawdown="0.0",
+                )
+                res = await risk_agent_client.check_trade(req, authorization=auth)
+                risk_checked = True
+                risk_approved = bool(res.allowed)
+                if not res.allowed:
+                    action = "flat"
+                    reason = f"Trade blocked by Risk Agent: {res.reason or 'unknown_reason'}"
+            except httpx.HTTPError as e:
+                logger.error("Risk check HTTP error: %s", e)
+                risk_checked = True
+                risk_approved = False
+                action = "flat"  # fail-safe
+                reason = f"Risk check failed (http_error): {e}"
+            except Exception as e:
+                logger.exception("Unexpected error during risk check: %s", e)
+                risk_checked = True
+                risk_approved = False
+                action = "flat"  # fail-safe
+                reason = f"Risk check failed (unexpected_error): {e}"
     
     return {
         "action": action,
@@ -318,7 +334,7 @@ async def make_decision(
             "target_symbols": analysis.target_symbols,
             "analyzed_at": datetime.now(timezone.utc).isoformat(),
             "model_id": "gemini-1.5-flash",
-            "risk_checked": True,
-            "risk_approved": action != "flat" # If action is not flat, it means risk approved
+            "risk_checked": bool(risk_checked),
+            "risk_approved": risk_approved,
         }
     }
