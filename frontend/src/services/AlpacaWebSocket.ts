@@ -101,8 +101,9 @@ class AlpacaWebSocket {
   private statusHandlers: StatusHandler[] = [];
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 10;
+  private maxReconnectAttempts = 5;
   private isAuthenticated = false;
+  private hasUnrecoverableAuthFailure = false;
   private isMockMode = false;
   private mockServer: typeof import('./MockAlpacaServer').mockAlpacaServer | null = null;
 
@@ -111,8 +112,29 @@ class AlpacaWebSocket {
     this.feedType = feedType;
     this.reconnectAttempts = 0;
     this.isAuthenticated = false;
+    this.hasUnrecoverableAuthFailure = false;
 
     this.createConnection();
+  }
+
+  private logEvent(
+    eventType: string,
+    severity: 'INFO' | 'WARNING' | 'ERROR' = 'INFO',
+    fields: Record<string, unknown> = {}
+  ): void {
+    // Structured logs for easier debugging in browser/devtools.
+    // eslint-disable-next-line no-console
+    console.log(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        severity,
+        event_type: eventType,
+        component: 'AlpacaWebSocket',
+        feed: this.feedType,
+        reconnect_attempt: this.reconnectAttempts,
+        ...fields,
+      })
+    );
   }
 
   private createConnection(): void {
@@ -125,8 +147,7 @@ class AlpacaWebSocket {
       this.socket = new WebSocket(url);
 
       this.socket.onopen = () => {
-        // eslint-disable-next-line no-console
-        console.log('[Alpaca] Connected, authenticating...');
+        this.logEvent('ws_connected', 'INFO', { url });
         this.notifyStatus('authenticating');
         this.authenticate();
       };
@@ -136,15 +157,19 @@ class AlpacaWebSocket {
       };
 
       this.socket.onerror = (error) => {
-        // eslint-disable-next-line no-console
-        console.error('[Alpaca] WebSocket error:', error);
+        this.logEvent('ws_error', 'ERROR', { error: String(error) });
         this.notifyStatus('error', 'WebSocket connection error');
       };
 
       this.socket.onclose = (event) => {
-        // eslint-disable-next-line no-console
-        console.log(`[Alpaca] Connection closed: ${event.code} ${event.reason}`);
+        this.logEvent('ws_closed', 'WARNING', { code: event.code, reason: event.reason });
         this.isAuthenticated = false;
+
+        // Immediate STOP on unrecoverable auth failures.
+        if (this.hasUnrecoverableAuthFailure) {
+          this.notifyStatus('disconnected', 'auth_failure');
+          return;
+        }
 
         if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
           this.scheduleReconnect();
@@ -153,8 +178,7 @@ class AlpacaWebSocket {
         }
       };
     } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('[Alpaca] Failed to create connection:', error);
+      this.logEvent('ws_create_failed', 'ERROR', { error: String(error) });
       this.notifyStatus('error', String(error));
     }
   }
@@ -182,11 +206,9 @@ class AlpacaWebSocket {
         switch (msg.T) {
           case 'success':
             if (msg.msg === 'connected') {
-              // eslint-disable-next-line no-console
-              console.log('[Alpaca] Connected to stream');
+              this.logEvent('alpaca_connected', 'INFO');
             } else if (msg.msg === 'authenticated') {
-              // eslint-disable-next-line no-console
-              console.log('[Alpaca] Authenticated successfully');
+              this.logEvent('alpaca_authenticated', 'INFO');
               this.isAuthenticated = true;
               this.reconnectAttempts = 0;
               this.notifyStatus('authenticated');
@@ -197,14 +219,26 @@ class AlpacaWebSocket {
             break;
 
           case 'error':
-            // eslint-disable-next-line no-console
-            console.error('[Alpaca] Error:', msg.code, msg.msg);
-            this.notifyStatus('error', `${msg.code}: ${msg.msg}`);
+            this.logEvent('alpaca_error', 'ERROR', { code: msg.code, message: msg.msg });
+
+            // Distinguish auth failure vs rate limit vs other transient errors.
+            const code = Number(msg.code);
+            const message = String(msg.msg || '');
+            const lower = message.toLowerCase();
+            const isAuthFailure = code === 401 || code === 403 || lower.includes('auth') || lower.includes('unauthorized');
+            if (isAuthFailure) {
+              this.hasUnrecoverableAuthFailure = true;
+              this.notifyStatus('error', `auth_failure:${code}:${message}`);
+              // Close immediately to prevent reconnect storms.
+              this.disconnect();
+              return;
+            }
+            const isRateLimited = code === 429 || lower.includes('too many requests') || lower.includes('rate limit');
+            this.notifyStatus('error', `${isRateLimited ? 'rate_limited' : 'transient'}:${code}:${message}`);
             break;
 
           case 'subscription':
-            // eslint-disable-next-line no-console
-            console.log('[Alpaca] Subscription confirmed:', msg);
+            this.logEvent('alpaca_subscription', 'INFO', { msg });
             this.notifyStatus('subscribed');
             break;
 
@@ -215,13 +249,11 @@ class AlpacaWebSocket {
             break;
 
           default:
-            // eslint-disable-next-line no-console
-            console.log('[Alpaca] Unknown message type:', msg.T, msg);
+            this.logEvent('alpaca_unknown_message', 'WARNING', { type: msg.T });
         }
       }
     } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('[Alpaca] Error parsing message:', error, data);
+      this.logEvent('alpaca_parse_error', 'ERROR', { error: String(error) });
     }
   }
 
@@ -251,8 +283,7 @@ class AlpacaWebSocket {
     if (subscription.quotes?.length) message.quotes = subscription.quotes;
     if (subscription.bars?.length) message.bars = subscription.bars;
 
-    // eslint-disable-next-line no-console
-    console.log('[Alpaca] Subscribing:', message);
+    this.logEvent('alpaca_subscribe', 'INFO', { message });
     this.socket.send(JSON.stringify(message));
   }
 
@@ -266,8 +297,7 @@ class AlpacaWebSocket {
     if (this.subscriptions.bars?.length) message.bars = this.subscriptions.bars;
 
     if (Object.keys(message).length > 1) {
-      // eslint-disable-next-line no-console
-      console.log('[Alpaca] Resubscribing:', message);
+      this.logEvent('alpaca_resubscribe', 'INFO', { message });
       this.socket.send(JSON.stringify(message));
     }
   }
@@ -295,10 +325,11 @@ class AlpacaWebSocket {
 
   private scheduleReconnect(): void {
     this.reconnectAttempts++;
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    // Exponential backoff with full jitter; never busy-reconnect.
+    const capMs = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    const delay = Math.max(500, Math.floor(Math.random() * capMs));
 
-    // eslint-disable-next-line no-console
-    console.log(`[Alpaca] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+    this.logEvent('ws_reconnect_scheduled', 'WARNING', { delay_ms: delay });
     this.notifyStatus('connecting');
 
     this.reconnectTimeout = setTimeout(() => {
