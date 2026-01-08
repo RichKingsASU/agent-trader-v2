@@ -20,6 +20,14 @@ from backend.common.kill_switch import (
 )
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.streams.alpaca_env import load_alpaca_env
+from backend.execution.reservations import (
+    BestEffortReservationManager,
+    FirestoreReservationManager,
+    NoopReservation,
+    ReservationHandle,
+    ReservationManager,
+    resolve_tenant_id_from_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -797,6 +805,7 @@ class ExecutionEngine:
         broker_name: str = "alpaca",
         dry_run: bool | None = None,
         enable_smart_routing: bool = False,  # Disabled by default for backward compatibility
+        reservations: ReservationManager | None = None,
     ):
         self._broker = broker
         self._risk = risk or RiskManager()
@@ -807,6 +816,10 @@ class ExecutionEngine:
             str(get_env("EXEC_DRY_RUN", "1")).strip().lower() in {"1", "true", "yes", "on"}
         )
         self._enable_smart_routing = enable_smart_routing
+        # Best-effort cleanup guard: never let a failed execution leak reservation state.
+        self._reservations = BestEffortReservationManager(
+            reservations if reservations is not None else FirestoreReservationManager()
+        )
 
         # Replay marker: engine constructed (startup-ish for this component).
         try:
@@ -837,6 +850,42 @@ class ExecutionEngine:
 
     def execute_intent(self, *, intent: OrderIntent) -> ExecutionResult:
         intent = intent.normalized()
+
+        # --- In-flight reservation (best-effort) ---
+        # Reserve *during processing only* (not a long-lived open-order hold).
+        tenant_id = resolve_tenant_id_from_metadata(intent.metadata)
+        reservation: ReservationHandle = NoopReservation()
+        try:
+            amount_usd = 0.0
+            md = dict(intent.metadata or {})
+            raw_notional = md.get("notional_usd") or md.get("reserve_usd") or md.get("notional")
+            try:
+                if raw_notional is not None:
+                    amount_usd = float(raw_notional)
+            except Exception:
+                amount_usd = 0.0
+            if amount_usd <= 0 and intent.limit_price is not None and intent.qty > 0:
+                try:
+                    amount_usd = float(intent.qty) * float(intent.limit_price)
+                except Exception:
+                    amount_usd = 0.0
+            if tenant_id:
+                reservation = self._reservations.reserve(
+                    tenant_id=tenant_id,
+                    broker_account_id=intent.broker_account_id,
+                    client_intent_id=intent.client_intent_id,
+                    amount_usd=amount_usd,
+                    ttl_seconds=300,
+                    meta={
+                        "symbol": intent.symbol,
+                        "side": intent.side,
+                        "qty": intent.qty,
+                        "asset_class": intent.asset_class,
+                    },
+                )
+        except Exception:
+            reservation = NoopReservation()
+
         trace_id = str(
             intent.metadata.get("trace_id")
             or intent.metadata.get("run_id")
@@ -845,6 +894,7 @@ class ExecutionEngine:
         ).strip() or None
         if trace_id:
             set_replay_context(trace_id=trace_id)
+
         audit_ctx = {
             "client_intent_id": intent.client_intent_id,
             "strategy_id": intent.strategy_id,
@@ -859,45 +909,87 @@ class ExecutionEngine:
             "estimated_slippage": intent.estimated_slippage,
         }
         logger.info("exec.intent_received %s", json.dumps(_to_jsonable(audit_ctx)))
-        try:
-            logger.info(
-                "%s",
-                dumps_replay_event(
-                    build_replay_event(
-                        event="order_intent",
-                        component="backend.execution.engine",
-                        data={
-                            "stage": "received",
-                            "intent": audit_ctx,
-                        },
-                        trace_id=trace_id,
-                        agent_name=os.getenv("AGENT_NAME") or "execution-engine",
-                        run_id=str(intent.metadata.get("run_id") or "").strip() or None,
-                    )
-                ),
-            )
-        except Exception:
-            # Best-effort replay telemetry; never fail execution.
-            logger.exception("exec.replay_intent_received_log_failed")
-            pass
 
-        # Smart routing: check transaction costs BEFORE risk validation
-        routing_decision = None
-        if self._enable_smart_routing:
-            # Lazy initialize router if not provided
-            if self._router is None:
-                self._router = SmartRouter()
-            
-            routing_decision = self._router.analyze_intent(intent=intent)
+        outcome: str = "unknown"
+        release_error: str | None = None
+        try:
+            # Replay marker (best-effort only)
+            try:
+                logger.info(
+                    "%s",
+                    dumps_replay_event(
+                        build_replay_event(
+                            event="order_intent",
+                            component="backend.execution.engine",
+                            data={"stage": "received", "intent": audit_ctx},
+                            trace_id=trace_id,
+                            agent_name=os.getenv("AGENT_NAME") or "execution-engine",
+                            run_id=str(intent.metadata.get("run_id") or "").strip() or None,
+                        )
+                    ),
+                )
+            except Exception:
+                logger.exception("exec.replay_intent_received_log_failed")
+
+            routing_decision: SmartRoutingDecision | None = None
+            if self._enable_smart_routing:
+                if self._router is None:
+                    self._router = SmartRouter()
+                routing_decision = self._router.analyze_intent(intent=intent)
+                logger.info(
+                    "exec.smart_routing %s",
+                    json.dumps(
+                        _to_jsonable(
+                            {
+                                "should_execute": routing_decision.should_execute,
+                                "reason": routing_decision.reason,
+                                "spread_pct": routing_decision.spread_pct,
+                                "estimated_slippage": routing_decision.estimated_slippage,
+                                "downgraded": routing_decision.downgraded,
+                            }
+                        )
+                    ),
+                )
+                try:
+                    logger.info(
+                        "%s",
+                        dumps_replay_event(
+                            build_replay_event(
+                                event="decision_checkpoint",
+                                component="backend.execution.engine",
+                                data={
+                                    "checkpoint": "smart_routing",
+                                    "should_execute": routing_decision.should_execute,
+                                    "reason": routing_decision.reason,
+                                    "spread_pct": routing_decision.spread_pct,
+                                    "estimated_slippage": routing_decision.estimated_slippage,
+                                    "downgraded": routing_decision.downgraded,
+                                    "symbol": intent.symbol,
+                                    "asset_class": intent.asset_class,
+                                },
+                                trace_id=trace_id,
+                                agent_name=os.getenv("AGENT_NAME") or "execution-engine",
+                                run_id=str(intent.metadata.get("run_id") or "").strip() or None,
+                            )
+                        ),
+                    )
+                except Exception:
+                    logger.exception("exec.replay_smart_routing_checkpoint_log_failed")
+
+                if not routing_decision.should_execute:
+                    risk = RiskDecision(allowed=False, reason="smart_routing_downgrade")
+                    outcome = "downgraded"
+                    return ExecutionResult(
+                        status="downgraded",
+                        risk=risk,
+                        routing=routing_decision,
+                        message=routing_decision.reason,
+                    )
+
+            risk = self._risk.validate(intent=intent)
             logger.info(
-                "exec.smart_routing %s",
-                json.dumps(_to_jsonable({
-                    "should_execute": routing_decision.should_execute,
-                    "reason": routing_decision.reason,
-                    "spread_pct": routing_decision.spread_pct,
-                    "estimated_slippage": routing_decision.estimated_slippage,
-                    "downgraded": routing_decision.downgraded,
-                })),
+                "exec.risk_decision %s",
+                json.dumps(_to_jsonable({"allowed": risk.allowed, "reason": risk.reason, "checks": risk.checks})),
             )
             try:
                 logger.info(
@@ -907,102 +999,12 @@ class ExecutionEngine:
                             event="decision_checkpoint",
                             component="backend.execution.engine",
                             data={
-                                "checkpoint": "smart_routing",
-                                "should_execute": routing_decision.should_execute,
-                                "reason": routing_decision.reason,
-                                "spread_pct": routing_decision.spread_pct,
-                                "estimated_slippage": routing_decision.estimated_slippage,
-                                "downgraded": routing_decision.downgraded,
-                                "symbol": intent.symbol,
-                                "asset_class": intent.asset_class,
-                            },
-                            trace_id=trace_id,
-                            agent_name=os.getenv("AGENT_NAME") or "execution-engine",
-                            run_id=str(intent.metadata.get("run_id") or "").strip() or None,
-                        )
-                    ),
-                )
-            except Exception:
-                logger.exception("exec.replay_smart_routing_checkpoint_log_failed")
-                pass
-            
-            if not routing_decision.should_execute:
-                # Signal downgraded to WAIT due to high transaction costs
-                risk = RiskDecision(allowed=False, reason="smart_routing_downgrade")
-                try:
-                    logger.info(
-                        "%s",
-                        dumps_replay_event(
-                            build_replay_event(
-                                event="state_transition",
-                                component="backend.execution.engine",
-                                data={
-                                    "from_state": "risk_pending",
-                                    "to_state": "downgraded",
-                                    "reason": routing_decision.reason,
-                                    "symbol": intent.symbol,
-                                },
-                                trace_id=trace_id,
-                                agent_name=os.getenv("AGENT_NAME") or "execution-engine",
-                                run_id=str(intent.metadata.get("run_id") or "").strip() or None,
-                            )
-                        ),
-                    )
-                except Exception:
-                    logger.exception("exec.replay_smart_routing_state_transition_log_failed")
-                    pass
-                return ExecutionResult(
-                    status="downgraded",
-                    risk=risk,
-                    routing=routing_decision,
-                    message=routing_decision.reason,
-                )
-
-        risk = self._risk.validate(intent=intent)
-        logger.info(
-            "exec.risk_decision %s",
-            json.dumps(_to_jsonable({"allowed": risk.allowed, "reason": risk.reason, "checks": risk.checks})),
-        )
-        try:
-            logger.info(
-                "%s",
-                dumps_replay_event(
-                    build_replay_event(
-                        event="decision_checkpoint",
-                        component="backend.execution.engine",
-                        data={
-                            "checkpoint": "risk",
-                            "allowed": risk.allowed,
-                            "reason": risk.reason,
-                            "symbol": intent.symbol,
-                            "strategy_id": intent.strategy_id,
-                            # checks can be large; keep but sanitized/size-limited.
-                            "checks": risk.checks,
-                        },
-                        trace_id=trace_id,
-                        agent_name=os.getenv("AGENT_NAME") or "execution-engine",
-                        run_id=str(intent.metadata.get("run_id") or "").strip() or None,
-                    )
-                ),
-            )
-        except Exception:
-            logger.exception("exec.replay_risk_checkpoint_log_failed")
-            pass
-
-        if not risk.allowed:
-            try:
-                logger.info(
-                    "%s",
-                    dumps_replay_event(
-                        build_replay_event(
-                            event="state_transition",
-                            component="backend.execution.engine",
-                            data={
-                                "from_state": "risk_pending",
-                                "to_state": "rejected",
+                                "checkpoint": "risk",
+                                "allowed": risk.allowed,
                                 "reason": risk.reason,
                                 "symbol": intent.symbol,
                                 "strategy_id": intent.strategy_id,
+                                "checks": risk.checks,
                             },
                             trace_id=trace_id,
                             agent_name=os.getenv("AGENT_NAME") or "execution-engine",
@@ -1011,25 +1013,69 @@ class ExecutionEngine:
                     ),
                 )
             except Exception:
-                logger.exception("exec.replay_rejected_state_transition_log_failed")
-                pass
-            return ExecutionResult(status="rejected", risk=risk, routing=routing_decision, message=risk.reason)
+                logger.exception("exec.replay_risk_checkpoint_log_failed")
 
-        if self._dry_run:
-            logger.info("exec.dry_run_accept %s", json.dumps(_to_jsonable(audit_ctx)))
+            if not risk.allowed:
+                outcome = "rejected"
+                return ExecutionResult(
+                    status="rejected",
+                    risk=risk,
+                    routing=routing_decision,
+                    message=risk.reason,
+                )
+
+            if self._dry_run:
+                outcome = "dry_run"
+                return ExecutionResult(
+                    status="dry_run",
+                    risk=risk,
+                    routing=routing_decision,
+                    message="dry_run_enabled",
+                )
+
+            # Defense-in-depth: do not place broker orders unless explicitly authorized.
+            require_trading_live_mode(action="broker order placement")
+            try:
+                require_kill_switch_off(operation="broker order placement")
+            except ExecutionHaltedError:
+                enabled, source = get_kill_switch_state()
+                checks = list(risk.checks or [])
+                checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
+                halted_risk = RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
+                outcome = "rejected"
+                return ExecutionResult(
+                    status="rejected",
+                    risk=halted_risk,
+                    routing=routing_decision,
+                    message="kill_switch_enabled",
+                )
+
+            broker_order = self._broker.place_order(intent=intent)
+            broker_order_id = str(broker_order.get("id") or "").strip() or None
+            logger.info(
+                "exec.order_placed %s",
+                json.dumps(
+                    _to_jsonable(
+                        {"broker": self._broker_name, "broker_order_id": broker_order_id, "order": broker_order}
+                    )
+                ),
+            )
             try:
                 logger.info(
                     "%s",
                     dumps_replay_event(
                         build_replay_event(
-                            event="state_transition",
+                            event="order_intent",
                             component="backend.execution.engine",
                             data={
-                                "from_state": "risk_allowed",
-                                "to_state": "dry_run_accepted",
-                                "symbol": intent.symbol,
-                                "strategy_id": intent.strategy_id,
+                                "stage": "broker_placed",
+                                "broker": self._broker_name,
+                                "broker_order_id": broker_order_id,
                                 "client_intent_id": intent.client_intent_id,
+                                "symbol": intent.symbol,
+                                "side": intent.side,
+                                "qty": intent.qty,
+                                "order_type": intent.order_type,
                             },
                             trace_id=trace_id,
                             agent_name=os.getenv("AGENT_NAME") or "execution-engine",
@@ -1038,78 +1084,35 @@ class ExecutionEngine:
                     ),
                 )
             except Exception:
-                logger.exception("exec.replay_dry_run_state_transition_log_failed")
-                pass
-            return ExecutionResult(status="dry_run", risk=risk, routing=routing_decision, message="dry_run_enabled")
+                logger.exception("exec.replay_broker_placed_log_failed")
 
-        # Defense-in-depth: do not place broker orders unless explicitly authorized.
-        # - Trading authority: AGENT_MODE must be LIVE (fail-closed; raises AgentModeError).
-        # - Kill switch: must be OFF (convert to a rejected result for callers).
-        require_trading_live_mode(action="broker order placement")
-        try:
-            require_kill_switch_off(operation="broker order placement")
-        except ExecutionHaltedError:
-            enabled, source = get_kill_switch_state()
-            checks = list(risk.checks or [])
-            checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
-            halted_risk = RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
+            # If immediately filled (or partially filled), write to ledger AND portfolio history.
+            try:
+                status = str(broker_order.get("status") or "").lower()
+                filled_qty = float(broker_order.get("filled_qty") or 0.0)
+                if status in {"filled", "partially_filled"} or filled_qty > 0:
+                    self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
+                    self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
+            except Exception as e:
+                logger.exception("exec.ledger_write_failed: %s", e)
+
+            outcome = "placed"
             return ExecutionResult(
-                status="rejected",
-                risk=halted_risk,
+                status="placed",
+                risk=risk,
                 routing=routing_decision,
-                message="kill_switch_enabled",
+                broker_order_id=broker_order_id,
+                broker_order=broker_order,
             )
-
-        broker_order = self._broker.place_order(intent=intent)
-        broker_order_id = str(broker_order.get("id") or "").strip() or None
-        logger.info(
-            "exec.order_placed %s",
-            json.dumps(_to_jsonable({"broker": self._broker_name, "broker_order_id": broker_order_id, "order": broker_order})),
-        )
-        try:
-            logger.info(
-                "%s",
-                dumps_replay_event(
-                    build_replay_event(
-                        event="order_intent",
-                        component="backend.execution.engine",
-                        data={
-                            "stage": "broker_placed",
-                            "broker": self._broker_name,
-                            "broker_order_id": broker_order_id,
-                            "client_intent_id": intent.client_intent_id,
-                            "symbol": intent.symbol,
-                            "side": intent.side,
-                            "qty": intent.qty,
-                            "order_type": intent.order_type,
-                        },
-                        trace_id=trace_id,
-                        agent_name=os.getenv("AGENT_NAME") or "execution-engine",
-                        run_id=str(intent.metadata.get("run_id") or "").strip() or None,
-                    )
-                ),
-            )
-        except Exception:
-            logger.exception("exec.replay_broker_placed_log_failed")
-            pass
-
-        # If immediately filled (or partially filled), write to ledger AND portfolio history.
-        try:
-            status = str(broker_order.get("status") or "").lower()
-            filled_qty = float(broker_order.get("filled_qty") or 0.0)
-            if status in {"filled", "partially_filled"} or filled_qty > 0:
-                self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
-                self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
         except Exception as e:
-            logger.exception("exec.ledger_write_failed: %s", e)
-
-        return ExecutionResult(
-            status="placed",
-            risk=risk,
-            routing=routing_decision,
-            broker_order_id=broker_order_id,
-            broker_order=broker_order,
-        )
+            release_error = f"{type(e).__name__}: {e}"
+            outcome = "exception"
+            raise
+        finally:
+            try:
+                reservation.release(outcome=outcome, error=release_error)
+            except Exception:
+                pass
 
     def cancel(self, *, broker_order_id: str) -> dict[str, Any]:
         logger.info(
