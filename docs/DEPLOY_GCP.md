@@ -132,7 +132,7 @@ gcloud secrets add-iam-policy-binding alpaca-secret-key \
 
 If you use Secret Manager with the deploy scripts, pass:
 
-- `SECRETS='ALPACA_API_KEY=alpaca-api-key:latest,ALPACA_SECRET_KEY=alpaca-secret-key:latest'`
+- `SECRETS='APCA_API_KEY_ID=alpaca-api-key:latest,APCA_API_SECRET_KEY=alpaca-secret-key:latest,APCA_API_BASE_URL=alpaca-base-url:latest'`
 
 ---
 
@@ -158,7 +158,7 @@ ENV_VARS_FILE=./market_ingest.env.yaml \
   ./infra/cloudrun/deploy_market_ingest.sh
 
 # Option B: Secret Manager for Alpaca keys (recommended)
-SECRETS='ALPACA_API_KEY=alpaca-api-key:latest,ALPACA_SECRET_KEY=alpaca-secret-key:latest' \
+SECRETS='APCA_API_KEY_ID=alpaca-api-key:latest,APCA_API_SECRET_KEY=alpaca-secret-key:latest,APCA_API_BASE_URL=alpaca-base-url:latest' \
   ENV_VARS_FILE=./market_ingest.env.yaml \
   ./infra/cloudrun/deploy_market_ingest.sh
 ```

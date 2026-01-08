@@ -149,8 +149,9 @@ STRATEGY_SYMBOLS=AAPL,GOOGL ./scripts/run_sentiment_strategy.sh
 
 ```bash
 # Alpaca credentials
-export ALPACA_API_KEY="your-alpaca-key"
-export ALPACA_SECRET_KEY="your-alpaca-secret"
+export APCA_API_KEY_ID="your-alpaca-key"
+export APCA_API_SECRET_KEY="your-alpaca-secret"
+export APCA_API_BASE_URL="https://paper-api.alpaca.markets"
 
 # Firebase/GCP
 export FIREBASE_PROJECT_ID="your-gcp-project"

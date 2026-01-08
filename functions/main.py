@@ -17,28 +17,20 @@ from firebase_functions import scheduler_fn
 firebase_admin.initialize_app()
 logger = logging.getLogger(__name__)
 
+from functions.utils.apca_env import get_apca_env
+
 
 def _get_firestore() -> firestore.Client:
     return firestore.client()
 
 
 def _get_alpaca() -> tradeapi.REST:
-    # Support both common env var conventions.
-    key_id = os.environ.get("ALPACA_KEY_ID") or os.environ.get("APCA_API_KEY_ID")
-    secret_key = os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("APCA_API_SECRET_KEY")
-    if not key_id or not secret_key:
-        raise ValueError(
-            "Missing Alpaca credentials. Set ALPACA_KEY_ID/ALPACA_SECRET_KEY "
-            "or APCA_API_KEY_ID/APCA_API_SECRET_KEY."
-        )
-
-    base_url = (
-        os.environ.get("APCA_API_BASE_URL")
-        or os.environ.get("ALPACA_API_BASE_URL")
-        or "https://api.alpaca.markets"
+    apca = get_apca_env()
+    return tradeapi.REST(
+        key_id=apca.api_key_id,
+        secret_key=apca.api_secret_key,
+        base_url=apca.api_base_url,
     )
-
-    return tradeapi.REST(key_id=key_id, secret_key=secret_key, base_url=base_url)
 
 
 def _account_payload(account: Any) -> Dict[str, Any]:

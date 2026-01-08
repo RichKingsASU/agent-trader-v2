@@ -209,8 +209,9 @@ firebase deploy --only functions:pulse,functions:emergency_liquidate
 2. Ensure Secret Manager secrets are configured:
 ```bash
 # Required secrets (already set up):
-- ALPACA_KEY_ID
-- ALPACA_SECRET_KEY
+- APCA_API_KEY_ID
+- APCA_API_SECRET_KEY
+- APCA_API_BASE_URL
 ```
 
 ### Frontend Deployment

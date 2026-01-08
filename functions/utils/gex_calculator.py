@@ -29,12 +29,12 @@ logger = logging.getLogger(__name__)
 
 def _get_alpaca_headers() -> Dict[str, str]:
     """Get Alpaca API headers from environment variables."""
-    api_key = os.environ.get("ALPACA_API_KEY") or os.environ.get("ALPACA_KEY_ID")
-    secret_key = os.environ.get("ALPACA_SECRET_KEY")
+    api_key = os.environ.get("APCA_API_KEY_ID")
+    secret_key = os.environ.get("APCA_API_SECRET_KEY")
     
     if not api_key or not secret_key:
         raise ValueError(
-            "Missing Alpaca credentials. Set ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables."
+            "Missing Alpaca credentials. Set APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables."
         )
     
     return {

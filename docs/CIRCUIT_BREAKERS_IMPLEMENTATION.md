@@ -337,8 +337,9 @@ Configure Alpaca credentials for VIX fetching:
 
 ```bash
 # Cloud Functions secrets
-firebase functions:secrets:set ALPACA_API_KEY
-firebase functions:secrets:set ALPACA_SECRET_KEY
+firebase functions:secrets:set APCA_API_KEY_ID
+firebase functions:secrets:set APCA_API_SECRET_KEY
+firebase functions:secrets:set APCA_API_BASE_URL
 ```
 
 ## Monitoring

@@ -65,7 +65,7 @@ The `emergency_liquidate` function correctly implements nuclear liquidation:
 ```python
 @https_fn.on_call(
     cors=options.CorsOptions(cors_origins="*", cors_methods=["POST"]),
-    secrets=["ALPACA_KEY_ID", "ALPACA_SECRET_KEY"]
+    secrets=["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"]
 )
 def emergency_liquidate(req: https_fn.CallableRequest) -> Dict[str, Any]:
     """
@@ -347,7 +347,7 @@ Functions:
 
 **Pre-Deployment Checklist**:
 - ✅ CORS configured: `cors_origins="*", cors_methods=["POST"]`
-- ✅ Secrets configured: `secrets=["ALPACA_KEY_ID", "ALPACA_SECRET_KEY"]`
+- ✅ Secrets configured: `secrets=["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"]`
 - ✅ Function name: `emergency_liquidate` (matches requirements)
 - ✅ Callable function (accessible from React frontend)
 - ✅ Error handling implemented
@@ -555,7 +555,7 @@ cat frontend/src/components/PanicButton.tsx | grep "NUCLEAR PANIC"
 
 ### Alpaca API Secrets
 - ✅ Secrets stored in Firebase Secret Manager
-- ✅ Secrets injected at runtime via `secrets=["ALPACA_KEY_ID", "ALPACA_SECRET_KEY"]`
+- ✅ Secrets injected at runtime via `secrets=["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"]`
 - ✅ Never committed to git
 - ✅ Not exposed in logs
 
@@ -740,8 +740,9 @@ gcloud secrets list
 ```
 
 Expected output should include:
-- `ALPACA_KEY_ID`
-- `ALPACA_SECRET_KEY`
+- `APCA_API_KEY_ID`
+- `APCA_API_SECRET_KEY`
+- `APCA_API_BASE_URL`
 
 **Check 3: Firestore Documents**
 ```bash

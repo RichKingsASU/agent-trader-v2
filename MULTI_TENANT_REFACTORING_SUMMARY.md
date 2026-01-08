@@ -32,7 +32,7 @@ The AgentTrader project has been successfully refactored to support multi-tenanc
 
 #### Before
 ```python
-@scheduler_fn.on_schedule(schedule="* * * * *", secrets=["ALPACA_KEY_ID", "ALPACA_SECRET_KEY"])
+@scheduler_fn.on_schedule(schedule="* * * * *", secrets=["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"])
 def pulse(event):
     # Single account sync using env vars
     api = _get_alpaca()
@@ -165,7 +165,7 @@ projects/{PROJECT_ID}/secrets/alpaca-keys-{USER_ID}/versions/latest
 ```json
 {
   "key_id": "ALPACA_API_KEY_ID",
-  "secret_key": "ALPACA_SECRET_KEY"
+  "secret_key": "APCA_API_SECRET_KEY"
 }
 ```
 

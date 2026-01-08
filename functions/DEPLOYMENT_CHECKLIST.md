@@ -132,8 +132,9 @@ gcloud functions logs tail pulse
 ```bash
 # Run example script
 cd /workspace
-export ALPACA_KEY_ID="your_key"
-export ALPACA_SECRET_KEY="your_secret"
+export APCA_API_KEY_ID="your_key"
+export APCA_API_SECRET_KEY="your_secret"
+export APCA_API_BASE_URL="https://paper-api.alpaca.markets"
 python3 functions/example_gex_usage.py
 ```
 

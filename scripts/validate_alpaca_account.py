@@ -16,7 +16,7 @@ def main():
         api_key = get_alpaca_key_id(required=True)
         secret_key = get_alpaca_secret_key(required=True)
     except Exception:
-        print("ERROR: Missing Alpaca creds. Set ALPACA_KEY_ID and ALPACA_SECRET_KEY.")
+        print("ERROR: Missing Alpaca creds. Set APCA_API_KEY_ID and APCA_API_SECRET_KEY.")
         exit(1)
 
     print("--> Checking Alpaca paper account status...")
