@@ -396,11 +396,11 @@ class FirestoreWriter:
         source: SourceInfo,
     ) -> Tuple[bool, str]:
         """
-        Writes `ops_services/{serviceId}` with stale protection.
+        Writes `ops_services/{serviceId}` with last-write-wins ordering.
 
-        Stale protection rule (per mission):
-        - only overwrite if incoming `updated_at` >= max(stored.lastHeartbeatAt, stored.source.publishedAt)
-        - `updatedAt` stored in Firestore is always a server timestamp (write time)
+        Ordering rule (per mission):
+        - only overwrite if incoming `source.published_at` >= stored `publishedAt`/`source.publishedAt`
+        - tie-breaker: `source.messageId` lexicographic
         """
         ref = self._db.collection(self._col("ops_services")).document(service_id)
 
@@ -448,12 +448,14 @@ class FirestoreWriter:
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
+                    "message_id": str(source.message_id),
                     "publishedAt": _as_utc(source.published_at),
+                    "published_at": _as_utc(source.published_at),
                 },
                 "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
             }
 
-            txn.set(ref, doc)
+            txn.set(ref, doc, merge=True)
             return True, "applied"
 
         txn = self._db.transaction()
@@ -477,13 +479,24 @@ class FirestoreWriter:
         """
         Transactionally:
         - checks/creates `ops_dedupe/{messageId}`
-        - applies stale-protected write to ops_services
+        - applies last-write-wins write to ops_services using `publishedAt`
+        - records outcome metadata on the dedupe doc for visibility
         """
         dedupe_ref = self._db.collection(self._col("ops_dedupe")).document(message_id)
         service_ref = self._db.collection(self._col("ops_services")).document(service_id)
 
         def _txn(txn: Any) -> Tuple[bool, str]:
-            first_time, _ = ensure_message_once(txn=txn, dedupe_ref=dedupe_ref, message_id=message_id)
+            first_time, _ = ensure_message_once(
+                txn=txn,
+                dedupe_ref=dedupe_ref,
+                message_id=message_id,
+                doc={
+                    "kind": "ops_services",
+                    "targetDoc": f"ops_services/{service_id}",
+                    "sourceTopic": str(source.topic),
+                    "sourcePublishedAt": _as_utc(source.published_at),
+                },
+            )
             if not first_time:
                 return False, "duplicate_message_noop"
 
@@ -518,7 +531,17 @@ class FirestoreWriter:
             incoming_eff = _max_dt(incoming, last_heartbeat_at, source.published_at) or incoming
             if existing_max is not None and incoming_eff < existing_max:
                 # Marked dedupe already; do not reprocess on retries.
-                return False, "stale_event_ignored"
+                txn.set(
+                    dedupe_ref,
+                    {
+                        "outcome": "out_of_order_ignored",
+                        "reason": "incoming_publishedAt_older_than_stored",
+                        "storedPublishedAt": existing_pub,
+                        "storedMessageId": existing_mid,
+                    },
+                    merge=True,
+                )
+                return False, "out_of_order_event_ignored"
 
             prev_status, _ = _normalize_ops_service_status(existing.get("status") if isinstance(existing, dict) else None)
             next_status, raw_status = _normalize_ops_service_status(status)
@@ -543,12 +566,19 @@ class FirestoreWriter:
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
+                    "message_id": str(source.message_id),
                     "publishedAt": _as_utc(source.published_at),
+                    "published_at": _as_utc(source.published_at),
                 },
                 "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
             }
+            if isinstance(fields, dict) and fields:
+                for k, v in fields.items():
+                    if v is not None:
+                        doc[k] = v
 
-            txn.set(service_ref, doc)
+            txn.set(pipeline_ref, doc, merge=True)
+            txn.set(dedupe_ref, {"outcome": "applied"}, merge=True)
             return True, "applied"
 
         txn = self._db.transaction()

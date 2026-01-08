@@ -7,6 +7,7 @@ from handlers.system_events import handle_system_event
 from handlers.market_ticks import handle_market_tick
 from handlers.market_bars_1m import handle_market_bar_1m
 from handlers.trade_signals import handle_trade_signal
+from handlers.ingest_pipelines import handle_ingest_pipeline
 
 
 @dataclass(frozen=True)
@@ -40,5 +41,7 @@ def route_payload(
         return RoutedHandler(name="market_bars_1m", handler=handle_market_bar_1m)
     if t == "trade-signals":
         return RoutedHandler(name="trade_signals", handler=handle_trade_signal)
+    if t in {"ingest-heartbeat", "ingest-pipelines", "ingest-pipeline-health"}:
+        return RoutedHandler(name="ingest_pipelines", handler=handle_ingest_pipeline)
     return None
 

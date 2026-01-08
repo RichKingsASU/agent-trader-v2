@@ -13,9 +13,10 @@ def ensure_message_once(
     txn: Any,
     dedupe_ref: Any,
     message_id: str,
+    doc: Optional[dict[str, Any]] = None,
 ) -> Tuple[bool, Optional[dict[str, Any]]]:
     """
-    Ensure at-least-once safety using `ops_dedupe/{messageId}`.
+    Ensure at-least-once safety using a dedupe document keyed by `messageId`.
 
     Returns (is_first_time, existing_doc_dict_if_any).
     """
@@ -38,7 +39,13 @@ def ensure_message_once(
     try:
         # `create()` is a stronger signal than set/merge; it fails if doc exists.
         created_at = firestore.SERVER_TIMESTAMP if firestore is not None else None
-        txn.create(dedupe_ref, {"createdAt": created_at, "messageId": str(message_id)})
+        base: dict[str, Any] = {"createdAt": created_at, "messageId": str(message_id)}
+        if isinstance(doc, dict) and doc:
+            # Avoid writing explicit nulls into the dedupe doc.
+            for k, v in doc.items():
+                if v is not None:
+                    base[k] = v
+        txn.create(dedupe_ref, base)
     except Exception as e:
         if AlreadyExists is not None and isinstance(e, AlreadyExists):  # type: ignore[arg-type]
             # In case of race, treat as already-processed.
