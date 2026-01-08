@@ -20,6 +20,26 @@ import time
 import uuid
 from typing import Any
 
+# --- Env normalization + validation (log presence, fail fast) ---
+def _normalize_env_alias(target: str, aliases: list[str]) -> None:
+    """
+    Ensures `target` is present by copying from the first present alias.
+    Logs nothing and never exposes values.
+    """
+    v = os.getenv(target)
+    if v is not None and str(v).strip():
+        return
+    for a in aliases:
+        av = os.getenv(a)
+        if av is not None and str(av).strip():
+            os.environ[target] = str(av).strip()
+            return
+
+
+def _validate_required_env(required: list[str]) -> dict[str, bool]:
+    return {name: bool((os.getenv(name) or "").strip()) for name in required}
+
+
 # --- Structured Logging & Pre-run Configuration ---
 # This must run before any other modules are imported to ensure logging is configured correctly.
 
@@ -30,69 +50,13 @@ LOG_EXTRA = {
 }
 logger = logging.getLogger(__name__)
 
-# Provide a minimal fallback handler early so CRITICAL logs are visible even if
-# structured logging dependencies are missing/misconfigured.
-logging.basicConfig(level=logging.INFO)
-
-# Log Python import/resolve context as early as possible (before structured logging setup),
-# so failures in logging initialization still have `sys.path` visibility.
-logger.info(
-    "Python startup diagnostics (pre-logging setup). sys.path=%s",
-    list(sys.path),
-    extra={
-        **LOG_EXTRA,
-        "event_type": "python.startup",
-        "python_executable": sys.executable,
-        "python_version": sys.version,
-        "cwd": os.getcwd(),
-        "pythonpath_env": os.getenv("PYTHONPATH") or "",
-        "sys_path": list(sys.path),
-        "pythonpath_assumption": "Repo root (containing `backend/`) must be on sys.path (often via PYTHONPATH).",
-    },
-)
-
-# Set up structured logging with the google-cloud-logging library.
-# This will automatically format logs as JSON and include standard Cloud Run fields.
-try:
-    import google.cloud.logging
-
-    logging_client = google.cloud.logging.Client()
-    logging_client.setup_logging()
-except Exception as e:
-    logger.critical(
-        "Failed to initialize structured logging (google-cloud-logging): %s",
-        e,
-        extra={
-            **LOG_EXTRA,
-            "event_type": "python.logging_setup_failed",
-            "errorType": e.__class__.__name__,
-            "error": str(e),
-            "cwd": os.getcwd(),
-            "pythonpath_env": os.getenv("PYTHONPATH") or "",
-            "sys_path": list(sys.path),
-        },
-        exc_info=True,
-    )
-    sys.exit(1)
-
-def _fail_fast_import(error: BaseException, *, context: str, failed_import: str) -> None:
-    logger.critical(
-        "Import failure (%s): %s",
-        failed_import,
-        error,
-        extra={
-            **LOG_EXTRA,
-            "event_type": "python.import_failed",
-            "context": context,
-            "failed_import": failed_import,
-            "errorType": error.__class__.__name__,
-            "error": str(error),
-            "cwd": os.getcwd(),
-            "pythonpath_env": os.getenv("PYTHONPATH") or "",
-            "sys_path": list(sys.path),
-        },
-        exc_info=True,
-    )
+_normalize_env_alias("GCP_PROJECT", ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT_ID", "PROJECT_ID"])
+_required_env = ["GCP_PROJECT", "SYSTEM_EVENTS_TOPIC", "INGEST_FLAG_SECRET_ID", "ENV"]
+_presence = _validate_required_env(_required_env)
+logger.info("Startup config presence validated.", extra={**LOG_EXTRA, "required_env": _presence})
+_missing = [name for name, ok in _presence.items() if not ok]
+if _missing:
+    logger.critical("Missing required environment variables.", extra={**LOG_EXTRA, "missing_env": _missing})
     sys.exit(1)
 
 
@@ -100,17 +64,13 @@ def override_config():
     """Overrides hardcoded config from vm_ingest with environment variables."""
     try:
         import backend.ingestion.config as config_module
-        logger.info(
-            "Imported backend.ingestion.config successfully.",
-            extra={**LOG_EXTRA, "module": "backend.ingestion.config", "module_file": getattr(config_module, "__file__", None)},
-        )
-        config_module.PROJECT_ID = os.environ["GCP_PROJECT_ID"]
+        config_module.PROJECT_ID = os.environ["GCP_PROJECT"]
         config_module.SYSTEM_EVENTS_TOPIC = os.environ["SYSTEM_EVENTS_TOPIC"]
         config_module.MARKET_TICKS_TOPIC = os.environ["MARKET_TICKS_TOPIC"]
         config_module.MARKET_BARS_1M_TOPIC = os.environ["MARKET_BARS_1M_TOPIC"]
         config_module.TRADE_SIGNALS_TOPIC = os.environ["TRADE_SIGNALS_TOPIC"]
         config_module.INGEST_FLAG_SECRET_ID = os.environ["INGEST_FLAG_SECRET_ID"]
-        logger.info("Configuration overridden for project: %s", config_module.PROJECT_ID, extra=LOG_EXTRA)
+        logger.info("Configuration overridden from environment.", extra={**LOG_EXTRA, "config_overridden": True})
     except KeyError as e:
         logger.critical("Missing required environment variable: %s", e, extra=LOG_EXTRA)
         sys.exit(1)
