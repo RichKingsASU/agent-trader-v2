@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import random
 import time
@@ -7,6 +8,8 @@ from typing import Any, Mapping, Optional
 
 from backend.messaging.envelope import EventEnvelope
 from backend.observability.ops_json_logger import log as log_json
+
+logger = logging.getLogger(__name__)
 
 
 class PubSubPublisher:
@@ -114,6 +117,21 @@ class PubSubPublisher:
             "deadline_s": max(0.1, _env_float("PUBSUB_PUBLISH_DEADLINE_S", 15.0)),
         }
 
+    def _default_environment(self) -> str:
+        # Keep consistent with ops logger conventions, but avoid importing internals.
+        return (
+            (os.getenv("ENVIRONMENT") or "").strip()
+            or (os.getenv("ENV") or "").strip()
+            or (os.getenv("APP_ENV") or "").strip()
+            or (os.getenv("DEPLOY_ENV") or "").strip()
+            or "unknown"
+        )
+
+    def _schema_version(self) -> str:
+        # Publish-time schema identifier for message consumers / filtering.
+        # This does NOT change the JSON payload/envelope shape.
+        return (os.getenv("PUBSUB_SCHEMA_VERSION") or "").strip() or "1"
+
     def _exc_code(self, exc: BaseException) -> str:
         """
         Best-effort extraction of a stable error code string.
@@ -200,12 +218,19 @@ class PubSubPublisher:
                 remaining = max(0.0, deadline_s - (time.monotonic() - started))
                 timeout_s = max(0.1, remaining)
 
+                schema_version = self._schema_version()
+                producer = str(envelope.agent_name)
+                environment = self._default_environment()
+
                 future = self._client.publish(
                     self._topic_path,
                     envelope.to_bytes(),
                     # Also duplicate key fields as attributes for filtering/debugging.
                     event_type=envelope.event_type,
                     agent_name=envelope.agent_name,
+                    producer=producer,
+                    environment=environment,
+                    schema_version=schema_version,
                     trace_id=envelope.trace_id,
                     git_sha=envelope.git_sha,
                     ts=envelope.ts,
@@ -216,10 +241,14 @@ class PubSubPublisher:
                     None,
                     "pubsub_publish_success",
                     severity="INFO",
+                    metric="pubsub_publish_success",
                     topic=self._topic_path,
                     message_id=message_id,
                     event_type=envelope.event_type,
                     agent_name=envelope.agent_name,
+                    producer=producer,
+                    environment=environment,
+                    schema_version=schema_version,
                     trace_id=envelope.trace_id,
                     attempt=attempt,
                     elapsed_ms=int((time.monotonic() - started) * 1000),
@@ -234,9 +263,13 @@ class PubSubPublisher:
                     None,
                     "pubsub_publish_failure",
                     severity="ERROR" if (not retryable or attempt == max_attempts) else "WARNING",
+                    metric="pubsub_publish_failure",
                     topic=self._topic_path,
                     event_type=envelope.event_type,
                     agent_name=envelope.agent_name,
+                    producer=str(envelope.agent_name),
+                    environment=self._default_environment(),
+                    schema_version=self._schema_version(),
                     trace_id=envelope.trace_id,
                     attempt=attempt,
                     max_attempts=max_attempts,
@@ -294,6 +327,7 @@ class PubSubPublisher:
             if callable(stop):
                 stop()
         except Exception:
+            logger.exception("pubsub_publisher.client_stop_failed")
             pass
 
         # Close transport / channels (newer versions).
@@ -302,6 +336,7 @@ class PubSubPublisher:
             if callable(close):
                 close()
         except Exception:
+            logger.exception("pubsub_publisher.client_close_failed")
             pass
 
         try:
@@ -310,6 +345,7 @@ class PubSubPublisher:
             if callable(transport_close):
                 transport_close()
         except Exception:
+            logger.exception("pubsub_publisher.transport_close_failed")
             pass
 
     def __enter__(self) -> "PubSubPublisher":

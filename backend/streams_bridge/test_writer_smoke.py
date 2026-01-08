@@ -1,11 +1,16 @@
 import asyncio
 import os
 from datetime import datetime, timezone
+import logging
 from backend.streams_bridge.firestore_writer import FirestoreWriter
+from backend.common.logging import init_structured_logging
+
+init_structured_logging(service="streams-bridge-writer-smoke")
+logger = logging.getLogger(__name__)
 
 async def main():
     """Smoke test for the FirestoreWriter."""
-    print("Running FirestoreWriter smoke test...")
+    logger.info("Running FirestoreWriter smoke test...", extra={"event_type": "smoke_test.start"})
     writer = await FirestoreWriter.create_from_env()
 
     test_event = {
@@ -23,7 +28,10 @@ async def main():
 
     try:
         await writer.insert_news_events([test_event])
-        print("Smoke test successful: inserted 1 news event.")
+        logger.info(
+            "Smoke test successful: inserted 1 news event.",
+            extra={"event_type": "smoke_test.ok", "inserted": 1, "kind": "news_event"},
+        )
     except Exception as e:
         # Fail non-zero so Cloud Run Jobs / Scheduler can alert/retry.
         raise RuntimeError(f"Smoke test failed: {e}") from e

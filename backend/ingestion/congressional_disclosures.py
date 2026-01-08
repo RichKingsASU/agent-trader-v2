@@ -467,13 +467,9 @@ class CongressionalDisclosureIngestion:
 
 async def main():
     """Main entry point for running the ingestion service."""
-    import sys
-    
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        stream=sys.stdout,
-    )
+    from backend.common.logging import init_structured_logging  # noqa: WPS433
+
+    init_structured_logging(service="congressional-ingest")
 
     enforce_agent_mode_guard()
 
@@ -487,9 +483,14 @@ async def main():
     )
     try:
         fp = get_build_fingerprint()
-        print(
-            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
-            flush=True,
+        logger.info(
+            "build_fingerprint",
+            extra={
+                "event_type": "build_fingerprint",
+                "intent_type": "build_fingerprint",
+                "service": "congressional-ingest",
+                **fp,
+            },
         )
     except Exception:
         pass

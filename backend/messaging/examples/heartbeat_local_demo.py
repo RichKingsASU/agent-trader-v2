@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from backend.messaging.local import InMemoryEventBus
+from backend.common.ops_log import log_json
 
 
 HEARTBEAT_EVENT_TYPE = "marketdata.heartbeat"
@@ -47,7 +48,15 @@ def main() -> None:
         state.on_envelope(env)
 
     # "internal state" is updated
-    print("StrategyEngineState:", state)
+    log_json(
+        intent_type="heartbeat_local_demo.state",
+        severity="INFO",
+        state={
+            "last_marketdata_heartbeat_ts": state.last_marketdata_heartbeat_ts,
+            "last_marketdata_heartbeat_payload": state.last_marketdata_heartbeat_payload,
+            "last_trace_id": state.last_trace_id,
+        },
+    )
 
 
 if __name__ == "__main__":

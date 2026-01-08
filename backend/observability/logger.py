@@ -5,6 +5,7 @@ import os
 import sys
 import time
 import uuid
+import traceback
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -33,7 +34,24 @@ def _write_json(obj: dict[str, Any]) -> None:
     try:
         sys.stdout.flush()
     except Exception:
-        pass
+        # If stdout is broken/unflushable, best-effort emit to stderr with a traceback.
+        try:
+            sys.stderr.write(
+                json.dumps(
+                    {
+                        "timestamp": _utc_ts(),
+                        "severity": "ERROR",
+                        "event_type": "observability.stdout_flush_failed",
+                        "exception": traceback.format_exc()[-8000:],
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
 
 
 def _env_any(*names: str, default: str = "unknown") -> str:

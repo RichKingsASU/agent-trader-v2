@@ -11,6 +11,8 @@ import sys
 import traceback
 from dataclasses import dataclass
 
+from backend.common.ops_log import log_json
+
 
 @dataclass(frozen=True)
 class ImportFailure:
@@ -71,17 +73,32 @@ def main(argv: list[str]) -> int:
     services = tuple(argv[1:]) if len(argv) > 1 else None
     failures = check_imports(services=services)
     if not failures:
-        print("dependency_parity_check: ok")
+        try:
+            log_json(intent_type="dependency_parity_check", severity="INFO", status="ok", services=list(services or ()))
+        except Exception:
+            pass
         return 0
 
-    print("dependency_parity_check: FAILED")
-    for f in failures:
-        print(f"- import {f.module}: {f.error_type}: {f.error}")
+    try:
+        log_json(
+            intent_type="dependency_parity_check",
+            severity="ERROR",
+            status="failed",
+            services=list(services or ()),
+            failures=[{"module": f.module, "error_type": f.error_type, "error": f.error} for f in failures],
+        )
+    except Exception:
+        pass
     # Best-effort traceback for the first failure to aid debugging.
     try:
         traceback.print_exc()
     except Exception:
-        pass
+        try:
+            sys.stderr.write("dependency_parity_check: traceback_print_failed\n")
+            sys.stderr.write(traceback.format_exc() + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
     return 1
 
 

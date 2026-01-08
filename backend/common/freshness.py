@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional, Protocol
 
+from backend.time.utc_audit import ensure_utc
+
 
 class HasTimestamp(Protocol):
     ts: datetime
@@ -32,9 +34,8 @@ def coerce_utc(ts: datetime) -> tuple[datetime, bool]:
       still treat large ages as STALE).
     - If `ts` is timezone-aware, it is converted to UTC.
     """
-    if ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None:
-        return ts.replace(tzinfo=timezone.utc), True
-    return ts.astimezone(timezone.utc), False
+    assumed_utc = ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None
+    return ensure_utc(ts, source="backend.common.freshness.coerce_utc", field="ts", utc_tz=timezone.utc), assumed_utc
 
 
 def latest_timestamp(items: Iterable[HasTimestamp]) -> Optional[datetime]:
