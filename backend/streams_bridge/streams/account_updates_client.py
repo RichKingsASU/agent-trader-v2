@@ -115,6 +115,9 @@ class AccountUpdatesClient:
                             pass
                         self._maybe_log_stats()
 
+            except asyncio.CancelledError:
+                # Ensure task cancellation triggers a clean process shutdown.
+                raise
             except Exception as e:
                 try:
                     log_event(

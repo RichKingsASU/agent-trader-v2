@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 
@@ -77,6 +78,10 @@ class NewsIngestor:
             },
         )
 
+        hb_interval_s = float((os.environ.get("HEARTBEAT_LOG_INTERVAL_S") or "60").strip() or "60")
+        hb_interval_s = max(5.0, hb_interval_s)
+        last_hb = 0.0
+
         while not self._stop:
             started = time.monotonic()
             try:
@@ -85,7 +90,25 @@ class NewsIngestor:
                 # Fail-open for ingestion (keep running), but be loud.
                 logger.exception("news_ingest.poll_failed: %s", e)
 
+            now = time.monotonic()
+            if (now - last_hb) >= hb_interval_s:
+                last_hb = now
+                logger.info(
+                    "news_ingest.heartbeat",
+                    extra={
+                        "polls": self.stats.polls,
+                        "events_ingested_total": self.stats.events_ingested,
+                        "last_poll_age_s": max(0.0, time.time() - (self.stats.last_poll_ts or 0.0)),
+                        "cursor": self.stats.last_cursor,
+                        "source": self.cfg.source,
+                    },
+                )
+
             elapsed = max(0.0, time.monotonic() - started)
             sleep_s = max(0.0, float(self.cfg.poll_interval_s) - elapsed)
-            time.sleep(sleep_s)
+            # Sleep in small increments so SIGTERM can stop promptly.
+            while (sleep_s > 0.0) and (not self._stop):
+                step = min(1.0, sleep_s)
+                time.sleep(step)
+                sleep_s -= step
 

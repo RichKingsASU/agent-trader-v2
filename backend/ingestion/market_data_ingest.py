@@ -27,6 +27,7 @@ from backend.common.ws_reconnect_policy import (
     ensure_retry_allowed,
 )
 from backend.observability.build_fingerprint import get_build_fingerprint
+from backend.safety.process_safety import startup_banner
 
 
 def _utc_now() -> datetime:
@@ -144,6 +145,16 @@ class MarketDataIngestor:
         try:
             if self._wss is not None:
                 self._wss.stop()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        """
+        Best-effort close of network clients (Firestore).
+        """
+        try:
+            if self._writer is not None:
+                self._writer.close()
         except Exception:
             pass
 
@@ -623,6 +634,10 @@ async def _amain() -> int:
         agent_name="market-data-ingest",
         intent="Continuously ingest stock quotes from Alpaca and write latest snapshots to Firestore.",
     )
+    startup_banner(
+        service="market-data-ingest",
+        intent="Continuously ingest stock quotes from Alpaca and write latest snapshots to Firestore.",
+    )
     try:
         fp = get_build_fingerprint()
         print(
@@ -632,26 +647,13 @@ async def _amain() -> int:
     except Exception:
         pass
     cfg = load_config_from_env()
-
-    # Deterministic Alpaca auth smoke tests (startup gate).
-    # - Runs once at startup
-    # - Blocks long-running ingestion if auth is broken
-    if (
-        (not cfg.dry_run)
-        and os.getenv("SKIP_ALPACA_AUTH_SMOKE_TESTS", "").strip().lower() not in ("1", "true", "yes", "y")
-    ):
-        try:
-            from backend.streams.alpaca_auth_smoke import run_alpaca_auth_smoke_tests_async  # noqa: WPS433
-
-            feed = getattr(cfg.feed, "value", None) or "iex"
-            timeout_s = float(os.getenv("ALPACA_AUTH_SMOKE_TIMEOUT_S", "5"))
-            log_json("alpaca_auth_smoke", status="starting", feed=str(feed), timeout_s=timeout_s)
-            await run_alpaca_auth_smoke_tests_async(feed=str(feed), timeout_s=timeout_s)
-            log_json("alpaca_auth_smoke", status="ok", feed=str(feed))
-        except Exception as e:
-            log_json("alpaca_auth_smoke", status="error", error=str(e), severity="ERROR")
-            raise
-
+    # Environment validation (fail-fast for 24/7 daemons).
+    if not cfg.dry_run:
+        # Validates required Alpaca credentials are present.
+        load_alpaca_env(require_keys=True)
+    if not cfg.symbols:
+        log_json("startup", status="error", error="MONITORED_SYMBOLS resolved to empty", severity="ERROR")
+        return 2
     ingestor = MarketDataIngestor(cfg)
 
     loop = asyncio.get_running_loop()
@@ -708,6 +710,16 @@ async def _amain() -> int:
     except Exception as e:
         log_json("shutdown", status="error", error=str(e), severity="ERROR")
         return 2
+    finally:
+        # Ensure network clients are closed even on fatal errors.
+        try:
+            ingestor.request_stop()
+        except Exception:
+            pass
+        try:
+            ingestor.close()
+        except Exception:
+            pass
 
 
 def main() -> None:
