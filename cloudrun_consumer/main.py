@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -16,6 +18,14 @@ from schema_router import route_payload
 
 
 SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"
+
+_logger = logging.getLogger("cloudrun_consumer")
+if not _logger.handlers:
+    _handler = logging.StreamHandler(stream=sys.stdout)
+    _handler.setFormatter(logging.Formatter("%(message)s"))
+    _logger.addHandler(_handler)
+_logger.setLevel(str(os.getenv("LOG_LEVEL") or "INFO").upper())
+_logger.propagate = False
 
 
 def _utc_now() -> datetime:
@@ -54,7 +64,15 @@ def log(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
     }
     payload.update(fields)
     try:
-        print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+        sev = str(severity).upper()
+        if sev in {"ERROR", "CRITICAL", "ALERT", "EMERGENCY"}:
+            _logger.error(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+        elif sev in {"WARNING"}:
+            _logger.warning(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+        elif sev in {"DEBUG"}:
+            _logger.debug(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+        else:
+            _logger.info(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
     except Exception:
         return
 

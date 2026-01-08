@@ -356,7 +356,7 @@ def compute_and_cache_daily_analytics(tenant_id: str):
         "computed_at": firestore.SERVER_TIMESTAMP,
     })
     
-    print(f"Cached analytics for {start_of_day.strftime('%Y-%m-%d')}: ${analytics.total_pnl:.2f}")
+    logger.info("Cached analytics", extra={"event_type": "analytics.cached", "day": start_of_day.strftime("%Y-%m-%d"), "total_pnl": float(analytics.total_pnl)})
 ```
 """
 
@@ -396,7 +396,7 @@ async def system_health_websocket(websocket: WebSocket, tenant_id: str):
             await asyncio.sleep(5)
             
     except WebSocketDisconnect:
-        print(f"Client disconnected from system health feed")
+        logger.info("Client disconnected from system health feed", extra={"event_type": "ws.client_disconnected"})
 ```
 
 Frontend usage:
@@ -461,5 +461,7 @@ def check_token_budget_alerts(tenant_id: str, monthly_budget_usd: float = 100.0)
 
 
 if __name__ == "__main__":
-    print("This file contains example integrations for the analytics engine.")
-    print("Copy the relevant examples into your actual service files.")
+    import sys
+
+    sys.stdout.write("This file contains example integrations for the analytics engine.\n")
+    sys.stdout.write("Copy the relevant examples into your actual service files.\n")

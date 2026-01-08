@@ -34,22 +34,46 @@ async def _amain() -> int:
         # DRY_RUN contract: no Firestore writes, but we should still observe at least one
         # "would-write" action (tracked via stats + structured logs).
         if writes_ok >= 1:
-            print(
-                "PASS: DRY_RUN observed write intents "
-                f"(intents={writes_ok}, quote_events={stats.quote_events})."
+            log_json(
+                "smoke_result",
+                severity="INFO",
+                status="pass",
+                mode="dry_run",
+                write_intents=writes_ok,
+                quote_events=stats.quote_events,
             )
             return 0
-        print(f"FAIL: DRY_RUN observed zero write intents (quote_events={stats.quote_events}).")
+        log_json(
+            "smoke_result",
+            severity="ERROR",
+            status="fail",
+            mode="dry_run",
+            write_intents=writes_ok,
+            quote_events=stats.quote_events,
+        )
         return 1
 
     # Non-DRY_RUN: at least one successful Firestore write occurred (quote and/or heartbeat).
     if writes_ok >= 1:
-        print(f"PASS: Firestore writes observed (ok={writes_ok}, err={writes_err}).")
+        log_json(
+            "smoke_result",
+            severity="INFO",
+            status="pass",
+            mode="live",
+            writes_ok=writes_ok,
+            writes_err=writes_err,
+            quote_events=stats.quote_events,
+        )
         return 0
 
-    print(
-        "FAIL: No successful Firestore writes observed in 60s "
-        f"(ok={writes_ok}, err={writes_err}, quote_events={stats.quote_events})."
+    log_json(
+        "smoke_result",
+        severity="ERROR",
+        status="fail",
+        mode="live",
+        writes_ok=writes_ok,
+        writes_err=writes_err,
+        quote_events=stats.quote_events,
     )
     return 1
 

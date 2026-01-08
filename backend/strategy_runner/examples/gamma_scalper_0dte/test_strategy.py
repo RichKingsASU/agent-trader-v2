@@ -24,6 +24,10 @@ from strategy import (
 )
 
 
+def out(msg: str = "") -> None:
+    sys.stdout.write(str(msg) + "\n")
+
+
 def load_events(events_file: Path) -> List[Dict[str, Any]]:
     """Load NDJSON events from file."""
     events = []
@@ -37,24 +41,24 @@ def load_events(events_file: Path) -> List[Dict[str, Any]]:
 
 def print_separator(char: str = "=", length: int = 80) -> None:
     """Print a separator line."""
-    print(char * length)
+    out(char * length)
 
 
 def print_portfolio_state() -> None:
     """Print current portfolio state."""
-    print("\n📊 Portfolio State:")
+    out("\n📊 Portfolio State:")
     if not _portfolio_positions:
-        print("  No open positions")
+        out("  No open positions")
     else:
         for symbol, position in _portfolio_positions.items():
-            print(f"  {symbol}:")
-            print(f"    Delta: {position['delta']}")
-            print(f"    Quantity: {position['quantity']}")
-            print(f"    Price: {position['price']}")
+            out(f"  {symbol}:")
+            out(f"    Delta: {position['delta']}")
+            out(f"    Quantity: {position['quantity']}")
+            out(f"    Price: {position['price']}")
     
     net_delta = _get_net_portfolio_delta()
-    print(f"\n  Net Portfolio Delta: {net_delta}")
-    print()
+    out(f"\n  Net Portfolio Delta: {net_delta}")
+    out("")
 
 
 def test_strategy_with_events(events_file: Path, set_negative_gex: bool = False) -> None:
@@ -66,7 +70,7 @@ def test_strategy_with_events(events_file: Path, set_negative_gex: bool = False)
         set_negative_gex: If True, set GEX to negative value
     """
     print_separator()
-    print("🎯 Testing 0DTE Gamma Scalper Strategy")
+    out("🎯 Testing 0DTE Gamma Scalper Strategy")
     print_separator()
     
     # Reset strategy state
@@ -75,65 +79,65 @@ def test_strategy_with_events(events_file: Path, set_negative_gex: bool = False)
     # Optionally set negative GEX for testing
     if set_negative_gex:
         os.environ["GEX_VALUE"] = "-15000.0"
-        print("⚠️  GEX set to NEGATIVE (-15000.0) - Tighter hedging threshold active")
+        out("⚠️  GEX set to NEGATIVE (-15000.0) - Tighter hedging threshold active")
     else:
         os.environ.pop("GEX_VALUE", None)
-        print("✅ GEX not set - Using standard hedging threshold")
+        out("✅ GEX not set - Using standard hedging threshold")
     
-    print()
+    out("")
     
     # Load events
     events = load_events(events_file)
-    print(f"📥 Loaded {len(events)} market events\n")
+    out(f"📥 Loaded {len(events)} market events\n")
     
     # Process each event
     for i, event in enumerate(events, 1):
         print_separator("-")
-        print(f"Event {i}/{len(events)}: {event['symbol']} @ {event['ts']}")
+        out(f"Event {i}/{len(events)}: {event['symbol']} @ {event['ts']}")
         print_separator("-")
         
         # Display event payload
         payload = event.get("payload", {})
-        print("\n📨 Event Payload:")
+        out("\n📨 Event Payload:")
         if "delta" in payload:
-            print(f"  Delta: {payload.get('delta')}")
-            print(f"  Price: {payload.get('price')}")
-            print(f"  Quantity: {payload.get('quantity', 1)}")
-            print(f"  Underlying Price: {payload.get('underlying_price', 'N/A')}")
+            out(f"  Delta: {payload.get('delta')}")
+            out(f"  Price: {payload.get('price')}")
+            out(f"  Quantity: {payload.get('quantity', 1)}")
+            out(f"  Underlying Price: {payload.get('underlying_price', 'N/A')}")
         else:
-            print(f"  Price: {payload.get('price')}")
-            print(f"  (Underlying asset - no delta)")
+            out(f"  Price: {payload.get('price')}")
+            out("  (Underlying asset - no delta)")
         
         # Process event
-        print("\n⚙️  Processing event...")
+        out("\n⚙️  Processing event...")
         orders = on_market_event(event)
         
         # Display results
         if orders:
-            print(f"\n✅ Generated {len(orders)} order(s):")
+            out(f"\n✅ Generated {len(orders)} order(s):")
             for order in orders:
-                print(f"\n  Order Intent:")
-                print(f"    Intent ID: {order['intent_id']}")
-                print(f"    Symbol: {order['symbol']}")
-                print(f"    Side: {order['side'].upper()}")
-                print(f"    Quantity: {order['qty']}")
-                print(f"    Order Type: {order['order_type']}")
-                print(f"    Client Tag: {order['client_tag']}")
+                out("\n  Order Intent:")
+                out(f"    Intent ID: {order['intent_id']}")
+                out(f"    Symbol: {order['symbol']}")
+                out(f"    Side: {order['side'].upper()}")
+                out(f"    Quantity: {order['qty']}")
+                out(f"    Order Type: {order['order_type']}")
+                out(f"    Client Tag: {order['client_tag']}")
                 
                 if "metadata" in order:
-                    print(f"    Metadata:")
+                    out("    Metadata:")
                     for key, value in order["metadata"].items():
-                        print(f"      {key}: {value}")
+                        out(f"      {key}: {value}")
         else:
-            print("\n⏸️  No orders generated (delta within threshold or rate limited)")
+            out("\n⏸️  No orders generated (delta within threshold or rate limited)")
         
         # Show portfolio state
         print_portfolio_state()
         
-        print()
+        out("")
     
     print_separator()
-    print("✅ Strategy test complete!")
+    out("✅ Strategy test complete!")
     print_separator()
 
 
@@ -142,17 +146,17 @@ def main() -> None:
     events_file = Path(__file__).parent / "events.ndjson"
     
     if not events_file.exists():
-        print(f"❌ Events file not found: {events_file}")
+        out(f"❌ Events file not found: {events_file}")
         return
     
-    print("\n" + "=" * 80)
-    print("TEST 1: Standard GEX (Positive/Neutral)")
-    print("=" * 80 + "\n")
+    out("\n" + "=" * 80)
+    out("TEST 1: Standard GEX (Positive/Neutral)")
+    out("=" * 80 + "\n")
     test_strategy_with_events(events_file, set_negative_gex=False)
     
-    print("\n" + "=" * 80)
-    print("TEST 2: Negative GEX (High Volatility Regime)")
-    print("=" * 80 + "\n")
+    out("\n" + "=" * 80)
+    out("TEST 2: Negative GEX (High Volatility Regime)")
+    out("=" * 80 + "\n")
     test_strategy_with_events(events_file, set_negative_gex=True)
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import signal
 import sys
@@ -25,6 +26,10 @@ from typing import Any, Optional
 from google.cloud import pubsub_v1, secretmanager
 from google.cloud import firestore
 from google.api_core.exceptions import AlreadyExists
+
+from backend.common.logging import init_structured_logging, log_event
+
+logger = logging.getLogger("vm_ingest")
 
 
 def _utcnow_iso() -> str:
@@ -191,6 +196,8 @@ def _doc_for_message(message: Any) -> dict[str, Any]:
 
 
 def run() -> int:
+    init_structured_logging(service="vm-ingest")
+
     cfg = _maybe_apply_secret_config(_load_config_from_env())
     if not cfg.pubsub_project_id:
         raise RuntimeError("Missing PUBSUB_PROJECT_ID (or GOOGLE_CLOUD_PROJECT).")
@@ -209,21 +216,16 @@ def run() -> int:
     for s in (signal.SIGINT, signal.SIGTERM):
         signal.signal(s, _handle_signal)
 
-    print(
-        json.dumps(
-            {
-                "event_type": "startup",
-                "ts": _utcnow_iso(),
-                "service": "vm-ingest",
-                "subscription": subscription_path,
-                "firestore_project_id": cfg.firestore_project_id,
-                "firestore_collection": cfg.firestore_collection,
-                "max_in_flight": cfg.max_messages,
-            },
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ),
-        flush=True,
+    log_event(
+        logger,
+        "startup",
+        severity="INFO",
+        service="vm-ingest",
+        ts=_utcnow_iso(),
+        subscription=subscription_path,
+        firestore_project_id=cfg.firestore_project_id,
+        firestore_collection=cfg.firestore_collection,
+        max_in_flight=cfg.max_messages,
     )
 
     collection = db.collection(cfg.firestore_collection)
@@ -241,24 +243,28 @@ def run() -> int:
             doc_ref.create(doc)
             message.ack()
         except AlreadyExists:
+            log_event(
+                logger,
+                "message.duplicate",
+                severity="DEBUG",
+                service="vm-ingest",
+                messageId=message_id,
+            )
             message.ack()
         except Exception as e:
             # Retry on transient failures by nacking.
             try:
-                print(
-                    json.dumps(
-                        {
-                            "event_type": "message_error",
-                            "ts": _utcnow_iso(),
-                            "service": "vm-ingest",
-                            "messageId": message_id,
-                            "errorType": e.__class__.__name__,
-                            "error": str(e),
-                        },
-                        separators=(",", ":"),
-                        ensure_ascii=False,
-                    ),
-                    flush=True,
+                logger.error(
+                    "message_error",
+                    exc_info=True,
+                    extra={
+                        "event_type": "message_error",
+                        "service": "vm-ingest",
+                        "ts": _utcnow_iso(),
+                        "messageId": message_id,
+                        "errorType": e.__class__.__name__,
+                        "error": str(e),
+                    },
                 )
             except Exception:
                 pass
@@ -281,13 +287,13 @@ def run() -> int:
         except Exception:
             pass
 
-    print(
-        json.dumps(
-            {"event_type": "shutdown", "ts": _utcnow_iso(), "service": "vm-ingest", "status": "ok"},
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ),
-        flush=True,
+    log_event(
+        logger,
+        "shutdown",
+        severity="INFO",
+        service="vm-ingest",
+        ts=_utcnow_iso(),
+        status="ok",
     )
     return 0
 

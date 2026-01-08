@@ -7,6 +7,7 @@ from backend.common.logging import init_structured_logging, install_fastapi_requ
 init_structured_logging(service="risk-service")
 
 import json
+import logging
 
 from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
 
@@ -23,6 +24,8 @@ app = FastAPI(title="AgentTrader Risk Service")
 install_fastapi_request_id_middleware(app, service="risk-service")
 install_app_heartbeat(app, service_name="risk-service")
 
+logger = logging.getLogger(__name__)
+
 @app.on_event("startup")
 def _startup() -> None:
     _enforce_agent_mode_guard()
@@ -32,9 +35,14 @@ def _startup() -> None:
     )
     try:
         fp = get_build_fingerprint()
-        print(
-            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
-            flush=True,
+        logger.info(
+            "build_fingerprint",
+            extra={
+                "event_type": "build_fingerprint",
+                "intent_type": "build_fingerprint",
+                "service": "risk-service",
+                **fp,
+            },
         )
     except Exception:
         pass
