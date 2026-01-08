@@ -25,11 +25,21 @@ LOG_EXTRA = {
 }
 logger = logging.getLogger(__name__)
 
+# Boot visibility: prove import paths inside Cloud Run.
+logger.info(
+    "Boot sys.path captured.",
+    extra={**LOG_EXTRA, "sys_path": list(sys.path), "pythonpath_env": os.getenv("PYTHONPATH")},
+)
+
 
 def override_config():
     """Overrides hardcoded config from vm_ingest with environment variables."""
     try:
         import backend.ingestion.config as config_module
+        logger.info(
+            "Imported backend.ingestion.config successfully.",
+            extra={**LOG_EXTRA, "module": "backend.ingestion.config", "module_file": getattr(config_module, "__file__", None)},
+        )
         config_module.PROJECT_ID = os.environ["GCP_PROJECT_ID"]
         config_module.SYSTEM_EVENTS_TOPIC = os.environ["SYSTEM_EVENTS_TOPIC"]
         config_module.MARKET_TICKS_TOPIC = os.environ["MARKET_TICKS_TOPIC"]
@@ -93,9 +103,6 @@ def ingestion_worker():
     last_effective_source: str | None = None
 
     while not SHUTDOWN_FLAG.is_set():
-        iteration_id = uuid.uuid4().hex
-        loop_log_extra = {**LOG_EXTRA, "iteration_id": iteration_id}
-
         try:
             # Combine the repo-wide kill switch with the operator ingest switch.
             effective_enabled, effective_source = get_effective_ingest_enabled_state(default_enabled=True)
