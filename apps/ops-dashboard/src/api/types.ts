@@ -1,2 +1,9 @@
-export * from "@agenttrader/shared-types/mission-control";
+export type {
+  Agent,
+  DeployReportResponse,
+  Event,
+  MissionControlAgentsResponse,
+  MissionControlEventsResponse,
+  OpsState,
+} from "@agenttrader/shared-types";
 

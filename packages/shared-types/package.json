@@ -1,0 +1,26 @@
+{
+  "name": "@agenttrader/shared-types",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared TypeScript contracts used across AgentTrader packages.",
+  "license": "UNLICENSED",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./mission-control": {
+      "types": "./dist/mission-control.d.ts",
+      "default": "./dist/mission-control.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  }
+}
