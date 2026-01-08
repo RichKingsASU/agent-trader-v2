@@ -4,7 +4,7 @@ import sys
 import requests
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from backend.common.env import get_alpaca_key_id, get_alpaca_secret_key  # noqa: E402
+from backend.config.alpaca_env import load_alpaca_env  # noqa: E402
 
 def main():
     """
@@ -13,17 +13,18 @@ def main():
     """
     # Cloud Shell-safe: rely on exported env vars / Secret Manager injection.
     try:
-        api_key = get_alpaca_key_id(required=True)
-        secret_key = get_alpaca_secret_key(required=True)
+        env = load_alpaca_env()
     except Exception:
-        print("ERROR: Missing Alpaca creds. Set ALPACA_KEY_ID and ALPACA_SECRET_KEY.")
+        print(
+            "ERROR: Missing Alpaca creds. Set APCA_API_KEY_ID, APCA_API_SECRET_KEY, and APCA_API_BASE_URL."
+        )
         exit(1)
 
     print("--> Checking Alpaca paper account status...")
     try:
         r = requests.get(
-            "https://paper-api.alpaca.markets/v2/account",
-            headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": secret_key},
+            f"{env.trading_base_v2}/account",
+            headers=env.auth_headers(),
             timeout=30,
         )
         r.raise_for_status()

@@ -175,8 +175,8 @@ The primary ingestion entrypoint is:
 **Environment variables (names only):**
 
 - **Alpaca**
-  - `ALPACA_KEY_ID`
-  - `ALPACA_SECRET_KEY`
+  - `APCA_API_KEY_ID`
+  - `APCA_API_SECRET_KEY`
   - `ALPACA_SYMBOLS` (comma-separated, e.g. `SPY,IWM,QQQ`)
   - `ALPACA_DATA_FEED` (`iex` or `sip`)
 - **Firebase / Firestore**

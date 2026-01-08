@@ -38,7 +38,7 @@ All components of the GEX (Gamma Exposure) Scraper have been successfully implem
 
 **Schedule**: Every 5 minutes (`*/5 * * * *`)
 
-**Secrets**: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`
+**Secrets**: `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`
 
 **Behavior**:
 1. Fetches option chains for SPY and QQQ
@@ -181,10 +181,10 @@ requests>=2.31.0       # HTTP requests for Alpaca API
 
 ```bash
 # Set Alpaca credentials as Cloud Function secrets
-firebase functions:secrets:set ALPACA_API_KEY
+firebase functions:secrets:set APCA_API_KEY_ID
 # Paste your Alpaca API key when prompted
 
-firebase functions:secrets:set ALPACA_SECRET_KEY
+firebase functions:secrets:set APCA_API_SECRET_KEY
 # Paste your Alpaca secret key when prompted
 ```
 

@@ -37,31 +37,13 @@ function getEnv(name, { required = false, defaultValue = undefined } = {}) {
   return defaultValue;
 }
 
-function resolveAlpacaKeyId() {
-  // Match backend/common/env.py: ALPACA_API_KEY preferred; ALPACA_KEY_ID back-compat.
-  return (
-    getEnv("ALPACA_API_KEY", { required: false }) ||
-    getEnv("ALPACA_KEY_ID", { required: false }) ||
-    ""
-  );
-}
-
-function resolveTradingHost() {
-  const raw = (getEnv("ALPACA_TRADING_HOST", { required: false }) || "").trim();
-  const host = raw || "https://paper-api.alpaca.markets";
-  return host.endsWith("/") ? host.slice(0, -1) : host;
-}
-
 async function syncAlpacaAccountImpl({ tenantIdOverride } = {}) {
   const tenantId = (tenantIdOverride || getEnv("TENANT_ID", { required: false }) || "local").trim() || "local";
 
-  const keyId = (resolveAlpacaKeyId() || "").trim();
-  const secretKey = (getEnv("ALPACA_SECRET_KEY", { required: true }) || "").trim();
-  if (!keyId) {
-    throw new Error("Missing required env var: ALPACA_API_KEY (or ALPACA_KEY_ID)");
-  }
-
-  const baseUrl = resolveTradingHost();
+  const keyId = (getEnv("APCA_API_KEY_ID", { required: true }) || "").trim();
+  const secretKey = (getEnv("APCA_API_SECRET_KEY", { required: true }) || "").trim();
+  const baseUrlRaw = (getEnv("APCA_API_BASE_URL", { required: true }) || "").trim();
+  const baseUrl = baseUrlRaw.endsWith("/") ? baseUrlRaw.slice(0, -1) : baseUrlRaw;
   const alpaca = new Alpaca({
     keyId,
     secretKey,
@@ -111,11 +93,9 @@ async function syncAlpacaAccountImpl({ tenantIdOverride } = {}) {
  * - Optionally supports `?tenant_id=<id>` for manual runs.
  *
  * Required env vars:
- * - ALPACA_API_KEY (preferred) or ALPACA_KEY_ID
- * - ALPACA_SECRET_KEY
- *
- * Optional env vars:
- * - ALPACA_TRADING_HOST (default: https://paper-api.alpaca.markets)
+ * - APCA_API_KEY_ID
+ * - APCA_API_SECRET_KEY
+ * - APCA_API_BASE_URL
  * - TENANT_ID (default: local)
  */
 exports.syncAlpacaAccount = functions.https.onRequest(async (req, res) => {

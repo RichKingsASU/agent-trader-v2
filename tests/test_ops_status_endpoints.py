@@ -20,29 +20,45 @@ def _get_route_endpoint(app, path: str):
 
 def _assert_minimal_contract(payload: dict):
     assert isinstance(payload, dict)
-    for k in ("uptime", "last_heartbeat", "data_freshness_seconds", "build_sha", "agent_mode"):
+    # Accept either legacy schema (flat) or v2 schema (ops/status_contract).
+    if "uptime" in payload:
+        for k in ("uptime", "last_heartbeat", "data_freshness_seconds", "build_sha", "agent_mode"):
+            assert k in payload
+
+        assert isinstance(payload["uptime"], (int, float))
+        assert payload["uptime"] >= 0
+
+        assert payload["last_heartbeat"] is None or isinstance(payload["last_heartbeat"], str)
+
+        assert payload["data_freshness_seconds"] is None or isinstance(payload["data_freshness_seconds"], (int, float))
+        if payload["data_freshness_seconds"] is not None:
+            assert payload["data_freshness_seconds"] >= 0
+
+        assert isinstance(payload["build_sha"], str)
+        assert payload["build_sha"] != ""
+
+        assert isinstance(payload["agent_mode"], str)
+        assert payload["agent_mode"] != ""
+        return
+
+    # v2
+    for k in ("service_name", "service_kind", "repo_id", "agent_identity", "status", "heartbeat", "safety"):
         assert k in payload
 
-    assert isinstance(payload["uptime"], (int, float))
-    assert payload["uptime"] >= 0
+    assert isinstance(payload["service_name"], str) and payload["service_name"]
+    assert isinstance(payload["service_kind"], str) and payload["service_kind"]
 
-    assert payload["last_heartbeat"] is None or isinstance(payload["last_heartbeat"], str)
-
-    assert payload["data_freshness_seconds"] is None or isinstance(payload["data_freshness_seconds"], (int, float))
-    if payload["data_freshness_seconds"] is not None:
-        assert payload["data_freshness_seconds"] >= 0
-
-    assert isinstance(payload["build_sha"], str)
-    assert payload["build_sha"] != ""
-
-    assert isinstance(payload["agent_mode"], str)
-    assert payload["agent_mode"] != ""
+    ai = payload["agent_identity"]
+    assert isinstance(ai, dict)
+    for k in ("agent_name", "agent_role", "agent_mode"):
+        assert k in ai and isinstance(ai[k], str) and ai[k]
 
 
 def test_marketdata_mcp_server_ops_status(monkeypatch):
     # Satisfy import-time streamer env contract.
-    monkeypatch.setenv("ALPACA_API_KEY", "test")
-    monkeypatch.setenv("ALPACA_SECRET_KEY", "test")
+    monkeypatch.setenv("APCA_API_KEY_ID", "test")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "test")
+    monkeypatch.setenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/testdb")
     monkeypatch.setenv("AGENT_MODE", "OBSERVE")
     monkeypatch.setenv("GIT_SHA", "deadbeef")

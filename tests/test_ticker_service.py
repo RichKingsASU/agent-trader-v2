@@ -2,7 +2,6 @@
 Tests for the ticker service real-time market data feed.
 """
 
-import os
 import pytest
 from unittest.mock import Mock, patch, AsyncMock
 
@@ -13,47 +12,16 @@ def test_ticker_service_import():
     assert ticker_service is not None
 
 
-def test_get_alpaca_credentials_success(monkeypatch):
-    """Test credential retrieval with valid environment variables."""
-    from functions.ticker_service import _get_alpaca_credentials
-    
-    monkeypatch.setenv("ALPACA_KEY_ID", "test_key_id")
-    monkeypatch.setenv("ALPACA_SECRET_KEY", "test_secret_key")
-    
-    creds = _get_alpaca_credentials()
-    
-    assert creds["key_id"] == "test_key_id"
-    assert creds["secret_key"] == "test_secret_key"
-    assert creds["base_url"] == "https://api.alpaca.markets"
+def test_ticker_service_missing_credentials_fails_fast(monkeypatch):
+    """TickerService should fail fast if APCA_* vars are missing."""
+    from functions.ticker_service import TickerService
 
-
-def test_get_alpaca_credentials_missing_key(monkeypatch):
-    """Test that missing credentials raise ValueError."""
-    from functions.ticker_service import _get_alpaca_credentials
-    
-    # Clear any existing credentials
-    monkeypatch.delenv("ALPACA_KEY_ID", raising=False)
-    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
     monkeypatch.delenv("APCA_API_KEY_ID", raising=False)
     monkeypatch.delenv("APCA_API_SECRET_KEY", raising=False)
-    
-    with pytest.raises(ValueError, match="Missing Alpaca credentials"):
-        _get_alpaca_credentials()
+    monkeypatch.delenv("APCA_API_BASE_URL", raising=False)
 
-
-def test_get_alpaca_credentials_with_apca_prefix(monkeypatch):
-    """Test credential retrieval with APCA_ prefixed environment variables."""
-    from functions.ticker_service import _get_alpaca_credentials
-    
-    monkeypatch.setenv("APCA_API_KEY_ID", "apca_key_id")
-    monkeypatch.setenv("APCA_API_SECRET_KEY", "apca_secret_key")
-    monkeypatch.setenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
-    
-    creds = _get_alpaca_credentials()
-    
-    assert creds["key_id"] == "apca_key_id"
-    assert creds["secret_key"] == "apca_secret_key"
-    assert creds["base_url"] == "https://paper-api.alpaca.markets"
+    with pytest.raises(RuntimeError, match="Missing required Alpaca env vars"):
+        _ = TickerService()
 
 
 def test_get_target_symbols_default():
@@ -101,40 +69,42 @@ def test_get_target_symbols_whitespace_handled(monkeypatch):
 
 
 @patch('functions.ticker_service._get_firestore')
-@patch('functions.ticker_service._get_alpaca_credentials')
-def test_ticker_service_initialization(mock_creds, mock_firestore, monkeypatch):
+@patch('functions.ticker_service.load_alpaca_env')
+def test_ticker_service_initialization(mock_load_env, mock_firestore, monkeypatch):
     """Test TickerService can be initialized."""
     from functions.ticker_service import TickerService
+    from backend.config.alpaca_env import AlpacaEnv
     
-    mock_creds.return_value = {
-        "key_id": "test_key",
-        "secret_key": "test_secret",
-        "base_url": "https://paper-api.alpaca.markets"
-    }
+    mock_load_env.return_value = AlpacaEnv(
+        key_id="test_key",
+        secret_key="test_secret",
+        base_url="https://paper-api.alpaca.markets",
+    )
     mock_firestore.return_value = Mock()
     monkeypatch.setenv("TICKER_SYMBOLS", "AAPL")
     
     service = TickerService()
     
     assert service.symbols == ["AAPL"]
-    assert service.credentials["key_id"] == "test_key"
+    assert service.credentials.key_id == "test_key"
     assert service.max_retries == 5
     assert service.retry_delay == 5
 
 
 @patch('functions.ticker_service._get_firestore')
-@patch('functions.ticker_service._get_alpaca_credentials')
+@patch('functions.ticker_service.load_alpaca_env')
 @pytest.mark.asyncio
-async def test_handle_bar(mock_creds, mock_firestore, monkeypatch):
+async def test_handle_bar(mock_load_env, mock_firestore, monkeypatch):
     """Test bar data handling and Firestore upsert."""
     from functions.ticker_service import TickerService
     from datetime import datetime, timezone
+    from backend.config.alpaca_env import AlpacaEnv
     
-    mock_creds.return_value = {
-        "key_id": "test_key",
-        "secret_key": "test_secret",
-        "base_url": "https://paper-api.alpaca.markets"
-    }
+    mock_load_env.return_value = AlpacaEnv(
+        key_id="test_key",
+        secret_key="test_secret",
+        base_url="https://paper-api.alpaca.markets",
+    )
     
     mock_db = Mock()
     mock_collection = Mock()
@@ -176,17 +146,18 @@ async def test_handle_bar(mock_creds, mock_firestore, monkeypatch):
 
 
 @patch('functions.ticker_service._get_firestore')
-@patch('functions.ticker_service._get_alpaca_credentials')
+@patch('functions.ticker_service.load_alpaca_env')
 @pytest.mark.asyncio
-async def test_handle_bar_with_dict_format(mock_creds, mock_firestore, monkeypatch):
+async def test_handle_bar_with_dict_format(mock_load_env, mock_firestore, monkeypatch):
     """Test bar data handling with dictionary format (alternative bar format)."""
     from functions.ticker_service import TickerService
+    from backend.config.alpaca_env import AlpacaEnv
     
-    mock_creds.return_value = {
-        "key_id": "test_key",
-        "secret_key": "test_secret",
-        "base_url": "https://paper-api.alpaca.markets"
-    }
+    mock_load_env.return_value = AlpacaEnv(
+        key_id="test_key",
+        secret_key="test_secret",
+        base_url="https://paper-api.alpaca.markets",
+    )
     
     mock_db = Mock()
     mock_collection = Mock()
@@ -219,17 +190,18 @@ async def test_handle_bar_with_dict_format(mock_creds, mock_firestore, monkeypat
 
 
 @patch('functions.ticker_service._get_firestore')
-@patch('functions.ticker_service._get_alpaca_credentials')
+@patch('functions.ticker_service.load_alpaca_env')
 @pytest.mark.asyncio
-async def test_stop_service(mock_creds, mock_firestore, monkeypatch):
+async def test_stop_service(mock_load_env, mock_firestore, monkeypatch):
     """Test service can be stopped gracefully."""
     from functions.ticker_service import TickerService
+    from backend.config.alpaca_env import AlpacaEnv
     
-    mock_creds.return_value = {
-        "key_id": "test_key",
-        "secret_key": "test_secret",
-        "base_url": "https://paper-api.alpaca.markets"
-    }
+    mock_load_env.return_value = AlpacaEnv(
+        key_id="test_key",
+        secret_key="test_secret",
+        base_url="https://paper-api.alpaca.markets",
+    )
     mock_firestore.return_value = Mock()
     monkeypatch.setenv("TICKER_SYMBOLS", "AAPL")
     

@@ -14,7 +14,7 @@ The main service that:
 - Supports configurable ticker symbols (default: AAPL, NVDA, TSLA)
 - Upserts data to Firestore `marketData` collection keyed by ticker symbol
 - Implements robust connection retry logic with exponential backoff (5 retries, up to 60s delay)
-- Uses `ALPACA_KEY_ID` and `ALPACA_SECRET_KEY` from environment variables
+- Uses `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` from environment variables
 - Includes comprehensive error handling and logging
 - Gracefully handles both object and dictionary bar formats
 - Provides async API for integration with other services
@@ -108,8 +108,8 @@ Demonstrates 8 different usage patterns:
    - Delay: 5s, 10s, 20s, 40s, 60s (capped)
    - Automatic reconnection on connection drop
 
-✅ **Use existing ALPACA_KEY_ID from environment variables**
-   - Supports `ALPACA_KEY_ID` and `ALPACA_SECRET_KEY`
+✅ **Use existing APCA_API_KEY_ID from environment variables**
+   - Supports `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY`
    - Also supports `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` (fallback)
    - Raises clear error if credentials are missing
 
@@ -163,20 +163,20 @@ Document Structure:
 ## Configuration
 
 ### Required Environment Variables
-- `ALPACA_KEY_ID`: Alpaca API key ID
-- `ALPACA_SECRET_KEY`: Alpaca API secret key
+- `APCA_API_KEY_ID`: Alpaca API key ID
+- `APCA_API_SECRET_KEY`: Alpaca API secret key
 
 ### Optional Environment Variables
 - `TICKER_SYMBOLS`: Comma-separated ticker list (default: "AAPL,NVDA,TSLA")
 - `APCA_API_BASE_URL`: Alpaca API URL (default: "https://api.alpaca.markets")
-- `ALPACA_API_BASE_URL`: Alternative API URL env var
+- `APCA_API_BASE_URL`: Alternative API URL env var
 
 ## Deployment Options
 
 ### Option 1: Standalone Process
 ```bash
-export ALPACA_KEY_ID=your_key
-export ALPACA_SECRET_KEY=your_secret
+export APCA_API_KEY_ID=your_key
+export APCA_API_SECRET_KEY=your_secret
 python -m functions.ticker_service
 ```
 
@@ -275,8 +275,8 @@ To use the ticker service:
 
 1. **Set up credentials**:
    ```bash
-   export ALPACA_KEY_ID=your_key_id
-   export ALPACA_SECRET_KEY=your_secret_key
+   export APCA_API_KEY_ID=your_key_id
+   export APCA_API_SECRET_KEY=your_secret_key
    ```
 
 2. **Optional: Configure symbols**:

@@ -51,9 +51,10 @@ def _format_requirement(req: EnvRequirement) -> str:
 REQUIRED_ENV_BY_SERVICE: dict[str, list[EnvRequirement]] = {
     # Serves marketdata MCP endpoints and runs Alpaca streamer background task.
     "marketdata-mcp-server": [
-        # Alpaca credentials (support both repo-standard and alpaca-trade-api env names).
-        ("ALPACA_API_KEY", "ALPACA_KEY_ID", "APCA_API_KEY_ID"),
-        ("ALPACA_SECRET_KEY", "APCA_API_SECRET_KEY"),
+        # Alpaca credentials (official Alpaca SDK env names).
+        "APCA_API_KEY_ID",
+        "APCA_API_SECRET_KEY",
+        "APCA_API_BASE_URL",
         # Streamer persistence target.
         "DATABASE_URL",
     ],

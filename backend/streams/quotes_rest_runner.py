@@ -18,27 +18,25 @@ logger = logging.getLogger(__name__)
 DB_URL = os.getenv("DATABASE_URL")
 if not DB_URL:
     raise RuntimeError("Missing required env var: DATABASE_URL")
-alpaca = load_alpaca_env(require_keys=False)
+alpaca = load_alpaca_env()
 ALPACA_KEY = alpaca.key_id
 ALPACA_SEC = alpaca.secret_key
 SYMBOLS = os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ").split(",")
 FEED = os.getenv("ALPACA_FEED", "iex")
-ALPACA_HOST = alpaca.data_host
+ALPACA_HOST = "https://data.alpaca.markets"
 
 session = requests.Session()
-if ALPACA_KEY and ALPACA_SEC:
-    session.headers.update({
+session.headers.update(
+    {
         "APCA-API-KEY-ID": ALPACA_KEY,
         "APCA-API-SECRET-KEY": ALPACA_SEC,
-    })
+    }
+)
 # --- End Standard Header ---
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(5))
 def fetch_latest_bar(sym: str) -> Optional[Dict[str, Any]]:
     """Fetch the latest 1-minute bar for `sym` from Alpaca."""
-    if not (ALPACA_KEY and ALPACA_SEC):
-        logger.warning("ALPACA credentials not set — skipping fetch for %s", sym)
-        return None
     try:
         url = f"{ALPACA_HOST}/v2/stocks/{sym}/bars"
         params = {"timeframe": "1Min", "limit": 1, "feed": FEED, "adjustment": "all"}

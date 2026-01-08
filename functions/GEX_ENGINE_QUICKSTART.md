@@ -238,8 +238,8 @@ import alpaca_trade_api as tradeapi
 import os
 
 api = tradeapi.REST(
-    key_id=os.getenv("ALPACA_KEY_ID"),
-    secret_key=os.getenv("ALPACA_SECRET_KEY"),
+    key_id=os.getenv("APCA_API_KEY_ID"),
+    secret_key=os.getenv("APCA_API_SECRET_KEY"),
     base_url="https://paper-api.alpaca.markets"
 )
 

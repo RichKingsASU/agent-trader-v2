@@ -82,8 +82,8 @@ All signals are logged to:
 
 ```bash
 # Required
-ALPACA_API_KEY=<your-alpaca-key>
-ALPACA_SECRET_KEY=<your-alpaca-secret>
+APCA_API_KEY_ID=<your-alpaca-key>
+APCA_API_SECRET_KEY=<your-alpaca-secret>
 FIREBASE_PROJECT_ID=<your-gcp-project>
 DATABASE_URL=<postgresql-connection-string>
 
@@ -419,8 +419,8 @@ def test_strategy(mock_analyze):
 **Solution**:
 ```bash
 # Verify credentials
-echo $ALPACA_API_KEY
-echo $ALPACA_SECRET_KEY
+echo $APCA_API_KEY_ID
+echo $APCA_API_SECRET_KEY
 
 # Test news API directly
 python -c "from backend.strategy_engine.news_fetcher import fetch_news_by_symbol; print(fetch_news_by_symbol('SPY', 1))"

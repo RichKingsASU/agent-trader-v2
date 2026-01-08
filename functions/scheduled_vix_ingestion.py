@@ -16,6 +16,8 @@ from firebase_admin import firestore
 from firebase_functions import scheduler_fn, options
 import alpaca_trade_api as tradeapi
 
+from alpaca_env import load_alpaca_env
+
 # Import VIX ingestion service from backend
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -38,25 +40,14 @@ def _get_alpaca_client() -> tradeapi.REST:
     
     Note: In production, these should be stored as Cloud Function secrets.
     """
-    api_key = os.environ.get("ALPACA_API_KEY")
-    api_secret = os.environ.get("ALPACA_SECRET_KEY")
-    base_url = os.environ.get("ALPACA_BASE_URL", "https://api.alpaca.markets")
-    
-    if not api_key or not api_secret:
-        logger.warning("Alpaca credentials not configured, VIX ingestion may fail")
-        return None
-    
-    return tradeapi.REST(
-        key_id=api_key,
-        secret_key=api_secret,
-        base_url=base_url,
-    )
+    env = load_alpaca_env()
+    return tradeapi.REST(key_id=env.key_id, secret_key=env.secret_key, base_url=env.base_url)
 
 
 @scheduler_fn.on_schedule(
     schedule="*/5 * * * *",  # Every 5 minutes
     timezone="America/New_York",
-    secrets=["ALPACA_API_KEY", "ALPACA_SECRET_KEY"],
+    secrets=["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"],
     memory=options.MemoryOption.MB_256,
 )
 def ingest_vix_data(event: scheduler_fn.ScheduledEvent) -> None:

@@ -18,11 +18,11 @@ Fail-fast:
 - If total upserts == 0, exit non-zero.
 
 Env required:
-- ALPACA_KEY_ID, ALPACA_SECRET_KEY
+- APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL
 - DATABASE_URL
 
 Env read:
-- ALPACA_SYMBOLS, OPTION_DTE_MAX, OPTION_STRIKE_WINDOW, ALPACA_FEED, ALPACA_PAPER, DATABASE_URL
+- ALPACA_SYMBOLS, OPTION_DTE_MAX, OPTION_STRIKE_WINDOW, ALPACA_FEED, DATABASE_URL
 
 Notes:
 - Uses Alpaca options contracts endpoint to discover symbols, then requests snapshots for those option symbols.
@@ -47,11 +47,6 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import requests
 
 # Task requirements: contracts from trading base; snapshots from Alpaca data host.
-TRADING_BASE = (
-    "https://paper-api.alpaca.markets"
-    if str(os.getenv("ALPACA_PAPER", "true")).lower() == "true"
-    else "https://api.alpaca.markets"
-)
 DATA_BASE = "https://data.alpaca.markets"
 
 from backend.common.agent_boot import configure_startup_logging
@@ -72,7 +67,6 @@ class WindowConfig:
     dte_max: int
     strike_window: float
     options_feed: str
-    alpaca_paper: Optional[bool]
 
 
 def _json_safe(v: Any) -> Any:
@@ -198,7 +192,7 @@ def fetch_option_contracts(
 ) -> List[Dict[str, Any]]:
     """Fetch option contracts for an underlying within expiration date window."""
 
-    # Task requirement: fetch contracts from TRADING_BASE using /v2/options/contracts
+    # Task requirement: fetch contracts from trading base using /v2/options/contracts
     url = f"{trading_host.rstrip('/')}/v2/options/contracts"
 
     page_token: Optional[str] = None
@@ -517,14 +511,11 @@ def load_config() -> WindowConfig:
     # Alpaca options feed (e.g., 'indicative' or 'opra').
     options_feed = str(get_env("ALPACA_FEED", "indicative")).strip().lower()
 
-    alpaca_paper = _parse_bool(os.getenv("ALPACA_PAPER"))
-
     return WindowConfig(
         symbols=symbols,
         dte_max=dte_max,
         strike_window=strike_window,
         options_feed=options_feed,
-        alpaca_paper=alpaca_paper,
     )
 
 
@@ -569,12 +560,11 @@ def main() -> int:
     inserted_at = snapshot_time
 
     logger.info(
-        "Starting alpaca_option_window_ingest symbols=%s dte_max=%s strike_window=%s options_feed=%s alpaca_paper=%s",
+        "Starting alpaca_option_window_ingest symbols=%s dte_max=%s strike_window=%s options_feed=%s",
         ",".join(cfg.symbols),
         cfg.dte_max,
         cfg.strike_window,
         cfg.options_feed,
-        cfg.alpaca_paper,
     )
 
     total_expirations = 0
@@ -597,7 +587,7 @@ def main() -> int:
             )
 
             contracts = fetch_option_contracts(
-                trading_host=TRADING_BASE,
+                trading_host=alpaca.base_url,
                 headers=hdrs,
                 underlying=underlying,
                 exp_gte=today,

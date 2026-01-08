@@ -25,15 +25,21 @@ echo "Model: $VERTEX_AI_MODEL_ID"
 echo ""
 
 # Check required env vars
-if [ -z "$ALPACA_API_KEY" ]; then
-    echo "ERROR: ALPACA_API_KEY not set"
-    echo "Please set: export ALPACA_API_KEY=your-key"
+if [ -z "$APCA_API_KEY_ID" ]; then
+    echo "ERROR: APCA_API_KEY_ID not set"
+    echo "Please set: export APCA_API_KEY_ID=your-key-id"
     exit 1
 fi
 
-if [ -z "$ALPACA_SECRET_KEY" ]; then
-    echo "ERROR: ALPACA_SECRET_KEY not set"
-    echo "Please set: export ALPACA_SECRET_KEY=your-secret"
+if [ -z "$APCA_API_SECRET_KEY" ]; then
+    echo "ERROR: APCA_API_SECRET_KEY not set"
+    echo "Please set: export APCA_API_SECRET_KEY=your-secret-key"
+    exit 1
+fi
+
+if [ -z "$APCA_API_BASE_URL" ]; then
+    echo "ERROR: APCA_API_BASE_URL not set"
+    echo "Please set: export APCA_API_BASE_URL=https://paper-api.alpaca.markets"
     exit 1
 fi
 

@@ -433,7 +433,7 @@ Secret payload should be JSON:
 ```json
 {
   "key_id": "ALPACA_API_KEY_ID",
-  "secret_key": "ALPACA_SECRET_KEY"
+  "secret_key": "APCA_API_SECRET_KEY"
 }
 ```
 

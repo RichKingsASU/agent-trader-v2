@@ -245,8 +245,8 @@ tradeHistory/
 
 📋 Backend
    ☐ 1. Deploy function: firebase deploy --only functions:execute_trade
-   ☐ 2. Set secrets: firebase functions:secrets:set ALPACA_KEY_ID
-   ☐ 3. Set secrets: firebase functions:secrets:set ALPACA_SECRET_KEY
+   ☐ 2. Set secrets: firebase functions:secrets:set APCA_API_KEY_ID
+   ☐ 3. Set secrets: firebase functions:secrets:set APCA_API_SECRET_KEY
    ☐ 4. Create trading gate: systemStatus/trading_gate = {trading_enabled: false}
 
 📋 Frontend

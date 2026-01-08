@@ -52,8 +52,8 @@ try:
     if not DB_URL:
         raise KeyError("DATABASE_URL")
     SYMBOLS = [s.strip() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ").split(",") if s.strip()]
-except KeyError as e:
-    logging.error(f"FATAL: Missing required environment variable: {e}")
+except (KeyError, RuntimeError) as e:
+    logging.error(f"FATAL: Missing required environment variable(s): {e}")
     exit(1)
 
 _batch_last_log_ts = 0.0

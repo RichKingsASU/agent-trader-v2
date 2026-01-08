@@ -5,6 +5,7 @@ from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.common.exceptions import APIError
 from dotenv import load_dotenv
+from backend.config.alpaca_env import load_alpaca_env
 
 def main():
     """
@@ -13,16 +14,11 @@ def main():
     dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env.local')
     load_dotenv(dotenv_path=dotenv_path)
 
-    api_key = os.getenv("ALPACA_KEY_ID")
-    secret_key = os.getenv("ALPACA_SECRET_KEY")
-
-    if not api_key or not secret_key:
-        print("ERROR: ALPACA_KEY_ID and ALPACA_SECRET_KEY must be set in .env.local.")
-        exit(1)
+    env = load_alpaca_env()
 
     print("--> Placing test order: SPY BUY 1 Qty")
     try:
-        trading_client = TradingClient(api_key, secret_key, paper=True)
+        trading_client = TradingClient(env.key_id, env.secret_key, paper=True)
         market_order_data = MarketOrderRequest(
             symbol="SPY",
             qty=1,

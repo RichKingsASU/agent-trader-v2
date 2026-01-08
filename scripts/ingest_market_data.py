@@ -26,7 +26,7 @@ def main():
     symbols_str = os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ")
     symbols = [s.strip() for s in symbols_str.split(',')]
     feed = os.getenv("ALPACA_FEED", "iex")
-    data_base = os.getenv("ALPACA_DATA_HOST", "https://data.alpaca.markets").rstrip("/")
+    data_base = "https://data.alpaca.markets"
 
     print(f"[{dt.datetime.now().isoformat()}] Starting 1-minute bar ingestion for: {symbols}")
 

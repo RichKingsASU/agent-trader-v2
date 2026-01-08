@@ -8,8 +8,9 @@ This script demonstrates how to:
 
 Usage:
     # Set environment variables
-    export ALPACA_KEY_ID="your_key_id"
-    export ALPACA_SECRET_KEY="your_secret_key"
+    export APCA_API_KEY_ID="your_key_id"
+    export APCA_API_SECRET_KEY="your_secret_key"
+    export APCA_API_BASE_URL="https://paper-api.alpaca.markets"
     
     # Run the example
     python functions/example_gex_usage.py
@@ -34,16 +35,17 @@ def main():
     print()
     
     # Initialize Alpaca API client
-    key_id = os.getenv("ALPACA_KEY_ID")
-    secret_key = os.getenv("ALPACA_SECRET_KEY")
-    base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    key_id = os.getenv("APCA_API_KEY_ID")
+    secret_key = os.getenv("APCA_API_SECRET_KEY")
+    base_url = os.getenv("APCA_API_BASE_URL")
     
     if not key_id or not secret_key:
-        print("ERROR: Please set ALPACA_KEY_ID and ALPACA_SECRET_KEY environment variables")
+        print("ERROR: Please set APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables")
         print()
         print("Example:")
-        print("  export ALPACA_KEY_ID='your_key_id'")
-        print("  export ALPACA_SECRET_KEY='your_secret_key'")
+        print("  export APCA_API_KEY_ID='your_key_id'")
+        print("  export APCA_API_SECRET_KEY='your_secret_key'")
+        print("  export APCA_API_BASE_URL='https://paper-api.alpaca.markets'")
         sys.exit(1)
     
     print(f"Connecting to Alpaca API: {base_url}")

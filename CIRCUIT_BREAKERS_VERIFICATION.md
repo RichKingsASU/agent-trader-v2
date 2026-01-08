@@ -234,8 +234,8 @@ pytest tests/test_circuit_breakers.py -v
 
 2. **Set Secrets**:
    ```bash
-   firebase functions:secrets:set ALPACA_API_KEY
-   firebase functions:secrets:set ALPACA_SECRET_KEY
+   firebase functions:secrets:set APCA_API_KEY_ID
+   firebase functions:secrets:set APCA_API_SECRET_KEY
    ```
 
 3. **Update Strategy Code**:

@@ -17,44 +17,14 @@ from firebase_admin import firestore
 
 logger = logging.getLogger(__name__)
 
+from alpaca_env import load_alpaca_env
+
 
 def _get_firestore() -> firestore.Client:
     """Initialize and return Firestore client."""
     if not firebase_admin._apps:
         firebase_admin.initialize_app()
     return firestore.client()
-
-
-def _get_alpaca_credentials() -> Dict[str, str]:
-    """
-    Retrieve Alpaca credentials from environment variables.
-    
-    Returns:
-        Dictionary with key_id, secret_key, and base_url.
-        
-    Raises:
-        ValueError: If required credentials are missing.
-    """
-    key_id = os.environ.get("ALPACA_KEY_ID") or os.environ.get("APCA_API_KEY_ID")
-    secret_key = os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("APCA_API_SECRET_KEY")
-    
-    if not key_id or not secret_key:
-        raise ValueError(
-            "Missing Alpaca credentials. Set ALPACA_KEY_ID/ALPACA_SECRET_KEY "
-            "or APCA_API_KEY_ID/APCA_API_SECRET_KEY."
-        )
-    
-    base_url = (
-        os.environ.get("APCA_API_BASE_URL")
-        or os.environ.get("ALPACA_API_BASE_URL")
-        or "https://api.alpaca.markets"
-    )
-    
-    return {
-        "key_id": key_id,
-        "secret_key": secret_key,
-        "base_url": base_url,
-    }
 
 
 def _get_target_symbols() -> List[str]:
@@ -75,7 +45,7 @@ class TickerService:
     """
     
     def __init__(self):
-        self.credentials = _get_alpaca_credentials()
+        self.credentials = load_alpaca_env()
         self.symbols = _get_target_symbols()
         self.db = _get_firestore()
         self.conn = None
@@ -147,9 +117,9 @@ class TickerService:
                 
                 # Create WebSocket connection
                 self.conn = tradeapi.Stream(
-                    key_id=self.credentials["key_id"],
-                    secret_key=self.credentials["secret_key"],
-                    base_url=self.credentials["base_url"],
+                    key_id=self.credentials.key_id,
+                    secret_key=self.credentials.secret_key,
+                    base_url=self.credentials.base_url,
                     data_feed="iex",  # Use IEX feed for real-time data
                 )
                 
@@ -248,8 +218,9 @@ if __name__ == "__main__":
     Run the service standalone for testing.
     
     Usage:
-        export ALPACA_KEY_ID=your_key_id
-        export ALPACA_SECRET_KEY=your_secret_key
+        export APCA_API_KEY_ID=your_key_id
+        export APCA_API_SECRET_KEY=your_secret_key
+        export APCA_API_BASE_URL=https://paper-api.alpaca.markets
         export TICKER_SYMBOLS=AAPL,NVDA,TSLA  # Optional
         python ticker_service.py
     """

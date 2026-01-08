@@ -185,8 +185,8 @@ Display Success/Error in ExecutionPanel
 ### Backend Deployment
 - [ ] Install dependencies: `pip install -r functions/requirements.txt`
 - [ ] Deploy function: `firebase deploy --only functions:execute_trade`
-- [ ] Set Alpaca secrets: `firebase functions:secrets:set ALPACA_KEY_ID`
-- [ ] Set Alpaca secrets: `firebase functions:secrets:set ALPACA_SECRET_KEY`
+- [ ] Set Alpaca secrets: `firebase functions:secrets:set APCA_API_KEY_ID`
+- [ ] Set Alpaca secrets: `firebase functions:secrets:set APCA_API_SECRET_KEY`
 - [ ] Create trading gate: `systemStatus/trading_gate.trading_enabled = false`
 
 ### Frontend Deployment

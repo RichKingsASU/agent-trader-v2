@@ -339,9 +339,9 @@ firebase-functions>=0.4.0
 
 ```bash
 # Alpaca credentials (required)
-ALPACA_KEY_ID=your_key_id
-ALPACA_SECRET_KEY=your_secret_key
-ALPACA_API_BASE_URL=https://paper-api.alpaca.markets  # For paper trading
+APCA_API_KEY_ID=your_key_id
+APCA_API_SECRET_KEY=your_secret_key
+APCA_API_BASE_URL=https://paper-api.alpaca.markets  # For paper trading
 
 # Or alternative names
 APCA_API_KEY_ID=your_key_id
@@ -361,8 +361,8 @@ firebase deploy --only functions
 firebase deploy --only functions:execute_trade
 
 # Set secrets (if using Secret Manager)
-firebase functions:secrets:set ALPACA_KEY_ID
-firebase functions:secrets:set ALPACA_SECRET_KEY
+firebase functions:secrets:set APCA_API_KEY_ID
+firebase functions:secrets:set APCA_API_SECRET_KEY
 ```
 
 ### Frontend Build

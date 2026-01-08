@@ -59,8 +59,8 @@ Notes:
 - **Tenant scoping**
   - `TENANT_ID` (preferred) or `FIRESTORE_TENANT_ID`
 - **Alpaca**
-  - `ALPACA_KEY_ID` (or `ALPACA_API_KEY`)
-  - `ALPACA_SECRET_KEY`
+  - `APCA_API_KEY_ID` (or `APCA_API_KEY_ID`)
+  - `APCA_API_SECRET_KEY`
   - `MONITORED_SYMBOLS` (comma-separated; default `SPY`)
   - `ALPACA_DATA_FEED` (`iex` or `sip`, default `iex`)
 - **Firestore / Firebase Admin (ADC)**

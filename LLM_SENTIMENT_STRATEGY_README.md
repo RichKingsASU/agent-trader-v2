@@ -34,8 +34,8 @@ Alpaca News API → Gemini 1.5 Flash → Trading Signal → Firestore Dashboard
 ### 1. Set Environment Variables
 
 ```bash
-export ALPACA_API_KEY="your-alpaca-key"
-export ALPACA_SECRET_KEY="your-alpaca-secret"
+export APCA_API_KEY_ID="your-alpaca-key"
+export APCA_API_SECRET_KEY="your-alpaca-secret"
 export FIREBASE_PROJECT_ID="your-gcp-project"
 export DATABASE_URL="postgresql://..."
 ```
