@@ -4,8 +4,8 @@ import json
 import logging
 import os
 import uuid
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass, field, is_dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Protocol, runtime_checkable
 
 import requests
@@ -18,7 +18,10 @@ from backend.common.kill_switch import (
     is_kill_switch_enabled,
     require_live_mode as require_kill_switch_off,
 )
+from backend.common.runtime_execution_prevention import fatal_if_execution_reached
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
+from backend.common.freshness import check_freshness
+from backend.time.nyse_time import parse_ts
 from backend.streams.alpaca_env import load_alpaca_env
 
 logger = logging.getLogger(__name__)
@@ -47,9 +50,129 @@ def _to_jsonable(value: Any) -> Any:
         return [_to_jsonable(v) for v in value]
     if isinstance(value, dict):
         return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if is_dataclass(value):
+        # Works for slots=True dataclasses as well.
+        return _to_jsonable(asdict(value))
     if hasattr(value, "__dict__"):
         return _to_jsonable(vars(value))
     return str(value)
+
+
+class PreTradeAssertionError(RuntimeError):
+    """
+    Raised when a pre-trade assertion fails.
+
+    Contract:
+    - MUST be treated as fatal for the intent (do not place the order).
+    - Callers should emit CRITICAL logs and propagate (do not swallow).
+    """
+
+
+class PostTradeAssertionError(RuntimeError):
+    """
+    Raised when a post-trade assertion fails (order already submitted or filled).
+
+    Contract:
+    - MUST be treated as a critical incident.
+    - Engine should attempt a best-effort safe abort (cancel) if possible.
+    - Callers should emit CRITICAL logs and propagate (do not swallow).
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class _CapitalSnapshot:
+    source_path: str
+    updated_at_utc: datetime | None
+    equity: float
+    cash: float
+    buying_power: float
+
+
+class _FirestoreCapitalProvider:
+    """
+    Reads the most recent account snapshot from Firestore.
+
+    Paths (in order):
+    - users/{uid}/alpacaAccounts/snapshot
+    - tenants/{tenant_id}/accounts/primary
+    - alpacaAccounts/snapshot  (global warm cache)
+
+    Fail-closed:
+    - any read/parsing error should raise (caller decides policy).
+    """
+
+    def __init__(self):
+        from backend.persistence.firebase_client import get_firestore_client
+
+        self._db = get_firestore_client()
+
+    def _read_doc(self, *, path_parts: list[str]) -> tuple[str, dict[str, Any] | None]:
+        if len(path_parts) % 2 != 0:
+            raise ValueError(f"invalid firestore doc path parts: {path_parts!r}")
+        ref = self._db
+        # Walk alternating collection/document segments.
+        for i in range(0, len(path_parts), 2):
+            ref = ref.collection(path_parts[i]).document(path_parts[i + 1])
+        snap = ref.get()
+        if not snap.exists:
+            return ("/".join(path_parts), None)
+        return ("/".join(path_parts), snap.to_dict() or {})
+
+    def get_capital_snapshot(self, *, intent: "OrderIntent") -> _CapitalSnapshot:
+        uid = str(intent.metadata.get("uid") or "").strip() or None
+        tenant_id = str(intent.metadata.get("tenant_id") or os.getenv("EXEC_TENANT_ID") or "").strip() or None
+
+        # Optional explicit override path.
+        override = str(intent.metadata.get("account_snapshot_path") or "").strip().strip("/")
+        candidates: list[list[str]] = []
+        if override:
+            candidates.append(override.split("/"))
+        if uid:
+            candidates.append(["users", uid, "alpacaAccounts", "snapshot"])
+        if tenant_id:
+            candidates.append(["tenants", tenant_id, "accounts", "primary"])
+        candidates.append(["alpacaAccounts", "snapshot"])
+
+        last_path = None
+        last = None
+        for parts in candidates:
+            p, data = self._read_doc(path_parts=parts)
+            last_path = p
+            last = data
+            if data is not None:
+                break
+        if last is None:
+            raise PreTradeAssertionError(f"capital_snapshot_missing path={last_path}")
+
+        def _as_float(v: Any) -> float:
+            if v is None:
+                return 0.0
+            if isinstance(v, (int, float)):
+                return float(v)
+            if isinstance(v, str):
+                s = v.strip()
+                if not s:
+                    return 0.0
+                return float(s)
+            raise TypeError(f"unexpected numeric type: {type(v).__name__}")
+
+        # updated_at may be Firestore timestamp, datetime, or ISO string.
+        updated_at = None
+        for k in ("updated_at", "updated_at_iso", "ts", "timestamp"):
+            if k in last and last.get(k) is not None:
+                try:
+                    updated_at = parse_ts(last.get(k))
+                except Exception:
+                    updated_at = None
+                break
+
+        return _CapitalSnapshot(
+            source_path=str(last_path or "unknown"),
+            updated_at_utc=updated_at.astimezone(timezone.utc) if isinstance(updated_at, datetime) else None,
+            equity=_as_float(last.get("equity")),
+            cash=_as_float(last.get("cash")),
+            buying_power=_as_float(last.get("buying_power")),
+        )
 
 
 @dataclass(frozen=True)
@@ -807,6 +930,7 @@ class ExecutionEngine:
             str(get_env("EXEC_DRY_RUN", "1")).strip().lower() in {"1", "true", "yes", "on"}
         )
         self._enable_smart_routing = enable_smart_routing
+        self._capital_provider: _FirestoreCapitalProvider | None = None
 
         # Replay marker: engine constructed (startup-ish for this component).
         try:
@@ -1060,8 +1184,16 @@ class ExecutionEngine:
                 message="kill_switch_enabled",
             )
 
+        # --- Pre-trade assertions (fatal; do not swallow) ---
+        # These are intentionally AFTER agent mode + kill switch checks so tests and
+        # non-live modes don't trigger external IO / config requirements.
+        pre = self._assert_pre_trade(intent=intent, trace_id=trace_id)
+
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None
+        self._assert_post_trade_order_response(
+            intent=intent, broker_order=broker_order, broker_order_id=broker_order_id, trace_id=trace_id
+        )
         logger.info(
             "exec.order_placed %s",
             json.dumps(_to_jsonable({"broker": self._broker_name, "broker_order_id": broker_order_id, "order": broker_order})),
@@ -1094,14 +1226,20 @@ class ExecutionEngine:
             pass
 
         # If immediately filled (or partially filled), write to ledger AND portfolio history.
-        try:
-            status = str(broker_order.get("status") or "").lower()
-            filled_qty = float(broker_order.get("filled_qty") or 0.0)
-            if status in {"filled", "partially_filled"} or filled_qty > 0:
-                self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
-                self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
-        except Exception as e:
-            logger.exception("exec.ledger_write_failed: %s", e)
+        status = str(broker_order.get("status") or "").lower()
+        filled_qty = float(broker_order.get("filled_qty") or 0.0)
+        if status in {"filled", "partially_filled"} or filled_qty > 0:
+            # Post-trade assertions MUST run against actual fill quantities/prices.
+            self._assert_post_trade_fill_and_reconcile(
+                intent=intent,
+                broker_order=broker_order,
+                broker_order_id=broker_order_id,
+                pre=pre,
+                trace_id=trace_id,
+            )
+            # Ledger + history writes are not optional for correctness; failure is fatal.
+            self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
+            self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
 
         return ExecutionResult(
             status="placed",
@@ -1174,6 +1312,350 @@ class ExecutionEngine:
             self._write_portfolio_history(intent=intent, broker_order=order, fill=order)
         return order
 
+    @dataclass(frozen=True, slots=True)
+    class _PreTradeState:
+        """
+        Captures what we validated pre-trade so post-trade reconciliation can be based
+        on the *actual fill* without relying on asynchronous account snapshot updates.
+        """
+
+        capital: _CapitalSnapshot
+        estimated_price: float
+        estimated_notional: float
+        capital_available: float
+        marketdata: dict[str, Any]
+
+    def _critical(self, event: str, *, payload: dict[str, Any]) -> None:
+        # Ensure CRITICAL logging cannot crash the process.
+        try:
+            logger.critical("%s %s", event, json.dumps(_to_jsonable(payload)))
+        except Exception:
+            logger.critical("%s (payload_unserializable)", event)
+
+    def _env_float(self, name: str, default: float | None = None) -> float | None:
+        v = os.getenv(name)
+        if v is None or str(v).strip() == "":
+            return default
+        return float(v)
+
+    def _env_int(self, name: str, default: int) -> int:
+        v = os.getenv(name)
+        if v is None or str(v).strip() == "":
+            return int(default)
+        return int(v)
+
+    def _market_quote_strict(self, *, intent: OrderIntent) -> dict[str, Any]:
+        provider = MarketDataProvider()
+        quote = provider.get_quote(symbol=intent.symbol, asset_class=intent.asset_class)
+        if quote.get("error"):
+            raise PreTradeAssertionError(f"marketdata_quote_unavailable error={quote.get('error')}")
+        mid = float(quote.get("mid_price") or 0.0)
+        bid = float(quote.get("bid") or 0.0)
+        ask = float(quote.get("ask") or 0.0)
+        if mid <= 0.0 and bid <= 0.0 and ask <= 0.0:
+            raise PreTradeAssertionError("marketdata_quote_invalid_zero_prices")
+        return quote
+
+    def _assert_pre_trade(self, *, intent: OrderIntent, trace_id: str | None) -> _PreTradeState:
+        """
+        Pre-trade assertions (fatal).
+
+        Requirements:
+        - capital available
+        - risk bounds (notional bounds beyond RiskManager structural checks)
+        - data freshness
+        """
+        # ---- Data freshness (market ingest heartbeat) ----
+        stale_s = self._env_int("MARKETDATA_STALE_THRESHOLD_S", 120)
+        tenant_id = str(intent.metadata.get("tenant_id") or os.getenv("EXEC_TENANT_ID") or "").strip() or None
+        from backend.execution.marketdata_health import check_market_ingest_heartbeat
+
+        hb = check_market_ingest_heartbeat(tenant_id=tenant_id, stale_threshold_seconds=stale_s)
+        if hb.is_stale:
+            payload = {
+                "reason": "marketdata_stale",
+                "tenant_id": tenant_id,
+                "heartbeat": _to_jsonable(hb),
+                "intent": _to_jsonable(intent),
+                "trace_id": trace_id,
+            }
+            self._critical("exec.pretrade_assertion_failed", payload=payload)
+            raise PreTradeAssertionError("marketdata_stale")
+
+        # ---- Market quote + quote freshness (per-symbol) ----
+        quote = self._market_quote_strict(intent=intent)
+        quote_ts = None
+        if quote.get("timestamp") is not None:
+            try:
+                quote_ts = parse_ts(quote.get("timestamp"))
+            except Exception:
+                quote_ts = None
+        freshness = check_freshness(
+            latest_ts=quote_ts,
+            stale_after=timedelta(seconds=float(stale_s)),
+            source="execution_engine.market_quote",
+        )
+        if not freshness.ok:
+            payload = {
+                "reason": "quote_not_fresh",
+                "freshness": _to_jsonable(freshness),
+                "quote": _to_jsonable(quote),
+                "intent": _to_jsonable(intent),
+                "trace_id": trace_id,
+            }
+            self._critical("exec.pretrade_assertion_failed", payload=payload)
+            raise PreTradeAssertionError(f"quote_not_fresh:{freshness.reason_code}")
+
+        # ---- Price + notional estimation ----
+        est_price = None
+        if intent.order_type == "limit":
+            if intent.limit_price is None or float(intent.limit_price) <= 0:
+                raise PreTradeAssertionError("limit_order_missing_or_invalid_limit_price")
+            est_price = float(intent.limit_price)
+        else:
+            meta_price = intent.metadata.get("expected_price")
+            if meta_price is not None:
+                try:
+                    est_price = float(meta_price)
+                except Exception as e:
+                    raise PreTradeAssertionError(f"expected_price_invalid:{e}") from e
+            if est_price is None or est_price <= 0:
+                est_price = float(quote.get("mid_price") or 0.0) or float(quote.get("ask") or 0.0) or float(quote.get("bid") or 0.0)
+        if est_price is None or est_price <= 0:
+            raise PreTradeAssertionError("unable_to_estimate_price")
+
+        est_notional = float(intent.qty) * float(est_price)
+        if est_notional <= 0:
+            raise PreTradeAssertionError("estimated_notional_non_positive")
+
+        # ---- Capital snapshot ----
+        if self._capital_provider is None:
+            self._capital_provider = _FirestoreCapitalProvider()
+        cap = self._capital_provider.get_capital_snapshot(intent=intent)
+
+        # Capital snapshot freshness (avoid trading on stale account balance)
+        cap_stale_s = self._env_int("ACCOUNT_SNAPSHOT_STALE_THRESHOLD_S", 120)
+        cap_fresh = check_freshness(
+            latest_ts=cap.updated_at_utc,
+            stale_after=timedelta(seconds=float(cap_stale_s)),
+            source=f"firestore:{cap.source_path}",
+        )
+        if not cap_fresh.ok:
+            payload = {
+                "reason": "capital_snapshot_not_fresh",
+                "capital": _to_jsonable(cap),
+                "freshness": _to_jsonable(cap_fresh),
+                "intent": _to_jsonable(intent),
+                "trace_id": trace_id,
+            }
+            self._critical("exec.pretrade_assertion_failed", payload=payload)
+            raise PreTradeAssertionError(f"capital_snapshot_not_fresh:{cap_fresh.reason_code}")
+
+        # Prefer buying_power; fall back to cash if buying_power is missing/zero.
+        available = float(cap.buying_power) if float(cap.buying_power) > 0 else float(cap.cash)
+        if available < 0:
+            raise PreTradeAssertionError("capital_available_negative")
+
+        # ---- Risk bounds (notional caps) ----
+        max_notional = self._env_float("EXEC_MAX_ORDER_NOTIONAL", None)
+        if max_notional is not None and est_notional > float(max_notional):
+            payload = {
+                "reason": "risk_max_order_notional_exceeded",
+                "estimated_notional": est_notional,
+                "limit": float(max_notional),
+                "intent": _to_jsonable(intent),
+                "trace_id": trace_id,
+            }
+            self._critical("exec.pretrade_assertion_failed", payload=payload)
+            raise PreTradeAssertionError("risk_max_order_notional_exceeded")
+
+        max_notional_pct = self._env_float("EXEC_MAX_ORDER_NOTIONAL_PCT_EQUITY", None)
+        if max_notional_pct is not None and float(cap.equity) > 0:
+            limit = float(cap.equity) * float(max_notional_pct)
+            if est_notional > limit:
+                payload = {
+                    "reason": "risk_max_order_notional_pct_equity_exceeded",
+                    "estimated_notional": est_notional,
+                    "equity": float(cap.equity),
+                    "pct_limit": float(max_notional_pct),
+                    "limit": limit,
+                    "intent": _to_jsonable(intent),
+                    "trace_id": trace_id,
+                }
+                self._critical("exec.pretrade_assertion_failed", payload=payload)
+                raise PreTradeAssertionError("risk_max_order_notional_pct_equity_exceeded")
+
+        # ---- Capital available (buy-side) ----
+        # For sells we don't enforce buying power here; position-level constraints live in RiskManager.
+        if intent.side == "buy":
+            # Buffer covers typical slippage + fees.
+            fee_bps = float(self._env_float("EXEC_FEE_BPS_BUFFER", 5.0) or 5.0)  # 5 bps default
+            slip = float(intent.estimated_slippage or float(quote.get("spread_pct") or 0.0) or 0.0)
+            buffer_mult = 1.0 + max(0.0, slip) + (max(0.0, fee_bps) / 10000.0)
+            required = est_notional * buffer_mult
+            if available + 1e-6 < required:
+                payload = {
+                    "reason": "insufficient_capital",
+                    "available": available,
+                    "required": required,
+                    "estimated_notional": est_notional,
+                    "buffer_mult": buffer_mult,
+                    "capital": _to_jsonable(cap),
+                    "quote": _to_jsonable(quote),
+                    "intent": _to_jsonable(intent),
+                    "trace_id": trace_id,
+                }
+                self._critical("exec.pretrade_assertion_failed", payload=payload)
+                raise PreTradeAssertionError("insufficient_capital")
+
+        return ExecutionEngine._PreTradeState(
+            capital=cap,
+            estimated_price=float(est_price),
+            estimated_notional=float(est_notional),
+            capital_available=float(available),
+            marketdata=dict(quote),
+        )
+
+    def _assert_post_trade_order_response(
+        self,
+        *,
+        intent: OrderIntent,
+        broker_order: dict[str, Any],
+        broker_order_id: str | None,
+        trace_id: str | None,
+    ) -> None:
+        """
+        Post-trade assertions immediately after submission.
+
+        Requirements:
+        - expected fill state / order lifecycle state is sane
+        """
+        status = str(broker_order.get("status") or "").strip().lower()
+        # Alpaca statuses vary; allow the common "new/accepted/pending_*" set.
+        allowed = {
+            "new",
+            "accepted",
+            "pending_new",
+            "partially_filled",
+            "filled",
+            "replaced",
+            "pending_replace",
+            "pending_cancel",
+        }
+        if not broker_order_id:
+            payload = {"reason": "broker_order_missing_id", "order": _to_jsonable(broker_order), "intent": _to_jsonable(intent), "trace_id": trace_id}
+            self._critical("exec.posttrade_assertion_failed", payload=payload)
+            raise PostTradeAssertionError("broker_order_missing_id")
+        if not status or status not in allowed:
+            payload = {
+                "reason": "unexpected_broker_order_status",
+                "status": status,
+                "allowed": sorted(allowed),
+                "broker_order_id": broker_order_id,
+                "order": _to_jsonable(broker_order),
+                "intent": _to_jsonable(intent),
+                "trace_id": trace_id,
+            }
+            self._critical("exec.posttrade_assertion_failed", payload=payload)
+            # Best-effort safe abort (cancel) for unknown/invalid statuses.
+            self._safe_abort_cancel(broker_order_id=broker_order_id, trace_id=trace_id)
+            raise PostTradeAssertionError(f"unexpected_broker_order_status:{status or 'missing'}")
+
+        client_id = str(broker_order.get("client_order_id") or "").strip()
+        if client_id and client_id != intent.client_intent_id:
+            payload = {
+                "reason": "client_order_id_mismatch",
+                "expected": intent.client_intent_id,
+                "actual": client_id,
+                "broker_order_id": broker_order_id,
+                "trace_id": trace_id,
+            }
+            self._critical("exec.posttrade_assertion_failed", payload=payload)
+            self._safe_abort_cancel(broker_order_id=broker_order_id, trace_id=trace_id)
+            raise PostTradeAssertionError("client_order_id_mismatch")
+
+    def _assert_post_trade_fill_and_reconcile(
+        self,
+        *,
+        intent: OrderIntent,
+        broker_order: dict[str, Any],
+        broker_order_id: str | None,
+        pre: _PreTradeState,
+        trace_id: str | None,
+    ) -> None:
+        """
+        Post-trade assertions on immediate fills.
+
+        Requirements:
+        - expected fill state (filled/partial implies usable fill qty/price)
+        - capital reconciliation (actual fill notional must fit within pre-trade capital snapshot)
+        """
+        status = str(broker_order.get("status") or "").strip().lower()
+        filled_qty = float(broker_order.get("filled_qty") or 0.0)
+        filled_avg_price = broker_order.get("filled_avg_price")
+        if status not in {"filled", "partially_filled"} and filled_qty <= 0:
+            payload = {
+                "reason": "fill_expected_but_missing",
+                "status": status,
+                "filled_qty": filled_qty,
+                "broker_order_id": broker_order_id,
+                "order": _to_jsonable(broker_order),
+                "trace_id": trace_id,
+            }
+            self._critical("exec.posttrade_assertion_failed", payload=payload)
+            self._safe_abort_cancel(broker_order_id=broker_order_id, trace_id=trace_id)
+            raise PostTradeAssertionError("fill_expected_but_missing")
+        if filled_qty <= 0:
+            raise PostTradeAssertionError("filled_qty_non_positive")
+        if filled_avg_price is None:
+            raise PostTradeAssertionError("filled_avg_price_missing")
+        fill_px = float(filled_avg_price)
+        if fill_px <= 0:
+            raise PostTradeAssertionError("filled_avg_price_non_positive")
+
+        fill_notional = float(filled_qty) * float(fill_px)
+        if fill_notional <= 0:
+            raise PostTradeAssertionError("fill_notional_non_positive")
+
+        # Capital reconciliation against the same snapshot we used to authorize.
+        if intent.side == "buy":
+            # If we somehow filled for more notional than we authorized, that's a critical failure.
+            # Use a tolerance (fees/slippage) so tiny differences don't fail.
+            tolerance = float(self._env_float("EXEC_POSTTRADE_RECONCILE_TOLERANCE_PCT", 0.02) or 0.02)  # 2%
+            allowed = float(pre.capital_available) * (1.0 + max(0.0, tolerance))
+            if fill_notional > allowed + 1e-6:
+                payload = {
+                    "reason": "fill_exceeds_pretrade_capital",
+                    "fill_notional": fill_notional,
+                    "capital_available": float(pre.capital_available),
+                    "allowed_with_tolerance": allowed,
+                    "tolerance_pct": tolerance,
+                    "pre": _to_jsonable(pre),
+                    "broker_order_id": broker_order_id,
+                    "trace_id": trace_id,
+                }
+                self._critical("exec.posttrade_assertion_failed", payload=payload)
+                raise PostTradeAssertionError("fill_exceeds_pretrade_capital")
+
+    def _safe_abort_cancel(self, *, broker_order_id: str | None, trace_id: str | None) -> None:
+        """
+        Best-effort safe abort: cancel the broker order.
+
+        - Never retries blindly.
+        - Never swallows: cancellation errors are logged CRITICAL but not raised here,
+          because the *primary* exception should propagate.
+        """
+        if not broker_order_id:
+            return
+        try:
+            # In this repo, runtime cancel may be forbidden; keep the safety boundary.
+            self.cancel(broker_order_id=broker_order_id)
+        except Exception as e:
+            self._critical(
+                "exec.safe_abort_cancel_failed",
+                payload={"broker_order_id": broker_order_id, "trace_id": trace_id, "error": f"{type(e).__name__}: {e}"},
+            )
+
     def _write_ledger_fill(
         self, *, intent: OrderIntent, broker_order: dict[str, Any], fill: dict[str, Any]
     ) -> None:
@@ -1194,87 +1676,94 @@ class ExecutionEngine:
         
         This provides a user-facing trade history in addition to the internal ledger.
         """
+        from backend.persistence.firebase_client import get_firestore_client
+
+        db = get_firestore_client()
+
+        # Resolve UID from intent metadata
+        uid = str(intent.metadata.get("uid") or "").strip()
+        if not uid:
+            uid = str(os.getenv("EXEC_UID") or "").strip()
+        if not uid or uid == "system":
+            logger.warning("Skipping portfolio history write: no valid uid for %s", intent.symbol)
+            return
+
+        # Extract fill data
+        broker_order_id = str(broker_order.get("id") or "").strip()
+        filled_qty_raw = fill.get("filled_qty") or broker_order.get("filled_qty") or 0.0
+        filled_avg_price_raw = fill.get("filled_avg_price") or broker_order.get("filled_avg_price") or None
+        filled_at_raw = fill.get("filled_at") or broker_order.get("filled_at") or None
+
+        filled_qty = float(filled_qty_raw or 0.0)
+        if filled_qty <= 0:
+            return
+
+        filled_avg_price = float(filled_avg_price_raw) if filled_avg_price_raw else 0.0
+
+        # Use fill timestamp when available; fall back to now
+        ts = _utc_now()
+        if isinstance(filled_at_raw, datetime):
+            ts = filled_at_raw.astimezone(timezone.utc)
+
+        # Create portfolio history entry
+        history_id = f"{broker_order_id}_{int(ts.timestamp() * 1000)}"
+
+        history_entry = {
+            # Core trade data
+            "symbol": intent.symbol,
+            "asset_class": intent.asset_class,
+            "side": intent.side,
+            "qty": filled_qty,
+            "price": filled_avg_price,
+            "notional": filled_qty * filled_avg_price,
+            "timestamp": ts,
+            "trading_date": _iso_date_utc(ts),
+
+            # Strategy and execution context
+            "strategy_id": intent.strategy_id,
+            "broker": self._broker_name,
+            "broker_order_id": broker_order_id,
+            "client_order_id": intent.client_intent_id,
+
+            # Cost analysis
+            "estimated_slippage": intent.estimated_slippage,
+            "fees": 0.0,  # Update if broker provides fee data
+
+            # Metadata
+            "order_type": intent.order_type,
+            "time_in_force": intent.time_in_force,
+            "created_at": _utc_now(),
+
+            # Tax tracking fields
+            "tax_lot_method": "FIFO",  # Default to FIFO for tax purposes
+            "cost_basis": filled_qty * filled_avg_price if intent.side == "buy" else None,
+        }
+
+        # Write to users/{uid}/portfolio/history/trades/{history_id}
+        doc_ref = (
+            db.collection("users")
+            .document(uid)
+            .collection("portfolio")
+            .document("history")
+            .collection("trades")
+            .document(history_id)
+        )
         try:
-            from backend.persistence.firebase_client import get_firestore_client
-            
-            db = get_firestore_client()
-            
-            # Resolve UID from intent metadata
-            uid = str(intent.metadata.get("uid") or "").strip()
-            if not uid:
-                uid = str(os.getenv("EXEC_UID") or "").strip()
-            if not uid or uid == "system":
-                logger.warning("Skipping portfolio history write: no valid uid for %s", intent.symbol)
-                return
-            
-            # Extract fill data
-            broker_order_id = str(broker_order.get("id") or "").strip()
-            filled_qty_raw = fill.get("filled_qty") or broker_order.get("filled_qty") or 0.0
-            filled_avg_price_raw = fill.get("filled_avg_price") or broker_order.get("filled_avg_price") or None
-            filled_at_raw = fill.get("filled_at") or broker_order.get("filled_at") or None
-            
-            filled_qty = float(filled_qty_raw or 0.0)
-            if filled_qty <= 0:
-                return
-            
-            filled_avg_price = float(filled_avg_price_raw) if filled_avg_price_raw else 0.0
-            
-            # Use fill timestamp when available; fall back to now
-            ts = _utc_now()
-            if isinstance(filled_at_raw, datetime):
-                ts = filled_at_raw.astimezone(timezone.utc)
-            
-            # Create portfolio history entry
-            history_id = f"{broker_order_id}_{int(ts.timestamp() * 1000)}"
-            
-            history_entry = {
-                # Core trade data
-                "symbol": intent.symbol,
-                "asset_class": intent.asset_class,
-                "side": intent.side,
-                "qty": filled_qty,
-                "price": filled_avg_price,
-                "notional": filled_qty * filled_avg_price,
-                "timestamp": ts,
-                "trading_date": _iso_date_utc(ts),
-                
-                # Strategy and execution context
-                "strategy_id": intent.strategy_id,
-                "broker": self._broker_name,
-                "broker_order_id": broker_order_id,
-                "client_order_id": intent.client_intent_id,
-                
-                # Cost analysis
-                "estimated_slippage": intent.estimated_slippage,
-                "fees": 0.0,  # Update if broker provides fee data
-                
-                # Metadata
-                "order_type": intent.order_type,
-                "time_in_force": intent.time_in_force,
-                "created_at": _utc_now(),
-                
-                # Tax tracking fields
-                "tax_lot_method": "FIFO",  # Default to FIFO for tax purposes
-                "cost_basis": filled_qty * filled_avg_price if intent.side == "buy" else None,
-            }
-            
-            # Write to users/{uid}/portfolio/history/trades/{history_id}
-            # Note: Using subcollection for scalability and tax year queries
-            doc_ref = (
-                db.collection("users")
-                .document(uid)
-                .collection("portfolio")
-                .document("history")
-                .collection("trades")
-                .document(history_id)
-            )
             doc_ref.set(history_entry)
-            
-            logger.info(
-                "exec.portfolio_history_written uid=%s symbol=%s qty=%s price=%s",
-                uid, intent.symbol, filled_qty, filled_avg_price
-            )
-            
         except Exception as e:
-            logger.exception("Failed to write portfolio history: %s", e)
+            self._critical(
+                "exec.portfolio_history_write_failed",
+                payload={
+                    "uid": uid,
+                    "symbol": intent.symbol,
+                    "broker_order_id": broker_order_id,
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
+            raise
+
+        logger.info(
+            "exec.portfolio_history_written uid=%s symbol=%s qty=%s price=%s",
+            uid, intent.symbol, filled_qty, filled_avg_price
+        )
 
