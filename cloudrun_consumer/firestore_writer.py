@@ -3,14 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
-import json
+from datetime import datetime, timezone, timedelta
 import sys
 import traceback
 from typing import Any, Optional, Tuple
 
 from idempotency import ensure_message_once
 from replay_support import ReplayContext, ensure_event_not_applied
+from time_audit import ensure_utc
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -57,6 +57,35 @@ def _max_dt(*values: Optional[datetime]) -> Optional[datetime]:
     if not xs:
         return None
     return max(_as_utc(v) for v in xs)
+
+
+def _lww_key(*, published_at: datetime, message_id: str) -> tuple[datetime, str]:
+    """
+    Sort key for last-write-wins using (published_at, message_id).
+    """
+    return (_as_utc(published_at), str(message_id or ""))
+
+
+def _existing_pubsub_lww(existing: Any) -> tuple[Optional[datetime], str]:
+    """
+    Best-effort extraction of an existing (publishedAt, messageId) pair from multiple shapes.
+    Used for last-write-wins comparisons and unit tests.
+    """
+    if not isinstance(existing, dict):
+        return None, ""
+
+    pub = _parse_rfc3339(existing.get("publishedAt")) or _parse_rfc3339(existing.get("published_at"))
+    mid = ""
+
+    src = existing.get("source")
+    if isinstance(src, dict):
+        if pub is None:
+            pub = _parse_rfc3339(src.get("publishedAt")) or _parse_rfc3339(src.get("published_at"))
+        mid_val = src.get("messageId") if "messageId" in src else src.get("message_id")
+        if isinstance(mid_val, str) and mid_val.strip():
+            mid = mid_val.strip()
+
+    return (pub, mid)
 
 
 OPS_SERVICE_STATUSES = ("healthy", "degraded", "down", "unknown", "maintenance")
@@ -114,6 +143,96 @@ class FirestoreWriter:
             return str(name)
         # Keep simple; prefix should be Firestore-safe (no '/').
         return f"{p}{name}"
+
+    def _deterministic_sample(self, *, message_id: str, sample_rate: float) -> bool:
+        """
+        Deterministically sample by message id (stable across retries / instances).
+        """
+        r = float(sample_rate or 0.0)
+        if r <= 0.0:
+            return False
+        if r >= 1.0:
+            return True
+        mid = str(message_id or "").strip()
+        if not mid:
+            return False
+        # Use a stable hash -> [0,1).
+        h = hashlib.sha256(mid.encode("utf-8")).digest()
+        # First 8 bytes as uint64.
+        n = int.from_bytes(h[:8], "big", signed=False)
+        frac = n / float(2**64)
+        return frac < r
+
+    def maybe_write_sampled_dlq_event(
+        self,
+        *,
+        message_id: str,
+        subscription: str,
+        topic: str,
+        handler: str,
+        http_status: int,
+        reason: str,
+        error: str,
+        delivery_attempt: Optional[int],
+        attributes: Optional[dict[str, str]] = None,
+        payload: Optional[dict[str, Any]] = None,
+        sample_rate: float,
+        ttl_hours: float,
+    ) -> bool:
+        """
+        Best-effort DLQ "sample" record for debugging without relying on Pub/Sub DLQ retention.
+
+        Returns True if a doc write was attempted, else False.
+        """
+        if not self._deterministic_sample(message_id=message_id, sample_rate=sample_rate):
+            return False
+
+        mid = str(message_id or "").strip()
+        if not mid:
+            return False
+
+        doc_id = mid.replace("/", "_")[:256]
+        ref = self._db.collection(self._col("ops_pubsub_dlq_samples")).document(doc_id)
+
+        expire_at = None
+        try:
+            ttl = max(0.0, float(ttl_hours))
+            if ttl > 0.0:
+                expire_at = datetime.now(timezone.utc) + timedelta(hours=ttl)  # type: ignore[name-defined]
+        except Exception:
+            expire_at = None
+
+        doc: dict[str, Any] = {
+            "messageId": mid,
+            "subscription": str(subscription or ""),
+            "topic": str(topic or ""),
+            "handler": str(handler or ""),
+            "httpStatus": int(http_status),
+            "reason": str(reason or ""),
+            "error": str(error or "")[:2000],
+            "deliveryAttempt": int(delivery_attempt) if delivery_attempt is not None else None,
+            "attributes": dict(attributes or {}),
+            "payload": payload if isinstance(payload, dict) else None,
+            "createdAt": self._firestore.SERVER_TIMESTAMP,
+            "expireAt": expire_at,
+        }
+        # Remove nulls for cleaner docs.
+        doc = {k: v for k, v in doc.items() if v is not None}
+        try:
+            ref.set(doc, merge=True)
+        except Exception:
+            return False
+        return True
+
+    def _protect_published_at(self, *, existing: dict[str, Any], incoming_doc: dict[str, Any]) -> dict[str, Any]:
+        """
+        Prevent accidental overwrites of existing timestamps with nulls.
+        """
+        protected = dict(incoming_doc)
+        for k in ("publishedAt", "producedAt", "eventTime"):
+            if protected.get(k) is None and existing.get(k) is not None:
+                protected[k] = existing.get(k)
+        return protected
 
     def observe_pubsub_delivery(
         self,
@@ -516,10 +635,14 @@ class FirestoreWriter:
             existing = snap.to_dict() if snap.exists else {}
 
             existing_source_pub = None
+            existing_source_mid = None
             if isinstance(existing, dict):
                 src = existing.get("source")
                 if isinstance(src, dict):
                     existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
+                    mid = src.get("messageId") if "messageId" in src else src.get("message_id")
+                    if isinstance(mid, str) and mid.strip():
+                        existing_source_mid = mid.strip()
 
             existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
             existing_lh_sc = _parse_rfc3339(existing.get("last_heartbeat_at")) if isinstance(existing, dict) else None
@@ -536,8 +659,8 @@ class FirestoreWriter:
                     {
                         "outcome": "out_of_order_ignored",
                         "reason": "incoming_publishedAt_older_than_stored",
-                        "storedPublishedAt": existing_pub,
-                        "storedMessageId": existing_mid,
+                        "storedPublishedAt": _as_utc(existing_max),
+                        "storedMessageId": existing_source_mid,
                     },
                     merge=True,
                 )
@@ -572,12 +695,7 @@ class FirestoreWriter:
                 },
                 "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
             }
-            if isinstance(fields, dict) and fields:
-                for k, v in fields.items():
-                    if v is not None:
-                        doc[k] = v
-
-            txn.set(pipeline_ref, doc, merge=True)
+            txn.set(service_ref, doc, merge=True)
             txn.set(dedupe_ref, {"outcome": "applied"}, merge=True)
             return True, "applied"
 
