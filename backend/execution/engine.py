@@ -69,121 +69,137 @@ def _to_jsonable(value: Any) -> Any:
     return str(value)
 
 
-class PreTradeAssertionError(RuntimeError):
+class InvariantViolation(RuntimeError):
     """
-    Raised when a pre-trade assertion fails.
+    Raised when a risk/capital invariant is violated.
+
+    Important: these are *not* normal risk rejections; they indicate internal
+    accounting/state corruption or a contract breach between components.
+    """
+
+
+def _as_money_decimal(v: Any, *, name: str) -> Decimal:
+    """
+    Convert a numeric-ish value to Decimal for invariant checks.
+
+    We accept string/float/int/Decimal since upstream may serialize money as strings.
+    """
+    if v is None:
+        raise InvariantViolation(f"Missing required invariant field: {name}")
+    if isinstance(v, Decimal):
+        return v
+    if isinstance(v, (int, float)):
+        # NOTE: float->str preserves human-visible value, not binary float;
+        # this is best-effort for invariant checking.
+        return Decimal(str(v))
+    if isinstance(v, str):
+        s = v.strip()
+        if s == "":
+            raise InvariantViolation(f"Empty string is not a valid money value for {name}")
+        return Decimal(s)
+    raise InvariantViolation(f"Unsupported type for {name}: {type(v).__name__}")
+
+
+def _fail_invariant(*, name: str, message: str, context: dict[str, Any]) -> None:
+    ctx = {"invariant": name, **context}
+    # Log at CRITICAL and then crash loudly.
+    try:
+        logger.critical("INVARIANT_VIOLATION %s %s", name, json.dumps(_to_jsonable(ctx)))
+    except Exception:
+        # Never swallow the crash if logging fails.
+        pass
+    raise InvariantViolation(f"{name}: {message} | context={ctx}")
+
+
+def _enforce_risk_invariants_from_intent(*, intent: "OrderIntent") -> None:
+    """
+    Enforce risk/capital invariants encoded as intent metadata.
 
     Contract:
-    - MUST be treated as fatal for the intent (do not place the order).
-    - Callers should emit CRITICAL logs and propagate (do not swallow).
+    - If a field is present, it MUST satisfy its invariant.
+    - No silent correction; violations crash via InvariantViolation.
+    - These checks are for *internal consistency* and "should never happen" states.
     """
+    md = dict(intent.metadata or {})
 
+    def _get_any(*keys: str) -> Any:
+        for k in keys:
+            if k in md:
+                return md.get(k)
+        return None
 
-class PostTradeAssertionError(RuntimeError):
-    """
-    Raised when a post-trade assertion fails (order already submitted or filled).
+    # Invariant: available_capital >= 0
+    av = _get_any("available_capital", "buying_power")
+    if av is not None:
+        available_capital = _as_money_decimal(av, name="available_capital")
+        if available_capital < 0:
+            _fail_invariant(
+                name="available_capital_non_negative",
+                message=f"available_capital is negative ({available_capital})",
+                context={"available_capital": available_capital},
+            )
 
-    Contract:
-    - MUST be treated as a critical incident.
-    - Engine should attempt a best-effort safe abort (cancel) if possible.
-    - Callers should emit CRITICAL logs and propagate (do not swallow).
-    """
+    # Invariant: total_reserved <= daily_capital
+    tr = _get_any("total_reserved", "reserved_capital")
+    dc = _get_any("daily_capital")
+    if tr is not None or dc is not None:
+        if tr is None or dc is None:
+            _fail_invariant(
+                name="total_reserved_lte_daily_capital",
+                message="partial reservation state: both total_reserved and daily_capital must be provided together",
+                context={"total_reserved_present": tr is not None, "daily_capital_present": dc is not None},
+            )
+        total_reserved = _as_money_decimal(tr, name="total_reserved")
+        daily_capital = _as_money_decimal(dc, name="daily_capital")
+        if total_reserved < 0:
+            _fail_invariant(
+                name="total_reserved_non_negative",
+                message=f"total_reserved is negative ({total_reserved})",
+                context={"total_reserved": total_reserved, "daily_capital": daily_capital},
+            )
+        if daily_capital < 0:
+            _fail_invariant(
+                name="daily_capital_non_negative",
+                message=f"daily_capital is negative ({daily_capital})",
+                context={"total_reserved": total_reserved, "daily_capital": daily_capital},
+            )
+        if total_reserved > daily_capital:
+            _fail_invariant(
+                name="total_reserved_lte_daily_capital",
+                message=f"total_reserved ({total_reserved}) exceeds daily_capital ({daily_capital})",
+                context={"total_reserved": total_reserved, "daily_capital": daily_capital},
+            )
 
-
-@dataclass(frozen=True, slots=True)
-class _CapitalSnapshot:
-    source_path: str
-    updated_at_utc: datetime | None
-    equity: float
-    cash: float
-    buying_power: float
-
-
-class _FirestoreCapitalProvider:
-    """
-    Reads the most recent account snapshot from Firestore.
-
-    Paths (in order):
-    - users/{uid}/alpacaAccounts/snapshot
-    - tenants/{tenant_id}/accounts/primary
-    - alpacaAccounts/snapshot  (global warm cache)
-
-    Fail-closed:
-    - any read/parsing error should raise (caller decides policy).
-    """
-
-    def __init__(self):
-        from backend.persistence.firebase_client import get_firestore_client
-
-        self._db = get_firestore_client()
-
-    def _read_doc(self, *, path_parts: list[str]) -> tuple[str, dict[str, Any] | None]:
-        if len(path_parts) % 2 != 0:
-            raise ValueError(f"invalid firestore doc path parts: {path_parts!r}")
-        ref = self._db
-        # Walk alternating collection/document segments.
-        for i in range(0, len(path_parts), 2):
-            ref = ref.collection(path_parts[i]).document(path_parts[i + 1])
-        snap = ref.get()
-        if not snap.exists:
-            return ("/".join(path_parts), None)
-        return ("/".join(path_parts), snap.to_dict() or {})
-
-    def get_capital_snapshot(self, *, intent: "OrderIntent") -> _CapitalSnapshot:
-        uid = str(intent.metadata.get("uid") or "").strip() or None
-        tenant_id = str(intent.metadata.get("tenant_id") or os.getenv("EXEC_TENANT_ID") or "").strip() or None
-
-        # Optional explicit override path.
-        override = str(intent.metadata.get("account_snapshot_path") or "").strip().strip("/")
-        candidates: list[list[str]] = []
-        if override:
-            candidates.append(override.split("/"))
-        if uid:
-            candidates.append(["users", uid, "alpacaAccounts", "snapshot"])
-        if tenant_id:
-            candidates.append(["tenants", tenant_id, "accounts", "primary"])
-        candidates.append(["alpacaAccounts", "snapshot"])
-
-        last_path = None
-        last = None
-        for parts in candidates:
-            p, data = self._read_doc(path_parts=parts)
-            last_path = p
-            last = data
-            if data is not None:
-                break
-        if last is None:
-            raise PreTradeAssertionError(f"capital_snapshot_missing path={last_path}")
-
-        def _as_float(v: Any) -> float:
-            if v is None:
-                return 0.0
-            if isinstance(v, (int, float)):
-                return float(v)
-            if isinstance(v, str):
-                s = v.strip()
-                if not s:
-                    return 0.0
-                return float(s)
-            raise TypeError(f"unexpected numeric type: {type(v).__name__}")
-
-        # updated_at may be Firestore timestamp, datetime, or ISO string.
-        updated_at = None
-        for k in ("updated_at", "updated_at_iso", "ts", "timestamp"):
-            if k in last and last.get(k) is not None:
-                try:
-                    updated_at = parse_ts(last.get(k))
-                except Exception:
-                    updated_at = None
-                break
-
-        return _CapitalSnapshot(
-            source_path=str(last_path or "unknown"),
-            updated_at_utc=updated_at.astimezone(timezone.utc) if isinstance(updated_at, datetime) else None,
-            equity=_as_float(last.get("equity")),
-            cash=_as_float(last.get("cash")),
-            buying_power=_as_float(last.get("buying_power")),
-        )
+    # Invariant: daily_risk_used <= cap
+    dru = _get_any("daily_risk_used")
+    drc = _get_any("daily_risk_cap", "daily_risk_limit")
+    if dru is not None or drc is not None:
+        if dru is None or drc is None:
+            _fail_invariant(
+                name="daily_risk_used_lte_cap",
+                message="partial daily risk state: both daily_risk_used and daily_risk_cap must be provided together",
+                context={"daily_risk_used_present": dru is not None, "daily_risk_cap_present": drc is not None},
+            )
+        daily_risk_used = _as_money_decimal(dru, name="daily_risk_used")
+        daily_risk_cap = _as_money_decimal(drc, name="daily_risk_cap")
+        if daily_risk_used < 0:
+            _fail_invariant(
+                name="daily_risk_used_non_negative",
+                message=f"daily_risk_used is negative ({daily_risk_used})",
+                context={"daily_risk_used": daily_risk_used, "daily_risk_cap": daily_risk_cap},
+            )
+        if daily_risk_cap < 0:
+            _fail_invariant(
+                name="daily_risk_cap_non_negative",
+                message=f"daily_risk_cap is negative ({daily_risk_cap})",
+                context={"daily_risk_used": daily_risk_used, "daily_risk_cap": daily_risk_cap},
+            )
+        if daily_risk_used > daily_risk_cap:
+            _fail_invariant(
+                name="daily_risk_used_lte_cap",
+                message=f"daily_risk_used ({daily_risk_used}) exceeds daily_risk_cap ({daily_risk_cap})",
+                context={"daily_risk_used": daily_risk_used, "daily_risk_cap": daily_risk_cap},
+            )
 
 
 @dataclass(frozen=True)
@@ -1460,6 +1476,9 @@ class RiskManager:
         intent = intent.normalized()
         checks: list[dict[str, Any]] = []
 
+        # Hard invariants (crash loud on internal inconsistencies).
+        _enforce_risk_invariants_from_intent(intent=intent)
+
         # Kill switch
         enabled = self.kill_switch_enabled()
         checks.append({"check": "kill_switch", "enabled": enabled})
@@ -1578,10 +1597,51 @@ class RiskManager:
             if not self._config.fail_open:
                 return RiskDecision(allowed=False, reason="risk_data_unavailable", checks=checks)
 
-        # Per-agent budgets (exec count + % of daily capital). Enforced centrally here.
-        budget_reject = self._consume_agent_budget_or_reject(intent=intent, checks=checks)
-        if budget_reject is not None:
-            return budget_reject
+        # Enforce max_risk_per_trade if provided (soft-fail via rejection),
+        # but ALSO treat "allowed=True while exceeding" as a postcondition violation below.
+        try:
+            md = dict(intent.metadata or {})
+            if "max_risk_per_trade" in md and "proposed_trade_risk" in md:
+                max_risk_per_trade = _as_money_decimal(md.get("max_risk_per_trade"), name="max_risk_per_trade")
+                proposed_trade_risk = _as_money_decimal(md.get("proposed_trade_risk"), name="proposed_trade_risk")
+                checks.append(
+                    {
+                        "check": "max_risk_per_trade",
+                        "max_risk_per_trade": float(max_risk_per_trade),
+                        "proposed_trade_risk": float(proposed_trade_risk),
+                    }
+                )
+                if proposed_trade_risk > max_risk_per_trade:
+                    return RiskDecision(allowed=False, reason="max_risk_per_trade_exceeded", checks=checks)
+        except InvariantViolation:
+            # If metadata is malformed for risk checking, that's an invariant breach.
+            raise
+        except Exception as e:
+            checks.append({"check": "max_risk_per_trade", "error": str(e)})
+            if not self._config.fail_open:
+                return RiskDecision(allowed=False, reason="risk_data_unavailable", checks=checks)
+
+        # Postcondition (crash loudly if a bypass is possible):
+        # If we say "allowed", then max_risk_per_trade MUST be satisfied when provided.
+        md = dict(intent.metadata or {})
+        if "max_risk_per_trade" in md and "proposed_trade_risk" in md:
+            max_risk_per_trade = _as_money_decimal(md.get("max_risk_per_trade"), name="max_risk_per_trade")
+            proposed_trade_risk = _as_money_decimal(md.get("proposed_trade_risk"), name="proposed_trade_risk")
+            if proposed_trade_risk > max_risk_per_trade:
+                _fail_invariant(
+                    name="max_risk_per_trade_enforced",
+                    message=(
+                        f"risk.allowed=True would violate max_risk_per_trade "
+                        f"({proposed_trade_risk} > {max_risk_per_trade})"
+                    ),
+                    context={
+                        "max_risk_per_trade": max_risk_per_trade,
+                        "proposed_trade_risk": proposed_trade_risk,
+                        "symbol": intent.symbol,
+                        "strategy_id": intent.strategy_id,
+                        "client_intent_id": intent.client_intent_id,
+                    },
+                )
 
         return RiskDecision(allowed=True, reason="ok", checks=checks)
 
