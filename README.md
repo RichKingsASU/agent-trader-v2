@@ -187,6 +187,30 @@ The primary ingestion entrypoint is:
   - `DRY_RUN` (`1` to simulate writes)
   - `STOP_AFTER_SECONDS` (optional)
 
+## Backend: vm_ingest (Pub/Sub → Firestore) — Cloud Run / Docker only
+
+`vm_ingest` is a **container-only** ingestion worker intended to run in **Cloud Run**. There is **no VM/host execution path** and you should **not** run it directly on a machine with `python -m ...`.
+
+### Local execution (requires Docker)
+
+Build from repo root:
+
+```bash
+docker build -f backend/ingestion/Dockerfile -t agenttrader-vm-ingest .
+```
+
+Run (example):
+
+```bash
+docker run --rm \
+  -e PUBSUB_PROJECT_ID="YOUR_PROJECT" \
+  -e PUBSUB_SUBSCRIPTION_ID="YOUR_SUBSCRIPTION" \
+  -e FIRESTORE_PROJECT_ID="YOUR_PROJECT" \
+  -e GOOGLE_APPLICATION_CREDENTIALS="/secrets/sa.json" \
+  -v "$PWD/secrets/sa.json:/secrets/sa.json:ro" \
+  agenttrader-vm-ingest
+```
+
 ## Frontend: UI (Vite)
 
 From `frontend/`:
