@@ -152,6 +152,17 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log("pubsub.invalid_envelope", severity="ERROR", reason="missing_messageId")
         raise HTTPException(status_code=400, detail="missing_messageId")
 
+    delivery_attempt_raw = message.get("deliveryAttempt")
+    delivery_attempt: Optional[int] = None
+    if isinstance(delivery_attempt_raw, int):
+        delivery_attempt = delivery_attempt_raw
+    else:
+        try:
+            if delivery_attempt_raw is not None and str(delivery_attempt_raw).strip():
+                delivery_attempt = int(str(delivery_attempt_raw).strip())
+        except Exception:
+            delivery_attempt = None
+
     publish_time = _parse_rfc3339(message.get("publishTime")) or _utc_now()
     attributes_raw = message.get("attributes") or {}
     attributes: dict[str, str] = {}
@@ -202,6 +213,27 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
     writer: FirestoreWriter = app.state.firestore_writer
 
     try:
+        # Visibility-only: detect duplicate deliveries (never gate processing).
+        is_dup = writer.observe_pubsub_delivery(
+            message_id=message_id,
+            topic=source_topic,
+            subscription=subscription_str,
+            handler=handler.name,
+            published_at=publish_time,
+            delivery_attempt=delivery_attempt,
+        )
+        if is_dup is True:
+            log(
+                "pubsub.duplicate_delivery_detected",
+                severity="WARNING",
+                handler=handler.name,
+                messageId=message_id,
+                topic=source_topic,
+                subscription=subscription_str,
+                deliveryAttempt=delivery_attempt,
+                publishTime=publish_time.isoformat(),
+            )
+
         result = handler.handler(
             payload=payload,
             env=env,
@@ -218,10 +250,24 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             messageId=message_id,
             topic=source_topic,
             subscription=subscription_str,
+            deliveryAttempt=delivery_attempt,
             serviceId=result.get("serviceId"),
             applied=result.get("applied"),
             reason=result.get("reason"),
         )
+        if result.get("applied") is False and str(result.get("reason") or "") == "duplicate_message_noop":
+            log(
+                "pubsub.duplicate_ignored",
+                severity="WARNING",
+                handler=handler.name,
+                messageId=message_id,
+                topic=source_topic,
+                subscription=subscription_str,
+                deliveryAttempt=delivery_attempt,
+                kind=result.get("kind"),
+                entityId=result.get("serviceId") or result.get("docId"),
+                reason=result.get("reason"),
+            )
         return {"ok": True, **result}
     except ValueError as e:
         # Treat as poison for this consumer; allow DLQ routing.

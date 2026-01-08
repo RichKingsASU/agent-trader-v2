@@ -51,6 +51,79 @@ class FirestoreWriter:
         self._firestore = firestore_mod
         self._db = firestore_mod.Client(project=project_id, database=database)
 
+    def observe_pubsub_delivery(
+        self,
+        *,
+        message_id: str,
+        topic: str,
+        subscription: str,
+        handler: str,
+        published_at: datetime,
+        delivery_attempt: Optional[int] = None,
+    ) -> Optional[bool]:
+        """
+        Visibility-only: record that a Pub/Sub push delivery occurred.
+
+        Returns:
+        - True if this messageId has been seen before (duplicate delivery)
+        - False if first observation
+        - None if observation failed (best-effort)
+
+        IMPORTANT: this method must not be used to gate processing.
+        """
+        mid = str(message_id or "").strip()
+        if not mid:
+            return None
+
+        # Firestore doc ids cannot contain '/'.
+        doc_id = mid.replace("/", "_")
+        ref = self._db.collection("ops_pubsub_deliveries").document(doc_id)
+
+        try:
+            # Prefer create() so we can detect duplicates without reads.
+            ref.create(
+                {
+                    "messageId": mid,
+                    "topic": str(topic or ""),
+                    "subscription": str(subscription or ""),
+                    "handler": str(handler or ""),
+                    "publishedAt": _as_utc(published_at),
+                    "deliveryAttempt": int(delivery_attempt) if delivery_attempt is not None else None,
+                    "firstSeenAt": self._firestore.SERVER_TIMESTAMP,
+                    "lastSeenAt": self._firestore.SERVER_TIMESTAMP,
+                    "seenCount": 1,
+                }
+            )
+            return False
+        except Exception as e:
+            # If it already exists, we treat as duplicate delivery and update counters best-effort.
+            try:
+                from google.api_core.exceptions import AlreadyExists  # type: ignore
+            except Exception:
+                AlreadyExists = None  # type: ignore[assignment]
+
+            if AlreadyExists is not None and isinstance(e, AlreadyExists):  # type: ignore[arg-type]
+                try:
+                    ref.set(
+                        {
+                            "lastSeenAt": self._firestore.SERVER_TIMESTAMP,
+                            "seenCount": self._firestore.Increment(1),
+                            "lastTopic": str(topic or ""),
+                            "lastSubscription": str(subscription or ""),
+                            "lastHandler": str(handler or ""),
+                            "lastPublishedAt": _as_utc(published_at),
+                            "lastDeliveryAttempt": int(delivery_attempt) if delivery_attempt is not None else None,
+                        },
+                        merge=True,
+                    )
+                except Exception:
+                    # Observation must never break processing.
+                    pass
+                return True
+
+            # Unknown failure: treat as "no observation" (visibility only).
+            return None
+
     def _upsert_event_doc(
         self,
         *,
@@ -114,12 +187,15 @@ class FirestoreWriter:
             "producedAt": produced_at,
             "publishedAt": published_at,
             "data": data,
+            "lastAppliedMessageId": str(source.message_id),
+            "lastAppliedPublishedAt": _as_utc(source.published_at),
             "source": {
                 "topic": str(source.topic),
                 "messageId": str(source.message_id),
                 "publishedAt": _as_utc(source.published_at),
             },
             "ingestedAt": self._firestore.SERVER_TIMESTAMP,
+            "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
         }
         # Remove nulls for cleaner docs.
         doc = {k: v for k, v in doc.items() if v is not None}
@@ -151,12 +227,15 @@ class FirestoreWriter:
             "producedAt": produced_at,
             "publishedAt": published_at,
             "data": data,
+            "lastAppliedMessageId": str(source.message_id),
+            "lastAppliedPublishedAt": _as_utc(source.published_at),
             "source": {
                 "topic": str(source.topic),
                 "messageId": str(source.message_id),
                 "publishedAt": _as_utc(source.published_at),
             },
             "ingestedAt": self._firestore.SERVER_TIMESTAMP,
+            "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
         }
         doc = {k: v for k, v in doc.items() if v is not None}
         return self._upsert_event_doc(collection="market_bars_1m", doc_id=doc_id, event_time=event_time, source=source, doc=doc)
@@ -185,12 +264,15 @@ class FirestoreWriter:
             "producedAt": produced_at,
             "publishedAt": published_at,
             "data": data,
+            "lastAppliedMessageId": str(source.message_id),
+            "lastAppliedPublishedAt": _as_utc(source.published_at),
             "source": {
                 "topic": str(source.topic),
                 "messageId": str(source.message_id),
                 "publishedAt": _as_utc(source.published_at),
             },
             "ingestedAt": self._firestore.SERVER_TIMESTAMP,
+            "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
         }
         doc = {k: v for k, v in doc.items() if v is not None}
         return self._upsert_event_doc(collection="trade_signals", doc_id=doc_id, event_time=event_time, source=source, doc=doc)
@@ -235,11 +317,14 @@ class FirestoreWriter:
                 "version": str(version),
                 "region": str(region),
                 "updatedAt": incoming,
+                "lastAppliedMessageId": str(source.message_id),
+                "lastAppliedPublishedAt": _as_utc(source.published_at),
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
                     "publishedAt": _as_utc(source.published_at),
                 },
+                "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
             }
 
             txn.set(ref, doc)
@@ -294,11 +379,14 @@ class FirestoreWriter:
                 "version": str(version),
                 "region": str(region),
                 "updatedAt": incoming,
+                "lastAppliedMessageId": str(source.message_id),
+                "lastAppliedPublishedAt": _as_utc(source.published_at),
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
                     "publishedAt": _as_utc(source.published_at),
                 },
+                "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
             }
 
             txn.set(service_ref, doc)
