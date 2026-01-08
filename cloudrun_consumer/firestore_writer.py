@@ -8,6 +8,8 @@ import sys
 import traceback
 from typing import Any, Optional, Tuple
 
+from time_audit import ensure_utc
+
 from idempotency import ensure_message_once
 from replay_support import ReplayContext, ensure_event_not_applied
 from time_audit import ensure_utc
@@ -341,24 +343,18 @@ class FirestoreWriter:
             snap = ref.get(transaction=txn)
             existing = snap.to_dict() if snap.exists else {}
 
-            existing_event_time = None
-            if isinstance(existing, dict):
-                existing_event_time = _parse_rfc3339(existing.get("eventTime"))
-                existing_produced_at = _parse_rfc3339(existing.get("producedAt"))
-                existing_published_at = _parse_rfc3339(existing.get("publishedAt"))
-                existing_source_pub = None
-                src = existing.get("source")
-                if isinstance(src, dict):
-                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
-                existing_max = _max_dt(existing_event_time, existing_produced_at, existing_published_at, existing_source_pub)
-            else:
-                existing_max = None
+            # Ordering/staleness: compare Pub/Sub publish time first (with deterministic tie-break).
+            existing_pub, existing_mid = _existing_pubsub_lww(existing if isinstance(existing, dict) else {})
+            if existing_pub is not None:
+                inc_key = _lww_key(published_at=source.published_at, message_id=str(source.message_id))
+                ex_key = _lww_key(published_at=existing_pub, message_id=str(existing_mid or ""))
+                if inc_key < ex_key:
+                    return False, "stale_event_ignored"
 
-            incoming = _as_utc(event_time)
-            if existing_max is not None and incoming < existing_max:
-                return False, "stale_event_ignored"
-
-            protected = self._protect_published_at(existing=existing or {}, incoming_doc=doc)
+            protected = dict(doc)
+            # Canonical fields used by `_existing_pubsub_lww` for future comparisons.
+            protected["lastAppliedPublishedAt"] = _as_utc(source.published_at)
+            protected["lastAppliedMessageId"] = str(source.message_id)
             txn.set(ref, protected)
             return True, "applied"
 
@@ -527,22 +523,14 @@ class FirestoreWriter:
             snap = ref.get(transaction=txn)
             existing = snap.to_dict() if snap.exists else {}
 
-            existing_source_pub = None
-            if isinstance(existing, dict):
-                src = existing.get("source")
-                if isinstance(src, dict):
-                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
+            existing_pub, existing_mid = _existing_pubsub_lww(existing if isinstance(existing, dict) else {})
+            if existing_pub is not None:
+                inc_key = _lww_key(published_at=source.published_at, message_id=str(source.message_id))
+                ex_key = _lww_key(published_at=existing_pub, message_id=str(existing_mid or ""))
+                if inc_key < ex_key:
+                    return False, "stale_event_ignored"
 
-            existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
-            existing_lh_sc = _parse_rfc3339(existing.get("last_heartbeat_at")) if isinstance(existing, dict) else None
-            existing_u = _parse_rfc3339(existing.get("updatedAt")) if isinstance(existing, dict) else None
-            existing_u_sc = _parse_rfc3339(existing.get("updated_at")) if isinstance(existing, dict) else None
-            existing_max = _max_dt(existing_lh, existing_lh_sc, existing_u, existing_u_sc, existing_source_pub)
-
-            incoming = _as_utc(updated_at)
-            incoming_eff = _max_dt(incoming, last_heartbeat_at, source.published_at) or incoming
-            if existing_max is not None and incoming_eff < existing_max:
-                return False, "stale_event_ignored"
+            incoming_eff = _max_dt(_as_utc(updated_at), last_heartbeat_at, source.published_at) or _as_utc(updated_at)
 
             prev_status, _ = _normalize_ops_service_status(existing.get("status") if isinstance(existing, dict) else None)
             next_status, raw_status = _normalize_ops_service_status(status)
@@ -564,6 +552,8 @@ class FirestoreWriter:
                 "region": str(region),
                 "updatedAt": incoming_eff,
                 "updated_at": incoming_eff,
+                "publishedAt": _as_utc(source.published_at),
+                "published_at": _as_utc(source.published_at),
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
@@ -673,7 +663,8 @@ class FirestoreWriter:
             if next_status == "unknown" and prev_status != "unknown":
                 next_status = prev_status
 
-            doc = {
+            incoming_eff = _max_dt(_as_utc(updated_at), last_heartbeat_at, source.published_at) or _as_utc(updated_at)
+            doc: dict[str, Any] = {
                 "serviceId": str(service_id),
                 "service_id": str(service_id),
                 "env": str(env),
@@ -686,6 +677,8 @@ class FirestoreWriter:
                 "region": str(region),
                 "updatedAt": incoming_eff,
                 "updated_at": incoming_eff,
+                "publishedAt": _as_utc(source.published_at),
+                "published_at": _as_utc(source.published_at),
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
@@ -701,4 +694,13 @@ class FirestoreWriter:
 
         txn = self._db.transaction()
         return self._firestore.transactional(_txn)(txn)
+
+
+__all__ = [
+    "FirestoreWriter",
+    "SourceInfo",
+    "_existing_pubsub_lww",
+    "_lww_key",
+    "apply_pubsub_lww",
+]
 
