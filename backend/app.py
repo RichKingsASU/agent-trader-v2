@@ -28,6 +28,8 @@ from backend.utils.session import get_market_session
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 from backend.common.kill_switch import get_kill_switch_state
 
+logger = logging.getLogger(__name__)
+
 _PROCESS_START_MONOTONIC = time.monotonic()
 
 logger = logging.getLogger(__name__)
@@ -96,6 +98,7 @@ async def startup_event() -> None:
                 try:
                     app.state.ops_logger.heartbeat(kind="loop")  # type: ignore[attr-defined]
                 except Exception:
+                    logger.exception("marketdata_mcp.ops_logger_heartbeat_failed")
                     pass
             await asyncio.sleep(1.0)
 
@@ -107,6 +110,7 @@ async def startup_event() -> None:
     try:
         app.state.ops_logger.event("starting_streamer", severity="INFO")  # type: ignore[attr-defined]
     except Exception:
+        logger.exception("marketdata_mcp.ops_logger_starting_streamer_event_failed")
         pass
     stream_task: asyncio.Task = asyncio.create_task(alpaca_streamer_main(app.state.streamer_ready_event))
     app.state.stream_task = stream_task
@@ -142,6 +146,7 @@ async def startup_event() -> None:
         try:
             app.state.ops_logger.readiness(ready=True)  # type: ignore[attr-defined]
         except Exception:
+            logger.exception("marketdata_mcp.ops_logger_readiness_failed")
             pass
 
 
@@ -152,6 +157,7 @@ async def shutdown_event() -> None:
     try:
         app.state.ops_logger.shutdown(phase="initiated")  # type: ignore[attr-defined]
     except Exception:
+        logger.exception("marketdata_mcp.ops_logger_shutdown_failed")
         pass
 
     # Stop background tasks.
@@ -165,6 +171,7 @@ async def shutdown_event() -> None:
         try:
             t.cancel()
         except Exception:
+            logger.exception("marketdata_mcp.background_task_cancel_failed")
             pass
 
     tasks = [t for t in (ready_task, stream_task, loop_task) if t is not None]
@@ -174,6 +181,7 @@ async def shutdown_event() -> None:
         await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10.0)
     except Exception:
         # Best-effort; never hang shutdown.
+        logger.exception("marketdata_mcp.shutdown_task_wait_failed")
         pass
 
 

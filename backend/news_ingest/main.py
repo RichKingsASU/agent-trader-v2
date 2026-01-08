@@ -49,6 +49,7 @@ def main() -> None:
             },
         )
     except Exception:
+        logger.exception("news_ingest.build_fingerprint_log_failed")
         pass
 
     cfg = from_env()
@@ -63,6 +64,7 @@ def main() -> None:
         try:
             signal.signal(s, _handle_signal)
         except Exception:
+            logger.exception("news_ingest.signal_handler_install_failed signum=%s", s)
             pass
 
     once = (os.getenv("NEWS_INGEST_ONCE") or "").strip().lower() in {"1", "true", "t", "yes", "y", "on"}

@@ -199,6 +199,7 @@ def _run_synthetic_mode() -> None:
         try:
             pub.close()
         except Exception:
+            logger.exception("alpaca_bars_ingest.pubsub_publisher_close_failed")
             pass
 
 

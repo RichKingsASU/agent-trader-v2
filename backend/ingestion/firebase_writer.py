@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 import random
 from typing import Any
 
 from backend.time.nyse_time import parse_ts, utc_now
+
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class FirestorePaths:
@@ -59,6 +62,7 @@ class FirebaseWriter:
             if callable(close):
                 close()
         except Exception:
+            logger.exception("firebase_writer.client_close_failed")
             pass
 
     def _quote_doc(self, symbol: str):
@@ -98,6 +102,7 @@ class FirebaseWriter:
         try:
             return parse_ts(value)
         except Exception:
+            logger.exception("firebase_writer.timestamp_parse_failed value_type=%s", type(value).__name__)
             return utc_now()
 
     def _retry(self, fn, *, max_attempts: int = 6, base_delay_s: float = 0.2, max_delay_s: float = 5.0):
