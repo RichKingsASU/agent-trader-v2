@@ -21,6 +21,11 @@ from backend.ingestion.rate_limit import Backoff, TokenBucket
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
+from backend.common.ws_reconnect_policy import (
+    UnrecoverableAuthError,
+    classify_ws_failure,
+    ensure_retry_allowed,
+)
 from backend.observability.build_fingerprint import get_build_fingerprint
 
 
@@ -373,6 +378,8 @@ class MarketDataIngestor:
         alpaca = load_alpaca_env(require_keys=not self.cfg.dry_run)
         backoff = Backoff(base_seconds=self.cfg.backoff_base_s, max_seconds=self.cfg.backoff_max_s)
         self._backoff = backoff
+        max_attempts = int(os.getenv("RECONNECT_MAX_ATTEMPTS", "5"))
+        min_sleep_s = float(os.getenv("RECONNECT_MIN_SLEEP_S", "0.5"))
 
         # DRY_RUN can simulate quotes even without Alpaca credentials.
         if self.cfg.dry_run and (not alpaca.key_id or not alpaca.secret_key):
@@ -409,13 +416,27 @@ class MarketDataIngestor:
                     # with the same backoff policy to prevent tight restart loops.
                     if not self._stop.is_set():
                         sleep_s = backoff.next_sleep()
+                        sleep_s = max(sleep_s, min_sleep_s)
                         log_json(
                             "alpaca_disconnect",
                             status="ended",
                             sleep_s=sleep_s,
                             attempt=backoff.attempt,
+                            failure_category="transient",
                             severity="WARNING",
                         )
+                        try:
+                            ensure_retry_allowed(attempt=backoff.attempt, max_attempts=max_attempts)
+                        except Exception:
+                            log_json(
+                                "alpaca_reconnect_giveup",
+                                status="max_attempts_exceeded",
+                                attempt=backoff.attempt,
+                                max_attempts=max_attempts,
+                                failure_category="transient",
+                                severity="ERROR",
+                            )
+                            raise
                         log_json(
                             "reconnect_attempt",
                             status="scheduled",
@@ -433,15 +454,58 @@ class MarketDataIngestor:
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
+                    failure = classify_ws_failure(e)
+                    if failure.is_auth_failure():
+                        log_json(
+                            "alpaca_auth_failure",
+                            status="unrecoverable",
+                            error_type=type(e).__name__,
+                            error=str(e),
+                            failure_category=failure.category,
+                            http_status=failure.http_status,
+                            classification_reason=failure.reason,
+                            severity="ERROR",
+                        )
+                        raise UnrecoverableAuthError(str(e)) from e
                     sleep_s = backoff.next_sleep()
+                    sleep_s = max(sleep_s, min_sleep_s)
+                    if failure.is_rate_limited():
+                        log_json(
+                            "alpaca_rate_limited",
+                            status="retrying_with_backoff",
+                            error_type=type(e).__name__,
+                            error=str(e),
+                            attempt=backoff.attempt,
+                            failure_category=failure.category,
+                            http_status=failure.http_status,
+                            classification_reason=failure.reason,
+                            severity="WARNING",
+                        )
                     log_json(
                         "alpaca_disconnect",
                         status="error",
                         error=str(e),
                         sleep_s=sleep_s,
                         attempt=backoff.attempt,
+                        failure_category=failure.category,
+                        http_status=failure.http_status,
+                        classification_reason=failure.reason,
                         severity="ERROR",
                     )
+                    try:
+                        ensure_retry_allowed(attempt=backoff.attempt, max_attempts=max_attempts)
+                    except Exception:
+                        log_json(
+                            "alpaca_reconnect_giveup",
+                            status="max_attempts_exceeded",
+                            attempt=backoff.attempt,
+                            max_attempts=max_attempts,
+                            failure_category=failure.category,
+                            http_status=failure.http_status,
+                            classification_reason=failure.reason,
+                            severity="ERROR",
+                        )
+                        raise
                     log_json(
                         "reconnect_attempt",
                         status="scheduled",
@@ -618,6 +682,9 @@ async def _amain() -> int:
             heartbeat_writes_err=stats.heartbeat_writes_err,
         )
         return 0
+    except UnrecoverableAuthError as e:
+        log_json("shutdown", status="auth_failure", error=str(e), severity="ERROR")
+        return 1
     except Exception as e:
         log_json("shutdown", status="error", error=str(e), severity="ERROR")
         return 2
