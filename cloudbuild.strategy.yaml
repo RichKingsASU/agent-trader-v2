@@ -16,19 +16,22 @@ steps:
       - "-c"
       - |
         set -euo pipefail
-        BUILD_TIME_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        GIT_SHA="${COMMIT_SHA:-$SHORT_SHA}"
+        BUILD_TIME_UTC="$$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        GIT_SHA="$COMMIT_SHA"
+        if [ -z "$$GIT_SHA" ]; then
+          GIT_SHA="$SHORT_SHA"
+        fi
         IMAGE_REF="us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:$SHORT_SHA"
         docker build \
           -f backend/strategy_service/Dockerfile \
-          --build-arg GIT_SHA="${GIT_SHA}" \
+          --build-arg GIT_SHA="$${GIT_SHA}" \
           --build-arg BUILD_ID="${BUILD_ID}" \
-          --build-arg BUILD_TIME_UTC="${BUILD_TIME_UTC}" \
-          --build-arg IMAGE_REF="${IMAGE_REF}" \
-          -t "${IMAGE_REF}" \
+          --build-arg BUILD_TIME_UTC="$${BUILD_TIME_UTC}" \
+          --build-arg IMAGE_REF="$${IMAGE_REF}" \
+          -t "$${IMAGE_REF}" \
           .
 
         chmod +x ./scripts/ci_import_gate.sh
-        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
+        ./scripts/ci_import_gate.sh "$${IMAGE_REF}" backend.strategy_service.app
 images:
   - 'us-east4-docker.pkg.dev/agenttrader-prod/trader-repo/strategy-runtime:$SHORT_SHA'

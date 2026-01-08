@@ -29,16 +29,19 @@ steps:
       - -c
       - |
         set -euo pipefail
-        BUILD_TIME_UTC="$(cat /workspace/.build_time_utc)"
-        GIT_SHA="${COMMIT_SHA:-$SHORT_SHA}"
+        BUILD_TIME_UTC="$$(cat /workspace/.build_time_utc)"
+        GIT_SHA="$COMMIT_SHA"
+        if [ -z "$$GIT_SHA" ]; then
+          GIT_SHA="$SHORT_SHA"
+        fi
         IMAGE_REF="gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA"
         docker build \
           -f infra/Dockerfile.congressional_ingest \
-          --build-arg GIT_SHA="${GIT_SHA}" \
+          --build-arg GIT_SHA="$${GIT_SHA}" \
           --build-arg BUILD_ID="${BUILD_ID}" \
-          --build-arg BUILD_TIME_UTC="${BUILD_TIME_UTC}" \
-          --build-arg IMAGE_REF="${IMAGE_REF}" \
-          -t "${IMAGE_REF}" \
+          --build-arg BUILD_TIME_UTC="$${BUILD_TIME_UTC}" \
+          --build-arg IMAGE_REF="$${IMAGE_REF}" \
+          -t "$${IMAGE_REF}" \
           .
     id: 'build-image'
 
@@ -52,7 +55,7 @@ steps:
         set -euo pipefail
         IMAGE_REF="gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA"
         chmod +x ./scripts/ci_import_gate.sh
-        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.ingestion.congressional_disclosures
+        ./scripts/ci_import_gate.sh "$${IMAGE_REF}" backend.ingestion.congressional_disclosures
     id: 'import-gate'
 
   # Push the image to GCR
@@ -71,21 +74,24 @@ steps:
       - -c
       - |
         set -euo pipefail
-        BUILD_TIME_UTC="$(cat /workspace/.build_time_utc)"
-        GIT_SHA="${COMMIT_SHA:-$SHORT_SHA}"
+        BUILD_TIME_UTC="$$(cat /workspace/.build_time_utc)"
+        GIT_SHA="$COMMIT_SHA"
+        if [ -z "$$GIT_SHA" ]; then
+          GIT_SHA="$SHORT_SHA"
+        fi
         IMAGE_REF="gcr.io/$PROJECT_ID/congressional-ingest:$SHORT_SHA"
         gcloud run deploy congressional-ingest \
-          --image="${IMAGE_REF}" \
+          --image="$${IMAGE_REF}" \
           --platform=managed \
           --region=us-central1 \
           --set-env-vars="TENANT_ID=${_TENANT_ID}" \
           --set-env-vars="NATS_URL=${_NATS_URL}" \
           --set-env-vars="POLL_INTERVAL_SECONDS=${_POLL_INTERVAL_SECONDS}" \
           --set-env-vars="LOOKBACK_DAYS=${_LOOKBACK_DAYS}" \
-          --set-env-vars="GIT_SHA=${GIT_SHA}" \
+          --set-env-vars="GIT_SHA=$${GIT_SHA}" \
           --set-env-vars="BUILD_ID=${BUILD_ID}" \
-          --set-env-vars="BUILD_TIME_UTC=${BUILD_TIME_UTC}" \
-          --set-env-vars="IMAGE_REF=${IMAGE_REF}" \
+          --set-env-vars="BUILD_TIME_UTC=$${BUILD_TIME_UTC}" \
+          --set-env-vars="IMAGE_REF=$${IMAGE_REF}" \
           --update-secrets=QUIVER_API_KEY=quiver-api-key:latest \
           --cpu=1 \
           --memory=512Mi \

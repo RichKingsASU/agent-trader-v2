@@ -67,8 +67,8 @@ steps:
       - |
         set -euo pipefail
         IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}"
-        echo "docker build tag=${IMAGE_TAG}"
-        docker build -t "${IMAGE_TAG}" -f backend/Dockerfile.marketdata-mcp-server .
+        echo "docker build tag=$${IMAGE_TAG}"
+        docker build -t "$${IMAGE_TAG}" -f backend/Dockerfile.marketdata-mcp-server .
 
   - name: 'gcr.io/cloud-builders/bash'
     id: 'PHASE 3: import smoke'
@@ -90,7 +90,7 @@ steps:
         set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}'
         chmod +x ./scripts/ci_import_gate.sh
-        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.app
+        ./scripts/ci_import_gate.sh "$${IMAGE_REF}" backend.app
 
   # Build strategy-engine
   - name: 'gcr.io/cloud-builders/docker'
@@ -102,8 +102,8 @@ steps:
       - |
         set -euo pipefail
         IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}"
-        echo "docker build tag=${IMAGE_TAG}"
-        docker build -t "${IMAGE_TAG}" -f infra/Dockerfile.strategy_engine .
+        echo "docker build tag=$${IMAGE_TAG}"
+        docker build -t "$${IMAGE_TAG}" -f infra/Dockerfile.strategy_engine .
 
   - name: 'gcr.io/cloud-builders/bash'
     id: 'Import gate strategy-engine'
@@ -115,7 +115,7 @@ steps:
         set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
         chmod +x ./scripts/ci_import_gate.sh
-        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_engine.service
+        ./scripts/ci_import_gate.sh "$${IMAGE_REF}" backend.strategy_engine.service
 
   # Build strategy-runtime (used by gamma and whale strategies)
   - name: 'gcr.io/cloud-builders/docker'
@@ -127,8 +127,8 @@ steps:
       - |
         set -euo pipefail
         IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}"
-        echo "docker build tag=${IMAGE_TAG}"
-        docker build -t "${IMAGE_TAG}" -f backend/strategy_service/Dockerfile .
+        echo "docker build tag=$${IMAGE_TAG}"
+        docker build -t "$${IMAGE_TAG}" -f backend/strategy_service/Dockerfile .
 
   - name: 'gcr.io/cloud-builders/bash'
     id: 'Import gate strategy-runtime'
@@ -139,7 +139,7 @@ steps:
       - |
         set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}'
-        sh ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_service.app
+        sh ./scripts/ci_import_gate.sh "$${IMAGE_REF}" backend.strategy_service.app
 
   - name: 'gcr.io/cloud-builders/bash'
     id: 'PHASE 5: docker push'
@@ -160,7 +160,7 @@ steps:
       - |
         set -euo pipefail
         IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/marketdata-mcp-server:${_TAG}"
-        docker push "${IMAGE_TAG}"
+        docker push "$${IMAGE_TAG}"
 
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Push strategy-engine'
@@ -171,7 +171,7 @@ steps:
       - |
         set -euo pipefail
         IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}"
-        docker push "${IMAGE_TAG}"
+        docker push "$${IMAGE_TAG}"
 
   - name: 'gcr.io/cloud-builders/docker'
     id: 'Push strategy-runtime'
@@ -182,4 +182,4 @@ steps:
       - |
         set -euo pipefail
         IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-runtime:${_TAG}"
-        docker push "${IMAGE_TAG}"
+        docker push "$${IMAGE_TAG}"
