@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import uuid
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional, Protocol, runtime_checkable
@@ -1060,12 +1061,72 @@ class ExecutionEngine:
                 message="kill_switch_enabled",
             )
 
+        # ---- Idempotency guard (engine-level, replay-safe) ----
+        # This prevents duplicate broker submissions if the same intent is processed twice.
+        try:
+            tenant_id = None
+            try:
+                # Reuse the ledger's tenant resolution rules (metadata/env).
+                tenant_id = _FirestoreLedger()._resolve_tenant_id(intent=intent)  # type: ignore[attr-defined]
+            except Exception:
+                tenant_id = str(os.getenv("EXEC_TENANT_ID") or os.getenv("TENANT_ID") or "").strip() or None
+
+            if tenant_id:
+                from backend.persistence.idempotency_store import FirestoreIdempotencyStore
+
+                idem = FirestoreIdempotencyStore(
+                    project_id=os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or None
+                )
+                acquired, rec = idem.begin(
+                    tenant_id=tenant_id,
+                    scope="execution.broker_place_order",
+                    key=str(intent.client_intent_id),
+                    payload={"symbol": intent.symbol, "side": intent.side, "qty": intent.qty},
+                )
+                if not acquired:
+                    if rec.outcome and isinstance(rec.outcome.get("broker_order"), dict):
+                        broker_order = rec.outcome.get("broker_order")
+                        broker_order_id = str(broker_order.get("id") or "").strip() or None
+                        return ExecutionResult(
+                            status=str(rec.outcome.get("status") or "placed"),
+                            risk=risk,
+                            routing=routing_decision,
+                            broker_order_id=broker_order_id,
+                            broker_order=broker_order,
+                            message="duplicate_intent_idempotent_return",
+                        )
+                    return ExecutionResult(
+                        status="accepted",
+                        risk=risk,
+                        routing=routing_decision,
+                        message="duplicate_intent_in_progress",
+                    )
+            else:
+                logger.warning("exec.idempotency_disabled missing_tenant_id client_intent_id=%s", intent.client_intent_id)
+        except Exception:
+            # Idempotency is best-effort; never break safety checks.
+            logger.exception("exec.idempotency_guard_failed")
+
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None
         logger.info(
             "exec.order_placed %s",
             json.dumps(_to_jsonable({"broker": self._broker_name, "broker_order_id": broker_order_id, "order": broker_order})),
         )
+        try:
+            # Persist idempotency outcome for replay-safe responses.
+            _idem = locals().get("idem")
+            _tenant_id = locals().get("tenant_id")
+            if _idem is not None and _tenant_id:
+                _idem.complete(
+                    tenant_id=str(_tenant_id),
+                    scope="execution.broker_place_order",
+                    key=str(intent.client_intent_id),
+                    outcome={"status": "placed", "broker_order_id": broker_order_id, "broker_order": broker_order},
+                    status="completed",
+                )
+        except Exception:
+            logger.exception("exec.idempotency_complete_failed")
         try:
             logger.info(
                 "%s",
@@ -1224,8 +1285,15 @@ class ExecutionEngine:
             if isinstance(filled_at_raw, datetime):
                 ts = filled_at_raw.astimezone(timezone.utc)
             
-            # Create portfolio history entry
-            history_id = f"{broker_order_id}_{int(ts.timestamp() * 1000)}"
+            # Create a deterministic history id so reprocessing does not duplicate entries.
+            # Note: we intentionally include filled fields to separate partial fills.
+            filled_at_key = (
+                filled_at_raw.astimezone(timezone.utc).isoformat()
+                if isinstance(filled_at_raw, datetime)
+                else str(filled_at_raw or "")
+            )
+            fp = f"{broker_order_id}|{filled_qty}|{filled_avg_price}|{filled_at_key}|{intent.symbol}|{intent.side}"
+            history_id = hashlib.sha1(fp.encode("utf-8")).hexdigest()
             
             history_entry = {
                 # Core trade data
@@ -1268,7 +1336,8 @@ class ExecutionEngine:
                 .collection("trades")
                 .document(history_id)
             )
-            doc_ref.set(history_entry)
+            # Idempotent write (same doc id + overwrite/merge).
+            doc_ref.set(history_entry, merge=True)
             
             logger.info(
                 "exec.portfolio_history_written uid=%s symbol=%s qty=%s price=%s",

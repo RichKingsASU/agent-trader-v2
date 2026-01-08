@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from datetime import datetime, timezone
 from decimal import Decimal
 import logging
+import hashlib
 
 from backend.tenancy.auth import get_tenant_context
 from backend.tenancy.context import TenantContext
@@ -13,6 +14,7 @@ from backend.persistence.firebase_client import get_firestore_client
 from backend.persistence.firestore_retry import with_firestore_retry
 from backend.common.kill_switch import get_kill_switch_state
 from google.cloud import firestore
+from google.api_core import exceptions as gexc
 
 from ..db import build_raw_order, insert_paper_order
 from ..models import PaperOrderCreate
@@ -32,6 +34,27 @@ class TradeRequest(BaseModel):
     time_in_force: str = "day"
     notional: float
     quantity: float = None
+    idempotency_key: str | None = None
+
+
+def _stable_id(*, scope: str, key: str) -> str:
+    raw = f"{scope}|{key}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:48]
+
+
+def _resolve_idempotency_key(*, trade_request: TradeRequest, request: Request) -> str | None:
+    for c in (
+        trade_request.idempotency_key,
+        request.headers.get("Idempotency-Key"),
+        request.headers.get("X-Idempotency-Key"),
+        request.headers.get("X-Request-Id"),
+    ):
+        if not c:
+            continue
+        s = str(c).strip()
+        if s:
+            return s
+    return None
 
 
 def get_shadow_mode_flag() -> bool:
@@ -99,7 +122,7 @@ def get_current_price(symbol: str) -> Decimal:
         return Decimal("0")
 
 
-def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict:
+def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, idempotency_key: str | None) -> dict:
     """
     Create a synthetic shadow trade and log it to user-scoped shadowTradeHistory collection.
     
@@ -114,7 +137,8 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict
     """
     try:
         db = get_firestore_client()
-        shadow_id = str(uuid4())
+        raw_key = idempotency_key
+        shadow_id = _stable_id(scope="shadow_trade", key=raw_key) if raw_key else str(uuid4())
         
         # Get current price for fill simulation
         fill_price = get_current_price(trade_request.symbol)
@@ -132,6 +156,7 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict
         # Create shadow trade record
         shadow_trade = {
             "shadow_id": shadow_id,
+            "idempotency_key": raw_key,
             "uid": ctx.uid,
             "tenant_id": ctx.tenant_id,
             "broker_account_id": str(trade_request.broker_account_id),
@@ -154,14 +179,18 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict
             "last_updated": firestore.SERVER_TIMESTAMP,
         }
         
-        # Write to user-scoped shadowTradeHistory collection
-        with_firestore_retry(
-            lambda: db.collection("users")
+        # Write to user-scoped shadowTradeHistory collection (idempotent on shadow_id).
+        ref = (
+            db.collection("users")
             .document(ctx.uid)
             .collection("shadowTradeHistory")
             .document(shadow_id)
-            .set(shadow_trade, merge=False)
         )
+        try:
+            with_firestore_retry(lambda: ref.create(shadow_trade))
+        except gexc.AlreadyExists:
+            snap = with_firestore_retry(lambda: ref.get())
+            return snap.to_dict() if snap.exists else shadow_trade
         
         logger.info(f"Shadow trade created: {shadow_id} - {trade_request.symbol} {trade_request.side} qty={qty} @ ${fill_price}")
         
@@ -193,6 +222,8 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     Fail-safe: On any error reading the shadow mode flag, defaults to shadow mode = True
     """
     ctx: TenantContext = get_tenant_context(request)
+    idem_key = _resolve_idempotency_key(trade_request=trade_request, request=request)
+    stable_key = _stable_id(scope="trade_execute", key=idem_key) if idem_key else None
     
     # Check shadow mode flag (fail-safe: defaults to True)
     is_shadow_mode = get_shadow_mode_flag()
@@ -234,10 +265,41 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     if not risk_result.get("allowed"):
         raise HTTPException(status_code=400, detail=f"Trade not allowed by risk service: {risk_result.get('reason')}")
 
+    # Capital reservation (best-effort, idempotent): prevents double-allocation on replay.
+    # Reservation key is stable for a given idempotency key.
+    if stable_key:
+        try:
+            db = get_firestore_client()
+            res_ref = (
+                db.collection("users")
+                .document(ctx.uid)
+                .collection("capital_reservations")
+                .document(stable_key)
+            )
+            reservation = {
+                "idempotency_key": idem_key,
+                "scope": "trade_execute",
+                "tenant_id": ctx.tenant_id,
+                "uid": ctx.uid,
+                "symbol": trade_request.symbol,
+                "side": trade_request.side,
+                "notional": str(trade_request.notional),
+                "status": "reserved",
+                "created_at": firestore.SERVER_TIMESTAMP,
+                "created_at_iso": datetime.now(timezone.utc).isoformat(),
+            }
+            try:
+                with_firestore_retry(lambda: res_ref.create(reservation))
+            except gexc.AlreadyExists:
+                # If reservation already exists, continue; downstream trade write is also idempotent.
+                pass
+        except Exception as e:
+            logger.warning("capital_reservation_write_failed %s", e)
+
     # SHADOW MODE: Create synthetic order without contacting broker
     if is_shadow_mode:
         try:
-            shadow_trade = create_shadow_trade(trade_request, ctx)
+            shadow_trade = create_shadow_trade(trade_request, ctx, idempotency_key=idem_key)
             logger.info(f"Shadow trade executed successfully: {shadow_trade['shadow_id']}")
             
             # Return shadow trade in a format similar to paper order
@@ -272,6 +334,7 @@ def execute_trade(trade_request: TradeRequest, request: Request):
                 "time_in_force": trade_request.time_in_force,
                 "notional": trade_request.notional,
                 "quantity": trade_request.quantity,
+                "idempotency_key": idem_key,
             }
             payload = PaperOrderCreate(
                 uid=ctx.uid,
@@ -324,7 +387,12 @@ def close_shadow_trade(close_request: CloseShadowTradeRequest, request: Request)
         shadow_id = close_request.shadow_id
         
         # Get the shadow trade document
-        shadow_ref = db.collection("shadowTradeHistory").document(shadow_id)
+        shadow_ref = (
+            db.collection("users")
+            .document(ctx.uid)
+            .collection("shadowTradeHistory")
+            .document(shadow_id)
+        )
         shadow_doc = with_firestore_retry(lambda: shadow_ref.get())
         
         if not shadow_doc.exists:
@@ -338,7 +406,18 @@ def close_shadow_trade(close_request: CloseShadowTradeRequest, request: Request)
         
         # Check if already closed
         if shadow_data.get("status") == "CLOSED":
-            raise HTTPException(status_code=400, detail="Trade is already closed")
+            # Idempotent close: return existing closed trade.
+            return {
+                "id": shadow_id,
+                "status": "CLOSED",
+                "symbol": shadow_data.get("symbol"),
+                "entry_price": shadow_data.get("entry_price"),
+                "exit_price": shadow_data.get("exit_price"),
+                "final_pnl": shadow_data.get("final_pnl", shadow_data.get("current_pnl", "0.00")),
+                "final_pnl_percent": shadow_data.get("final_pnl_percent", shadow_data.get("pnl_percent", "0.00")),
+                "exit_reason": shadow_data.get("exit_reason", close_request.exit_reason),
+                "message": "Trade already closed (idempotent).",
+            }
         
         # Get current exit price
         symbol = shadow_data.get("symbol")

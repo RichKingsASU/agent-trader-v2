@@ -28,6 +28,7 @@ class PaperOrderRequest(BaseModel):
     time_in_force: str = "day"
     notional: float
     quantity: float | None = None
+    idempotency_key: str | None = None
 
 
 @router.post("/paper_orders", tags=["paper_orders"])
@@ -65,6 +66,11 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
 
     # 2. If allowed, insert paper order
     if risk_result.get("allowed"):
+        idem = (
+            (order.idempotency_key or "").strip()
+            or (request.headers.get("Idempotency-Key") or "").strip()
+            or None
+        )
         logical_order = {
             "uid": ctx.uid,
             "broker_account_id": str(order.broker_account_id),
@@ -76,6 +82,7 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
             "time_in_force": order.time_in_force,
             "notional": order.notional,
             "quantity": order.quantity,
+            "idempotency_key": idem,
         }
 
         payload = PaperOrderCreate(

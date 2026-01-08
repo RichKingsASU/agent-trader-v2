@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import UUID, uuid4
+from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 
 from google.cloud import firestore
+from google.api_core import exceptions as gexc
 
 from backend.persistence.firebase_client import get_firestore_client
 from backend.persistence.firestore_retry import with_firestore_retry
@@ -34,7 +35,17 @@ def build_raw_order(logical_order: dict) -> dict:
         "strategy_id": logical_order["strategy_id"],
         "broker_account_id": logical_order["broker_account_id"],
         "uid": logical_order["uid"],
+        "idempotency_key": logical_order.get("idempotency_key"),
     }
+
+
+def _stable_order_uuid(*, idempotency_key: str) -> UUID:
+    """
+    Deterministic UUID derived from an idempotency key.
+
+    This enables idempotent inserts by using Firestore `create()` on a stable doc id.
+    """
+    return uuid5(NAMESPACE_URL, str(idempotency_key))
 
 
 def insert_paper_order(*, tenant_id: str, payload: PaperOrderCreate) -> PaperOrder:
@@ -50,7 +61,12 @@ def insert_paper_order(*, tenant_id: str, payload: PaperOrderCreate) -> PaperOrd
         - created_at (timestamp)
     """
     db = get_db()
-    order_id = uuid4()
+    idem_key = None
+    try:
+        idem_key = (payload.raw_order or {}).get("idempotency_key")
+    except Exception:
+        idem_key = None
+    order_id = _stable_order_uuid(idempotency_key=str(idem_key)) if idem_key else uuid4()
     created_at_dt = datetime.now(timezone.utc)
 
     doc = {
@@ -74,13 +90,41 @@ def insert_paper_order(*, tenant_id: str, payload: PaperOrderCreate) -> PaperOrd
         "created_at_iso": created_at_dt.isoformat(),
     }
 
-    with_firestore_retry(
-        lambda: db.collection("tenants")
+    ref = (
+        db.collection("tenants")
         .document(tenant_id)
         .collection(COLLECTION_PAPER_ORDERS)
         .document(str(order_id))
-        .set(doc, merge=False)
     )
+    try:
+        with_firestore_retry(lambda: ref.create(doc))
+    except gexc.AlreadyExists:
+        snap = with_firestore_retry(lambda: ref.get())
+        existing = snap.to_dict() if snap.exists else {}
+        created_at = str((existing or {}).get("created_at_iso") or created_at_dt.isoformat())
+        return PaperOrder(
+            id=UUID(str((existing or {}).get("id") or str(order_id))),
+            created_at=created_at,
+            uid=str((existing or {}).get("uid") or payload.uid),
+            broker_account_id=UUID(str((existing or {}).get("broker_account_id") or str(payload.broker_account_id))),
+            strategy_id=UUID(str((existing or {}).get("strategy_id") or str(payload.strategy_id))),
+            symbol=str((existing or {}).get("symbol") or payload.symbol),
+            instrument_type=str((existing or {}).get("instrument_type") or payload.instrument_type),
+            side=str((existing or {}).get("side") or payload.side),
+            order_type=str((existing or {}).get("order_type") or payload.order_type),
+            time_in_force=str((existing or {}).get("time_in_force") or payload.time_in_force),
+            notional=float((existing or {}).get("notional") or payload.notional),
+            quantity=(existing or {}).get("quantity") if (existing or {}).get("quantity") is not None else payload.quantity,
+            risk_allowed=bool(
+                (existing or {}).get("risk_allowed")
+                if (existing or {}).get("risk_allowed") is not None
+                else payload.risk_allowed
+            ),
+            risk_scope=(existing or {}).get("risk_scope") or payload.risk_scope,
+            risk_reason=(existing or {}).get("risk_reason") or payload.risk_reason,
+            raw_order=(existing or {}).get("raw_order") or payload.raw_order,
+            status=str((existing or {}).get("status") or payload.status),
+        )
 
     # Return an API-friendly shape (match existing model expectations).
     return PaperOrder(
