@@ -21,6 +21,7 @@ from backend.common.kill_switch import (
 )
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.streams.alpaca_env import load_alpaca_env
+from backend.risk.loss_acceleration_guard import LossAccelerationGuard
 
 logger = logging.getLogger(__name__)
 
@@ -687,6 +688,43 @@ class RiskManager:
         checks.append({"check": "kill_switch", "enabled": enabled})
         if enabled:
             return RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
+
+        # Loss acceleration guard (rolling drawdown velocity)
+        # Operates independently of strategy logic: pure risk gate on intent routing.
+        try:
+            uid = str(intent.metadata.get("uid") or intent.metadata.get("user_id") or os.getenv("EXEC_UID") or "").strip() or None
+            guard = LossAccelerationGuard()
+            decision = guard.decide(uid=uid)
+            m = decision.metrics
+            checks.append(
+                {
+                    "check": "loss_acceleration_guard",
+                    "action": decision.action,
+                    "reason": decision.reason,
+                    "uid": uid,
+                    "metrics": (
+                        {
+                            "window_seconds": m.window_seconds,
+                            "points_used": m.points_used,
+                            "hwm_equity": m.hwm_equity,
+                            "current_equity": m.current_equity,
+                            "current_drawdown_pct": m.current_drawdown_pct,
+                            "velocity_pct_per_min": m.velocity_pct_per_min,
+                            "window_start": m.window_start.isoformat(),
+                            "window_end": m.window_end.isoformat(),
+                        }
+                        if m is not None
+                        else None
+                    ),
+                    "retry_after_seconds": decision.retry_after_seconds,
+                    "pause_until": decision.pause_until.isoformat() if decision.pause_until else None,
+                }
+            )
+            if decision.action in {"pause", "throttle"}:
+                return RiskDecision(allowed=False, reason=decision.reason or "loss_acceleration", checks=checks)
+        except Exception as e:
+            # Best-effort: never block if telemetry/reads fail.
+            checks.append({"check": "loss_acceleration_guard", "error": str(e)})
 
         # Daily trades
         try:

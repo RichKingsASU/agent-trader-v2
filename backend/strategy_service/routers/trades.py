@@ -3,7 +3,7 @@ from pydantic import BaseModel
 import requests
 import os
 from uuid import UUID, uuid4
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 import logging
 
@@ -14,6 +14,8 @@ from backend.persistence.firestore_retry import with_firestore_retry
 from backend.common.kill_switch import get_kill_switch_state
 from google.cloud import firestore
 from google.api_core.exceptions import AlreadyExists
+
+from backend.risk.loss_acceleration_guard import LossAccelerationGuard
 
 from ..db import build_raw_order, insert_paper_order
 from ..db import insert_paper_order_idempotent

@@ -77,6 +77,24 @@ except Exception:
     pass
 
 
+def _fail_fast_import(exc: Exception, *, context: str, failed_import: str) -> "None":
+    """
+    Emit a CRITICAL log and exit immediately on import/config failures.
+
+    This keeps Cloud Run from reporting the container "healthy" while the worker
+    thread is non-functional due to missing dependencies or module import errors.
+    """
+    logger.critical(
+        "Fatal import/config error (%s): failed_import=%s error=%s",
+        str(context),
+        str(failed_import),
+        str(exc),
+        extra={**LOG_EXTRA, "event_type": "cloudrun.fatal_import", "context": str(context), "failed_import": str(failed_import)},
+        exc_info=True,
+    )
+    raise SystemExit(1) from exc
+
+
 def override_config():
     """Overrides hardcoded config from vm_ingest with environment variables."""
     try:
@@ -165,6 +183,8 @@ def ingestion_worker():
     last_effective_source: str | None = None
 
     while not SHUTDOWN_FLAG.is_set():
+        iteration_id = str(uuid.uuid4())
+        loop_log_extra = {**LOG_EXTRA, "event_type": "ingestion.loop", "iteration_id": iteration_id}
         try:
             # Combine the repo-wide kill switch with the operator ingest switch.
             effective_enabled, effective_source = get_effective_ingest_enabled_state(default_enabled=True)
@@ -212,12 +232,18 @@ def ingestion_worker():
             # Publish events (business logic is unchanged)
             logger.info("Published system heartbeat.", extra={**loop_log_extra, "published_topic": service.system_events_topic_path})
             
+            if SHUTDOWN_FLAG.is_set():
+                break
             service.publish_market_tick()
             logger.info("Published market tick.", extra={**loop_log_extra, "published_topic": service.market_ticks_topic_path})
 
+            if SHUTDOWN_FLAG.is_set():
+                break
             service.publish_market_bar_1m()
             logger.info("Published market bar.", extra={**loop_log_extra, "published_topic": service.market_bars_1m_topic_path})
 
+            if SHUTDOWN_FLAG.is_set():
+                break
             service.publish_trade_signal()
             logger.info("Published trade signal.", extra={**loop_log_extra, "published_topic": service.trade_signals_topic_path})
 
