@@ -29,6 +29,6 @@ steps:
         set -euo pipefail
         IMAGE_REF='${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}'
         chmod +x ./scripts/ci_import_gate.sh
-        ./scripts/ci_import_gate.sh "${IMAGE_REF}" backend.strategy_engine.service
+        ./scripts/ci_import_gate.sh "$${IMAGE_REF}" backend.strategy_engine.service
 images:
   - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/strategy-engine:${_TAG}
