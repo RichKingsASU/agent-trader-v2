@@ -8,6 +8,7 @@ httpx
 requests
 tenacity
 google-genai
+google-cloud-pubsub
 
 # Firebase / Firestore
 firebase-admin
