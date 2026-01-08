@@ -18,6 +18,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      TRADING_MODE: paper
 
     steps:
       - name: Checkout
@@ -109,6 +111,12 @@ jobs:
           cache-dependency-path: |
             backend/requirements.lock
             cloudrun_ingestor/requirements.txt
+
+      - name: Paper-trading hard lock guard (CI)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest -q tests.test_trading_mode_guardrail
 
       - name: Install backend dependencies (locked)
         run: |
