@@ -23,7 +23,7 @@ def build_raw_order(logical_order: dict) -> dict:
     Build the broker-facing payload (raw_order).
     For now it's just a mirror of the logical order + metadata.
     """
-    return {
+    raw = {
         "instrument_type": logical_order["instrument_type"],
         "symbol": logical_order["symbol"],
         "side": logical_order["side"],
@@ -35,6 +35,11 @@ def build_raw_order(logical_order: dict) -> dict:
         "broker_account_id": logical_order["broker_account_id"],
         "uid": logical_order["uid"],
     }
+    # Optional correlation identifiers for joinability across stages.
+    for k in ("correlation_id", "signal_id", "allocation_id", "execution_id"):
+        if logical_order.get(k) is not None:
+            raw[k] = logical_order.get(k)
+    return raw
 
 
 def insert_paper_order(*, tenant_id: str, payload: PaperOrderCreate) -> PaperOrder:
@@ -55,6 +60,10 @@ def insert_paper_order(*, tenant_id: str, payload: PaperOrderCreate) -> PaperOrd
 
     doc = {
         "id": str(order_id),
+        "correlation_id": payload.correlation_id,
+        "signal_id": payload.signal_id,
+        "allocation_id": payload.allocation_id,
+        "execution_id": payload.execution_id,
         "uid": str(payload.uid),
         "broker_account_id": str(payload.broker_account_id),
         "strategy_id": str(payload.strategy_id),
@@ -86,6 +95,10 @@ def insert_paper_order(*, tenant_id: str, payload: PaperOrderCreate) -> PaperOrd
     return PaperOrder(
         id=UUID(str(order_id)),
         created_at=created_at_dt.isoformat(),
+        correlation_id=payload.correlation_id,
+        signal_id=payload.signal_id,
+        allocation_id=payload.allocation_id,
+        execution_id=payload.execution_id,
         uid=payload.uid,
         broker_account_id=payload.broker_account_id,
         strategy_id=payload.strategy_id,

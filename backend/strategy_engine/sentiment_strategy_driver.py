@@ -187,6 +187,7 @@ async def run_sentiment_strategy(
                 action=action,
                 reason=reason,
                 signal_payload=signal_payload,
+                correlation_id=correlation_id,
                 did_trade=False  # Will update if trade is executed
             )
             
