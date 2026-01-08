@@ -20,14 +20,15 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-def _startup_diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
-    """
-    Print a structured JSON diagnostic log.
+import logging
+
+from fastapi import FastAPI, HTTPException, Request, Response
 
 from event_utils import infer_topic
 from firestore_writer import FirestoreWriter
 from replay_support import ReplayContext, write_replay_marker
 from schema_router import route_payload
+from time_audit import ensure_utc
 
 
 SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"
@@ -239,7 +240,15 @@ app = FastAPI(title="Cloud Run Pub/Sub → Firestore Materializer", version="0.1
 @app.on_event("startup")
 async def _startup() -> None:
     _normalize_env_alias("GCP_PROJECT", ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT_ID", "PROJECT_ID"])
-    _validate_required_env(["GCP_PROJECT", "SYSTEM_EVENTS_TOPIC", "INGEST_FLAG_SECRET_ID", "ENV"])
+    # Centralized env contract validation (single-line failure).
+    try:
+        from backend.common.config import validate_or_exit as _validate_or_exit  # noqa: WPS433
+
+        _validate_or_exit("cloudrun-consumer")
+    except SystemExit:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"CONFIG_FAIL service=cloudrun-consumer action=\"config_validation_import_failed:{type(e).__name__}:{e}\"") from e
 
     project_id = _require_env("GCP_PROJECT")
 
