@@ -144,6 +144,28 @@ class Gauge:
 
 REGISTRY = MetricRegistry()
 
+# ---- Generic in-process counters (no external deps) ----
+#
+# These are intentionally "institutional-grade minimal":
+# - names match operational intent
+# - labeled so multiple components/streams can share them
+# - safe to use from async tasks and threads
+messages_received_total = REGISTRY.counter(
+    "messages_received_total",
+    help="Total messages received from upstream connections, labeled by component and stream.",
+    label_names=("component", "stream"),
+)
+messages_published_total = REGISTRY.counter(
+    "messages_published_total",
+    help="Total messages/events published to downstream destinations, labeled by component and stream.",
+    label_names=("component", "stream"),
+)
+reconnect_attempts_total = REGISTRY.counter(
+    "reconnect_attempts_total",
+    help="Total reconnect attempts, labeled by component and stream.",
+    label_names=("component", "stream"),
+)
+
 # Required metrics (keep names exactly as requested)
 agent_start_total = REGISTRY.counter(
     "agent_start_total",

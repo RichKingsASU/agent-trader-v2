@@ -20,6 +20,7 @@ from .streams.account_updates_client import AccountUpdatesClient
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
+from backend.common.ops_metrics import REGISTRY
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.observability.ops_json_logger import OpsLogger
 
@@ -95,7 +96,27 @@ async def _heartbeat_loop(ops: OpsLogger) -> None:
     interval = max(5.0, interval)
     while True:
         try:
-            ops.heartbeat(kind="loop")
+            # Include a small, log-friendly snapshot of in-process counters so
+            # operators can see traffic without an external metrics system.
+            snap = REGISTRY.snapshot()
+
+            def _by_stream(metric_name: str) -> dict[str, int]:
+                out: dict[str, float] = {}
+                for label_tup, v in (snap.get(metric_name) or {}).items():
+                    labels = dict(label_tup)
+                    if labels.get("component") != "stream-bridge":
+                        continue
+                    stream = str(labels.get("stream") or "unknown")
+                    out[stream] = float(out.get(stream, 0.0)) + float(v)
+                # Render as ints for readability (these are counters).
+                return {k: int(v) for k, v in sorted(out.items())}
+
+            ops.heartbeat(
+                kind="loop",
+                messages_received_total=_by_stream("messages_received_total"),
+                messages_published_total=_by_stream("messages_published_total"),
+                reconnect_attempts_total=_by_stream("reconnect_attempts_total"),
+            )
         except Exception:
             pass
         await asyncio.sleep(interval)

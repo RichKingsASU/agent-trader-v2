@@ -7,6 +7,8 @@ from backend.streams_bridge.config import Config
 from backend.streams_bridge.firestore_writer import FirestoreWriter
 from backend.streams_bridge.mapping import map_devconsole_options_flow
 from backend.observability.ops_json_logger import OpsLogger
+from backend.common.logging import log_event
+from backend.common.ops_metrics import messages_received_total, messages_published_total, reconnect_attempts_total
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,36 @@ class OptionsFlowClient:
         self.cfg = cfg
         self.writer = writer
         self._ops = OpsLogger("stream-bridge")
+        self._recv_total = 0
+        self._pub_total = 0
+        self._reconnect_total = 0
+        self._last_stats_log_m = 0.0
+        self._recv_since_log = 0
+        self._pub_since_log = 0
+
+    def _maybe_log_stats(self) -> None:
+        # Log aggregated counts periodically (avoid per-message log spam).
+        now_m = asyncio.get_running_loop().time()
+        if self._last_stats_log_m and (now_m - self._last_stats_log_m) < 30.0:
+            return
+        self._last_stats_log_m = now_m
+        try:
+            log_event(
+                logger,
+                "stream_stats",
+                severity="INFO",
+                component="stream-bridge",
+                stream="options_flow",
+                received_total=int(self._recv_total),
+                published_total=int(self._pub_total),
+                reconnect_attempts_total=int(self._reconnect_total),
+                received_since_last=int(self._recv_since_log),
+                published_since_last=int(self._pub_since_log),
+            )
+        except Exception:
+            pass
+        self._recv_since_log = 0
+        self._pub_since_log = 0
 
     async def run_forever(self):
         if not self.cfg.options_flow_url:
@@ -30,23 +62,79 @@ class OptionsFlowClient:
                 if self.cfg.options_flow_api_key:
                     headers['Authorization'] = f'Bearer {self.cfg.options_flow_api_key}'
 
+                try:
+                    log_event(
+                        logger,
+                        "ws_connect_attempt",
+                        severity="INFO",
+                        component="stream-bridge",
+                        stream="options_flow",
+                        attempt=int(attempt + 1),
+                        auth_present=bool(self.cfg.options_flow_api_key),
+                        url_configured=True,
+                    )
+                except Exception:
+                    pass
+
                 async with websockets.connect(self.cfg.options_flow_url, extra_headers=headers) as websocket:
                     attempt = 0
-                    logger.info("Connected to options flow stream.")
+                    try:
+                        log_event(
+                            logger,
+                            "ws_connected",
+                            severity="INFO",
+                            component="stream-bridge",
+                            stream="options_flow",
+                        )
+                    except Exception:
+                        pass
                     try:
                         self._ops.event("connected", stream="options_flow")
                     except Exception:
                         pass
                     while True:
                         message = await websocket.recv()
+                        self._recv_total += 1
+                        self._recv_since_log += 1
+                        try:
+                            messages_received_total.inc(1.0, labels={"component": "stream-bridge", "stream": "options_flow"})
+                        except Exception:
+                            pass
                         payload = json.loads(message)
                         # Handle both single and array payloads
                         events_payload = payload if isinstance(payload, list) else [payload]
                         events = [map_devconsole_options_flow(ep) for ep in events_payload]
                         await self.writer.insert_options_flow(events)
+                        published_n = int(len(events))
+                        self._pub_total += published_n
+                        self._pub_since_log += published_n
+                        try:
+                            messages_published_total.inc(
+                                float(published_n),
+                                labels={"component": "stream-bridge", "stream": "options_flow"},
+                            )
+                        except Exception:
+                            pass
+                        self._maybe_log_stats()
             except Exception as e:
+                try:
+                    log_event(
+                        logger,
+                        "ws_disconnected",
+                        severity="WARNING",
+                        component="stream-bridge",
+                        stream="options_flow",
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                except Exception:
+                    pass
                 logger.exception(f"OptionsFlowClient error: {e}")
                 attempt += 1
+                self._reconnect_total += 1
+                try:
+                    reconnect_attempts_total.inc(1.0, labels={"component": "stream-bridge", "stream": "options_flow"})
+                except Exception:
+                    pass
                 sleep_s = 5.0
                 try:
                     self._ops.reconnect_attempt(attempt=attempt, sleep_s=sleep_s, stream="options_flow", error=str(e))

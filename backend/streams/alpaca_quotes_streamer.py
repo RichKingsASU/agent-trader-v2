@@ -16,6 +16,9 @@ from backend.common.ops_metrics import (
     errors_total,
     marketdata_ticks_total,
     mark_activity,
+    messages_received_total,
+    messages_published_total,
+    reconnect_attempts_total,
 )
 from backend.ingestion.rate_limit import Backoff
 from backend.observability.logger import intent_end, intent_start, log_event
@@ -58,6 +61,7 @@ except KeyError as e:
 
 _batch_last_log_ts = 0.0
 _batch_count = 0
+_batch_publish_count = 0
 
 
 def _symbols_from_env() -> list[str]:
@@ -79,6 +83,10 @@ async def quote_data_handler(data):
     # Consider each quote/tick as a heartbeat signal for marketdata freshness.
     marketdata_ticks_total.inc(1.0)
     mark_activity("marketdata")
+    try:
+        messages_received_total.inc(1.0, labels={"component": "marketdata-mcp-server", "stream": "alpaca_quotes"})
+    except Exception:
+        pass
     # If we successfully receive data after a (re)connect, reset the reconnect backoff.
     global _RESET_BACKOFF_ON_FIRST_QUOTE, _BACKOFF, _RETRY_WINDOW_STARTED_M
     if _RESET_BACKOFF_ON_FIRST_QUOTE and _BACKOFF is not None:
@@ -93,21 +101,25 @@ async def quote_data_handler(data):
         _mark_marketdata_seen(getattr(data, "timestamp", None))
     except Exception:
         _mark_marketdata_seen()
-    logging.info(f"Received quote for {data.symbol}: Bid={data.bid_price}, Ask={data.ask_price}")
 
     # Intent point: data batch received (rate-limited; avoid per-tick spam).
-    global _batch_last_log_ts, _batch_count
+    global _batch_last_log_ts, _batch_count, _batch_publish_count
     _batch_count += 1
-    now = asyncio.get_event_loop().time()
+    now = asyncio.get_running_loop().time()
     if (now - _batch_last_log_ts) >= 10.0:
         _batch_last_log_ts = now
         ctx = intent_start(
             "data_batch_received",
             "Received quote updates from Alpaca stream.",
-            payload={"batch_count": _batch_count, "sample_symbol": getattr(data, "symbol", None)},
+            payload={
+                "received_count": _batch_count,
+                "published_count": _batch_publish_count,
+                "sample_symbol": getattr(data, "symbol", None),
+            },
         )
         intent_end(ctx, "success")
         _batch_count = 0
+        _batch_publish_count = 0
     
     emit_ctx = None
     try:
@@ -139,9 +151,29 @@ async def quote_data_handler(data):
                     (data.symbol, data.bid_price, data.bid_size, data.ask_price, data.ask_size, session)
                 )
                 intent_end(emit_ctx, "success")
+                _batch_publish_count += 1
+                try:
+                    messages_published_total.inc(
+                        1.0,
+                        labels={"component": "marketdata-mcp-server", "stream": "alpaca_quotes"},
+                    )
+                except Exception:
+                    pass
     except psycopg2.Error as e:
         errors_total.inc(labels={"component": "marketdata-mcp-server"})
-        logging.error(f"Database error while handling quote for {data.symbol}: {e}")
+        try:
+            log_event(
+                "publish_failed",
+                level="ERROR",
+                component="marketdata-mcp-server",
+                source=LAST_MARKETDATA_SOURCE,
+                stream="alpaca_quotes",
+                destination="postgres",
+                error=f"{type(e).__name__}: {e}",
+                symbol=getattr(data, "symbol", None),
+            )
+        except Exception:
+            pass
         if emit_ctx is None:
             emit_ctx = intent_start(
                 "marketdata_emit",
@@ -200,6 +232,10 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
             # If the stream ends without raising, treat it as a disconnect and re-connect
             # with backoff to prevent tight restart loops.
             sleep_s = backoff.next_sleep()
+            try:
+                reconnect_attempts_total.inc(1.0, labels={"component": "marketdata-mcp-server", "stream": "alpaca_quotes"})
+            except Exception:
+                pass
             if _RETRY_WINDOW_STARTED_M is None:
                 _RETRY_WINDOW_STARTED_M = time.monotonic()
             log_event(
@@ -234,9 +270,12 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
         except Exception as e:
             errors_total.inc(labels={"component": "marketdata-mcp-server"})
             sleep_s = backoff.next_sleep()
+            try:
+                reconnect_attempts_total.inc(1.0, labels={"component": "marketdata-mcp-server", "stream": "alpaca_quotes"})
+            except Exception:
+                pass
             if _RETRY_WINDOW_STARTED_M is None:
                 _RETRY_WINDOW_STARTED_M = time.monotonic()
-            logging.error(f"Streamer error (will reconnect): {type(e).__name__}: {e}")
             log_event(
                 "subscription_disconnected",
                 level="ERROR",
