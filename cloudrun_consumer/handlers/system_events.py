@@ -6,8 +6,9 @@ import sys
 import traceback
 from typing import Any, Optional
 
-from firestore_writer import SourceInfo
-from replay_support import ReplayContext
+from cloudrun_consumer.firestore_writer import SourceInfo
+from cloudrun_consumer.replay_support import ReplayContext
+from cloudrun_consumer.time_audit import ensure_utc
 
 def _as_utc(dt: datetime) -> datetime:
     return ensure_utc(dt, source="cloudrun_consumer.handlers.system_events._as_utc", field="dt")

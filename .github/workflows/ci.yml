@@ -109,6 +109,7 @@ jobs:
           cache-dependency-path: |
             backend/requirements.lock
             cloudrun_ingestor/requirements.txt
+            cloudrun_consumer/requirements.txt
 
       - name: Install backend dependencies (locked)
         run: |
@@ -220,6 +221,27 @@ jobs:
           TRADE_SIGNALS_TOPIC=dummy \
           INGEST_FLAG_SECRET_ID=dummy \
           python3 -c "import importlib.util; s=importlib.util.spec_from_file_location('cloudrun_ingestor_main','cloudrun_ingestor/main.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print('ok: imported cloudrun_ingestor/main.py')"
+
+      - name: Pre-build Python import test (cloudrun_consumer; package-safe imports)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install -r cloudrun_consumer/requirements.txt
+          python3 -m pip install -q --upgrade pytest
+
+          # Run the service-local unit tests (fast, no cloud calls).
+          python3 -m pytest -q cloudrun_consumer/tests
+
+          # Critical: ensure imports do not rely on implicit cwd / flattened imports.
+          # Simulate container layout: PYTHONPATH=/app (repo root) + run from a non-repo cwd.
+          (cd /tmp && \
+            PYTHONPATH="${GITHUB_WORKSPACE}" \
+            GCP_PROJECT=dummy \
+            SYSTEM_EVENTS_TOPIC=dummy \
+            INGEST_FLAG_SECRET_ID=dummy \
+            ENV=dummy \
+            python3 -c "import cloudrun_consumer.main; print('ok: imported cloudrun_consumer.main')"
+          )
 
       - name: Docker build + boot smoke test (cloudrun_ingestor)
         shell: bash

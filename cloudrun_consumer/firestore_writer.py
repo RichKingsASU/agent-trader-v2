@@ -4,13 +4,13 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import json
 import sys
 import traceback
 from typing import Any, Optional, Tuple
 
-from idempotency import ensure_message_once
-from replay_support import ReplayContext, ensure_event_not_applied
+from cloudrun_consumer.idempotency import ensure_message_once
+from cloudrun_consumer.replay_support import ReplayContext, ensure_event_not_applied
+from cloudrun_consumer.time_audit import ensure_utc
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -57,6 +57,46 @@ def _max_dt(*values: Optional[datetime]) -> Optional[datetime]:
     if not xs:
         return None
     return max(_as_utc(v) for v in xs)
+
+
+def _lww_key(*, published_at: datetime, message_id: str) -> tuple[datetime, str]:
+    """
+    Deterministic ordering key for last-write-wins documents.
+
+    Primary: published_at (UTC)
+    Tie-breaker: message_id (lexicographic)
+    """
+    return (
+        ensure_utc(published_at, source="cloudrun_consumer.firestore_writer._lww_key", field="published_at"),
+        str(message_id or ""),
+    )
+
+
+def _existing_pubsub_lww(existing: dict[str, Any]) -> tuple[datetime, str]:
+    """
+    Read (published_at, message_id) from multiple historical shapes.
+
+    Supported shapes (examples):
+    - {"published_at": <datetime>, "source": {"message_id": "m1"}}
+    - {"source": {"publishedAt": "2026-01-08T01:02:03Z", "messageId": "m2"}}
+    """
+    if not isinstance(existing, dict):
+        return datetime.min.replace(tzinfo=timezone.utc), ""
+
+    published_at = _parse_rfc3339(existing.get("published_at")) or _parse_rfc3339(existing.get("publishedAt"))
+
+    mid = ""
+    src = existing.get("source")
+    if isinstance(src, dict):
+        mid = str(src.get("message_id") or src.get("messageId") or src.get("message_id") or "").strip()
+
+        if published_at is None:
+            published_at = _parse_rfc3339(src.get("published_at")) or _parse_rfc3339(src.get("publishedAt"))
+
+    if published_at is None:
+        published_at = datetime.min.replace(tzinfo=timezone.utc)
+
+    return ensure_utc(published_at, source="cloudrun_consumer.firestore_writer._existing_pubsub_lww", field="published_at"), mid
 
 
 OPS_SERVICE_STATUSES = ("healthy", "degraded", "down", "unknown", "maintenance")
@@ -530,14 +570,15 @@ class FirestoreWriter:
             incoming = _as_utc(updated_at)
             incoming_eff = _max_dt(incoming, last_heartbeat_at, source.published_at) or incoming
             if existing_max is not None and incoming_eff < existing_max:
+                stored_pub, stored_mid = _existing_pubsub_lww(existing if isinstance(existing, dict) else {})
                 # Marked dedupe already; do not reprocess on retries.
                 txn.set(
                     dedupe_ref,
                     {
                         "outcome": "out_of_order_ignored",
                         "reason": "incoming_publishedAt_older_than_stored",
-                        "storedPublishedAt": existing_pub,
-                        "storedMessageId": existing_mid,
+                        "storedPublishedAt": stored_pub,
+                        "storedMessageId": stored_mid,
                     },
                     merge=True,
                 )

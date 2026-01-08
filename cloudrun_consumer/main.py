@@ -2,11 +2,10 @@
 cloudrun_consumer entrypoint diagnostics
 
 Runtime assumptions (documented for deploy/debug):
-- This module is typically imported by `uvicorn` (e.g. `uvicorn main:app`) from the
-  service working directory (or an image that places this file on `sys.path`).
-- If you see import failures for sibling modules (e.g. `event_utils`), ensure the
-  service directory is on `sys.path` (often via `PYTHONPATH`) and log `sys.path`
-  to confirm.
+- Containers should follow the canonical repo layout:
+  - COPY . /app
+  - PYTHONPATH=/app
+  - use absolute imports (e.g. `from cloudrun_consumer...`)
 """
 
 from __future__ import annotations
@@ -17,19 +16,32 @@ import traceback
 import os
 import sys
 import time
+import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from fastapi import FastAPI, HTTPException, Request, Response
+
+from cloudrun_consumer.event_utils import infer_topic
+from cloudrun_consumer.firestore_writer import FirestoreWriter
+from cloudrun_consumer.replay_support import ReplayContext, write_replay_marker
+from cloudrun_consumer.schema_router import route_payload
+from cloudrun_consumer.time_audit import ensure_utc
+
 def _startup_diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
-    """
-    Print a structured JSON diagnostic log.
-
-from event_utils import infer_topic
-from firestore_writer import FirestoreWriter
-from replay_support import ReplayContext, write_replay_marker
-from schema_router import route_payload
-
-
+    """Print a structured JSON diagnostic log."""
+    payload: dict[str, Any] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "severity": str(severity).upper(),
+        "service": "cloudrun-pubsub-firestore-materializer",
+        "event_type": str(event_type),
+    }
+    payload.update(fields)
+    try:
+        sys.stdout.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except Exception:
+        return
 SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"
 DLQ_SAMPLE_RATE_DEFAULT = "0.01"  # 1% (deterministic per messageId)
 DLQ_SAMPLE_TTL_HOURS_DEFAULT = "72"
@@ -354,6 +366,20 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         )
         raise HTTPException(status_code=400, detail="missing_subscription")
 
+    try:
+        hdr = _validate_pubsub_headers(req=req, subscription_from_body=subscription_str)
+    except HTTPException as e:
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_headers",
+            error=str(getattr(e, "detail", "")),
+            messageId=None,
+            publishTime=None,
+            subscription=subscription_str,
+        )
+        raise
+
     message = body.get("message")
     if not isinstance(message, dict):
         log(
@@ -391,6 +417,7 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         except Exception:
             delivery_attempt = None
 
+    publish_time_raw = str(message.get("publishTime") or "").strip() or None
     publish_time = _parse_rfc3339(message.get("publishTime")) or _utc_now()
     attributes_raw = message.get("attributes") or {}
     attributes: dict[str, str] = {}
@@ -642,5 +669,5 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("PORT") or "8080")
-    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="warning", access_log=False)
+    uvicorn.run("cloudrun_consumer.main:app", host="0.0.0.0", port=port, log_level="warning", access_log=False)
 
