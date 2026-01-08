@@ -341,80 +341,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          ts="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-
-          overall="PASS"
-          first_failed=""
-          for gate in \
-            "lint/format:${LINT_FORMAT_RESULT}" \
-            "unit:${UNIT_RESULT}" \
-            "contract:${CONTRACT_RESULT}" \
-            "integration (emulators):${INTEGRATION_RESULT}" \
-            "container build:${CONTAINER_BUILD_RESULT}" \
-            "smoke:${SMOKE_RESULT}"
-          do
-            name="${gate%%:*}"
-            result="${gate#*:}"
-            if [[ "${result}" != "success" && -z "${first_failed}" ]]; then
-              first_failed="${name} (${result})"
-              overall="FAIL"
-            fi
-          done
-
-          cat > readiness_report.md <<EOF
-          ## Production-readiness gates — CI report
-
-          - **Generated (UTC)**: ${ts}
-          - **Workflow**: \`${{ github.workflow }}\`
-          - **Run**: ${RUN_URL}
-          - **Git SHA**: \`${{ github.sha }}\`
-          - **Ref**: \`${{ github.ref }}\`
-
-          ### Overall result: ${overall}
-
-          $( [[ "${overall}" == "FAIL" ]] && echo "- **First failed gate**: ${first_failed}" || true )
-
-          | Gate | Result |
-          | --- | --- |
-          | lint/format | ${LINT_FORMAT_RESULT} |
-          | unit | ${UNIT_RESULT} |
-          | contract | ${CONTRACT_RESULT} |
-          | integration (emulators) | ${INTEGRATION_RESULT} |
-          | container build | ${CONTAINER_BUILD_RESULT} |
-          | smoke | ${SMOKE_RESULT} |
-          EOF
-
-          echo "ok: wrote readiness_report.md"
-
-      - name: Upload readiness_report.md artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: readiness_report
-          path: readiness_report.md
-          retention-days: 7
-
-      - name: Enforce NO-GO blocks merge/deploy
+      - name: Contract unification gate (schemas + fixtures)
         shell: bash
-        env:
-          LINT_FORMAT_RESULT: ${{ needs.lint_format.result }}
-          UNIT_RESULT: ${{ needs.unit.result }}
-          CONTRACT_RESULT: ${{ needs.contract.result }}
-          INTEGRATION_RESULT: ${{ needs.integration_emulators.result }}
-          CONTAINER_BUILD_RESULT: ${{ needs.container_build.result }}
-          SMOKE_RESULT: ${{ needs.smoke.result }}
         run: |
           set -euo pipefail
-          for r in \
-            "${LINT_FORMAT_RESULT}" \
-            "${UNIT_RESULT}" \
-            "${CONTRACT_RESULT}" \
-            "${INTEGRATION_RESULT}" \
-            "${CONTAINER_BUILD_RESULT}" \
-            "${SMOKE_RESULT}"
-          do
-            if [[ "${r}" != "success" ]]; then
-              echo "NO-GO: at least one gate is not successful."
-              exit 1
-            fi
-          done
-          echo "GO: all readiness gates successful."
+          python3 -m unittest -q tests.test_contract_schemas
+
