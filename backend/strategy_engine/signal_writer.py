@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from typing import Dict, Optional
 from uuid import UUID
 
+from backend.common.logging import log_event
+from backend.observability.risk_signals import risk_correlation_id
 from backend.persistence.firebase_client import get_firestore_client
 
 logger = logging.getLogger(__name__)
@@ -23,6 +25,7 @@ def write_trading_signal(
     action: str,
     reason: str,
     signal_payload: Dict,
+    correlation_id: Optional[str] = None,
     did_trade: bool = False,
     paper_trade_id: Optional[UUID] = None
 ) -> Optional[str]:
@@ -47,9 +50,17 @@ def write_trading_signal(
     try:
         # Get Firestore client
         db = get_firestore_client()
+
+        corr = risk_correlation_id(correlation_id=correlation_id)
+        now = datetime.now(timezone.utc)
+        # Pre-generate a doc id so we can store signal_id inside the document.
+        doc_ref = db.collection("tradingSignals").document()
+        signal_id = doc_ref.id
         
         # Prepare signal document
         signal_doc = {
+            "signal_id": signal_id,
+            "correlation_id": corr,
             "strategy_id": str(strategy_id),
             "strategy_name": strategy_name,
             "symbol": symbol,
@@ -57,8 +68,8 @@ def write_trading_signal(
             "reason": reason,
             "signal_payload": signal_payload,
             "did_trade": did_trade,
-            "timestamp": datetime.now(timezone.utc),
-            "created_at": datetime.now(timezone.utc),
+            "timestamp": now,
+            "created_at": now,
         }
         
         # Add trade reference if available
@@ -79,16 +90,33 @@ def write_trading_signal(
             if "model_id" in signal_payload:
                 signal_doc["model_id"] = signal_payload["model_id"]
         
-        # Write to tradingSignals collection
-        doc_ref = db.collection("tradingSignals").add(signal_doc)
-        doc_id = doc_ref[1].id
+        # Write to tradingSignals collection (explicit doc id for referential integrity)
+        doc_ref.set(signal_doc, merge=False)
         
         logger.info(
-            f"Wrote trading signal to Firestore: {doc_id} - "
+            f"Wrote trading signal to Firestore: {signal_id} - "
             f"{strategy_name} {action} {symbol}"
         )
+
+        # Structured emission event (emit-only; no UI/dashboards)
+        try:
+            log_event(
+                logger,
+                "signal.emitted",
+                severity="INFO",
+                correlation_id=corr,
+                signal_id=signal_id,
+                strategy_id=str(strategy_id),
+                strategy_name=strategy_name,
+                symbol=symbol,
+                action=signal_doc["action"],
+                did_trade=bool(did_trade),
+                paper_trade_id=str(paper_trade_id) if paper_trade_id else None,
+            )
+        except Exception:
+            pass
         
-        return doc_id
+        return signal_id
         
     except Exception as e:
         logger.exception(f"Failed to write trading signal to Firestore: {e}")

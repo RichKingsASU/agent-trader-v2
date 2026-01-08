@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
+from time_audit import ensure_utc
+
 from idempotency import ensure_message_once
 from replay_support import ReplayContext, ensure_event_not_applied
 from time_audit import ensure_utc
@@ -557,6 +559,93 @@ class FirestoreWriter:
                 if v is not None:
                     doc[str(k)] = v
 
+            txn.set(service_ref, doc, merge=True)
+            txn.set(dedupe_ref, {"outcome": "applied"}, merge=True)
+            return True, "applied"
+
+        txn = self._db.transaction()
+        return self._firestore.transactional(_txn)(txn)
+
+    def dedupe_and_upsert_ingest_pipeline(
+        self,
+        *,
+        message_id: str,
+        pipeline_id: str,
+        source: SourceInfo,
+        fields: dict[str, Any],
+        replay: Optional[ReplayContext] = None,
+        replay_dedupe_key: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """
+        Transactionally:
+        - dedupe on `ops_dedupe/{messageId}`
+        - last-write-wins on `ingest_pipelines/{pipelineId}` using Pub/Sub publishedAt (+ messageId tie-break)
+        """
+        dedupe_ref = self._db.collection(self._col("ops_dedupe")).document(str(message_id))
+        pipeline_ref = self._db.collection(self._col("ingest_pipelines")).document(str(pipeline_id))
+
+        def _txn(txn: Any) -> Tuple[bool, str]:
+            first_time, _ = ensure_message_once(
+                txn=txn,
+                dedupe_ref=dedupe_ref,
+                message_id=str(message_id),
+                doc={
+                    "kind": "ingest_pipelines",
+                    "targetDoc": f"ingest_pipelines/{pipeline_id}",
+                    "sourceTopic": str(source.topic),
+                    "sourcePublishedAt": _as_utc(source.published_at),
+                },
+            )
+            if not first_time:
+                return False, "duplicate_message_noop"
+
+            if replay is not None:
+                ok, why = ensure_event_not_applied(
+                    txn=txn,
+                    db=self._db,
+                    replay=replay,
+                    dedupe_key=str(replay_dedupe_key or message_id),
+                    event_time=_as_utc(source.published_at),
+                    message_id=str(message_id),
+                )
+                if not ok:
+                    return False, why
+
+            snap = pipeline_ref.get(transaction=txn)
+            existing = snap.to_dict() if snap.exists else {}
+            existing_pub, existing_mid = _existing_pubsub_lww(existing if isinstance(existing, dict) else {})
+            if existing_pub is not None:
+                inc_key = _lww_key(published_at=source.published_at, message_id=str(source.message_id))
+                ex_key = _lww_key(published_at=existing_pub, message_id=str(existing_mid or ""))
+                if inc_key < ex_key:
+                    txn.set(
+                        dedupe_ref,
+                        {
+                            "outcome": "out_of_order_ignored",
+                            "reason": "incoming_publishedAt_older_than_stored",
+                            "storedPublishedAt": existing_pub,
+                            "storedMessageId": existing_mid,
+                        },
+                        merge=True,
+                    )
+                    return False, "out_of_order_event_ignored"
+
+            doc: dict[str, Any] = {
+                "pipelineId": str(pipeline_id),
+                "publishedAt": _as_utc(source.published_at),
+                "published_at": _as_utc(source.published_at),
+                "source": {
+                    "topic": str(source.topic),
+                    "messageId": str(source.message_id),
+                    "message_id": str(source.message_id),
+                    "publishedAt": _as_utc(source.published_at),
+                    "published_at": _as_utc(source.published_at),
+                },
+                "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
+            }
+            for k, v in (fields or {}).items():
+                if v is not None:
+                    doc[str(k)] = v
             txn.set(pipeline_ref, doc, merge=True)
             txn.set(dedupe_ref, {"outcome": "applied"}, merge=True)
             return True, "applied"
