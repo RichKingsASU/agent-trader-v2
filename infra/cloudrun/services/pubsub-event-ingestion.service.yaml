@@ -1,0 +1,50 @@
+# Cloud Run Service definition (template).
+# Apply with:
+#   gcloud run services replace infra/cloudrun/services/pubsub-event-ingestion.service.yaml --region REGION --project PROJECT_ID
+#
+# Pub/Sub push notes:
+# - Create a push subscription that targets:
+#     https://<service-url>/pubsub/push
+# - No auth hardening yet (visibility-first).
+#
+# Optional env:
+# - FIREBASE_PROJECT_ID (enables Firestore persistence via ADC)
+# - EVENT_STORE=memory (forces in-memory store)
+#
+# NOTE: Replace REPLACE_ME_* placeholders before applying.
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: pubsub-event-ingestion
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "10"
+    spec:
+      serviceAccountName: REPLACE_ME_SERVICE_ACCOUNT_EMAIL
+      containerConcurrency: 50
+      timeoutSeconds: 60
+      containers:
+        - name: pubsub-event-ingestion
+          image: REPLACE_ME_IMAGE
+          env:
+            - name: GIT_SHA
+              value: REPLACE_ME_GIT_SHA
+            - name: AGENT_MODE
+              value: "OFF"
+            # - name: FIREBASE_PROJECT_ID
+            #   value: REPLACE_ME_FIREBASE_PROJECT_ID
+            # - name: EVENT_STORE
+            #   value: "memory"
+          ports:
+            - name: http1
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+
