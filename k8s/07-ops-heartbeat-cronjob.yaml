@@ -26,7 +26,8 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: heartbeat
-              image: bitnami/kubectl:latest
+              # Pin kubectl image tag: ':latest' is forbidden by CI guardrails.
+              image: bitnami/kubectl:1.29.0
               imagePullPolicy: IfNotPresent
               command: ["/bin/sh", "-lc"]
               args:
