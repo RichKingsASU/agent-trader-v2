@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional, TypeVar
 import requests
 T = TypeVar("T")
 
-from backend.streams.alpaca_env import load_alpaca_env
+from backend.config.alpaca_env import load_alpaca_auth_env
 from backend.time.providers import normalize_alpaca_timestamp
 from backend.utils.session import get_market_session
 
@@ -17,13 +17,14 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 DB_URL = os.getenv("DATABASE_URL")
-alpaca = load_alpaca_env()
-KEY = alpaca.key_id
-SEC = alpaca.secret_key
+auth = load_alpaca_auth_env()
+KEY = auth.api_key_id
+SEC = auth.api_secret_key
 _symbols_raw = os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ")
 SYMS = [s.strip() for s in _symbols_raw.split(",") if s.strip()]
 FEED = os.getenv("ALPACA_FEED", "iex")
-BASE = alpaca.data_stocks_base_v2
+_data_host = (os.getenv("ALPACA_DATA_HOST") or "https://data.alpaca.markets").strip().rstrip("/")
+BASE = f"{_data_host}/v2/stocks"
 HDRS = {"APCA-API-KEY-ID": KEY, "APCA-API-SECRET-KEY": SEC}
 TARGET_TABLE = "public.market_data_1m"
 # --- End Standard Header ---

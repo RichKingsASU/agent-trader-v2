@@ -16,9 +16,9 @@ from typing import Any, Dict
 from alpaca.data.enums import DataFeed
 from alpaca.data.live.stock import StockDataStream
 
+from backend.config.alpaca_env import load_alpaca_auth_env
 from backend.ingestion.firebase_writer import FirebaseWriter, FirestorePaths
 from backend.ingestion.rate_limit import Backoff, TokenBucket
-from backend.streams.alpaca_env import load_alpaca_env
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.observability.build_fingerprint import get_build_fingerprint
@@ -370,12 +370,21 @@ class MarketDataIngestor:
         """
         Runs ingestion with reconnect logic until stopped.
         """
-        alpaca = load_alpaca_env(require_keys=not self.cfg.dry_run)
+        auth = None
+        if self.cfg.dry_run:
+            # DRY_RUN can simulate quotes even without Alpaca credentials.
+            try:
+                auth = load_alpaca_auth_env()
+            except Exception:
+                auth = None
+        else:
+            auth = load_alpaca_auth_env()
+
         backoff = Backoff(base_seconds=self.cfg.backoff_base_s, max_seconds=self.cfg.backoff_max_s)
         self._backoff = backoff
 
         # DRY_RUN can simulate quotes even without Alpaca credentials.
-        if self.cfg.dry_run and (not alpaca.key_id or not alpaca.secret_key):
+        if self.cfg.dry_run and (auth is None or not auth.api_key_id or not auth.api_secret_key):
             log_json(
                 "alpaca_connect",
                 status="dry_run_no_creds",
@@ -399,7 +408,8 @@ class MarketDataIngestor:
             while not self._stop.is_set():
                 wss = None
                 try:
-                    wss = StockDataStream(alpaca.key_id, alpaca.secret_key, feed=self.cfg.feed)
+                    assert auth is not None
+                    wss = StockDataStream(auth.api_key_id, auth.api_secret_key, feed=self.cfg.feed)
                     self._wss = wss
                     self._reset_backoff_on_first_quote = True
                     wss.subscribe_quotes(self._quote_handler, *self.cfg.symbols)

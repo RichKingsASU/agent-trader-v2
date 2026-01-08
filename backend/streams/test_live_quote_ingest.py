@@ -5,7 +5,7 @@ import psycopg
 from datetime import datetime
 from dotenv import load_dotenv
 
-from backend.streams.alpaca_env import load_alpaca_env
+from backend.config.alpaca_env import load_alpaca_auth_env
 from backend.time.providers import normalize_alpaca_timestamp
 from backend.utils.session import get_market_session
 
@@ -14,15 +14,17 @@ load_dotenv() # Load environment variables from .env.local
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("Missing required env var: DATABASE_URL")
-alpaca = load_alpaca_env()
-API_KEY = alpaca.key_id
-SECRET_KEY = alpaca.secret_key
+auth = load_alpaca_auth_env()
+API_KEY = auth.api_key_id
+SECRET_KEY = auth.api_secret_key
+DATA_HOST = (os.getenv("ALPACA_DATA_HOST") or "https://data.alpaca.markets").strip().rstrip("/")
+STOCKS_BASE_V2 = f"{DATA_HOST}/v2/stocks"
 SYMBOLS_STR = os.getenv("ALPACA_SYMBOLS", "SPY") # Test with one symbol for speed
 SYMBOLS = [s.strip() for s in SYMBOLS_STR.split(',')]
 
 def fetch_latest_quote(symbol: str):
     """Fetches the latest quote for a symbol from Alpaca."""
-    url = f"{alpaca.data_stocks_base_v2}/{symbol}/quotes/latest"
+    url = f"{STOCKS_BASE_V2}/{symbol}/quotes/latest"
     try:
         r = requests.get(
             url,

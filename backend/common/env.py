@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from backend.config.alpaca_env import load_alpaca_auth_env
+
 
 def get_env(name: str, default: Any = None, *, required: bool = False) -> Any:
     """
@@ -84,23 +86,14 @@ def get_vertex_ai_location(*, default: str = "us-central1") -> str:
 
 def get_alpaca_key_id(*, required: bool = True) -> str:
     """
-    Returns the Alpaca API key.
-
-    Env contract (preferred):
-    - ALPACA_API_KEY
-
-    Back-compat:
-    - ALPACA_KEY_ID
+    Returns the Alpaca API key id from canonical APCA_* env vars.
     """
-    v = get_env("ALPACA_API_KEY", default=None, required=False) or get_env(
-        "ALPACA_KEY_ID", default=None, required=False
-    )
-    if v:
-        return str(v)
-
-    if required:
-        raise RuntimeError("Missing required env var: ALPACA_API_KEY")
-    return ""
+    if not required:
+        try:
+            return load_alpaca_auth_env().api_key_id
+        except Exception:
+            return ""
+    return load_alpaca_auth_env().api_key_id
 
 
 def get_alpaca_api_key(*, required: bool = True) -> str:
@@ -112,13 +105,12 @@ def get_alpaca_api_key(*, required: bool = True) -> str:
 
 def get_alpaca_secret_key(*, required: bool = True) -> str:
     """
-    Returns ALPACA_SECRET_KEY.
+    Returns the Alpaca API secret key from canonical APCA_* env vars.
     """
-    v = get_env("ALPACA_SECRET_KEY", default=None, required=False)
-    if v:
-        return str(v)
-
-    if required:
-        raise RuntimeError("Missing required env var: ALPACA_SECRET_KEY")
-    return ""
+    if not required:
+        try:
+            return load_alpaca_auth_env().api_secret_key
+        except Exception:
+            return ""
+    return load_alpaca_auth_env().api_secret_key
 

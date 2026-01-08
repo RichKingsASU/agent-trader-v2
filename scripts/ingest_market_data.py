@@ -12,7 +12,7 @@ import requests
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from backend.utils.session import get_market_session
 from backend.common.timeutils import parse_alpaca_timestamp
-from backend.common.env import get_alpaca_key_id, get_alpaca_secret_key
+from backend.config.alpaca_env import load_alpaca_auth_env
 
 def main():
     """
@@ -21,8 +21,9 @@ def main():
     """
     # --- Configuration (Cloud Shell-safe: env vars only; no .env files) ---
     database_url = os.getenv("DATABASE_URL")
-    api_key = get_alpaca_key_id(required=True)
-    secret_key = get_alpaca_secret_key(required=True)
+    auth = load_alpaca_auth_env()
+    api_key = auth.api_key_id
+    secret_key = auth.api_secret_key
     symbols_str = os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ")
     symbols = [s.strip() for s in symbols_str.split(',')]
     feed = os.getenv("ALPACA_FEED", "iex")

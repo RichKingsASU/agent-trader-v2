@@ -267,10 +267,7 @@ class TestBacktester:
         
         return bars
     
-    @patch.dict(os.environ, {
-        "ALPACA_API_KEY": "test_key",
-        "ALPACA_SECRET_KEY": "test_secret"
-    })
+    @patch.dict(os.environ, {"APCA_API_KEY_ID": "test_key", "APCA_API_SECRET_KEY": "test_secret", "APCA_API_BASE_URL": "https://paper-api.alpaca.markets"})
     def test_backtester_initialization(self):
         """Test backtester initialization."""
         strategy = MockStrategy()
@@ -290,10 +287,7 @@ class TestBacktester:
         assert backtester.start_date.month == 1
         assert backtester.start_date.day == 1
     
-    @patch.dict(os.environ, {
-        "ALPACA_API_KEY": "test_key",
-        "ALPACA_SECRET_KEY": "test_secret"
-    })
+    @patch.dict(os.environ, {"APCA_API_KEY_ID": "test_key", "APCA_API_SECRET_KEY": "test_secret", "APCA_API_BASE_URL": "https://paper-api.alpaca.markets"})
     def test_backtester_run_hold_strategy(self, mock_bars):
         """Test running backtest with HOLD strategy."""
         # Strategy that only holds
@@ -326,10 +320,7 @@ class TestBacktester:
         # Equity should be unchanged
         assert results["metrics"]["final_equity"] == 100000.0
     
-    @patch.dict(os.environ, {
-        "ALPACA_API_KEY": "test_key",
-        "ALPACA_SECRET_KEY": "test_secret"
-    })
+    @patch.dict(os.environ, {"APCA_API_KEY_ID": "test_key", "APCA_API_SECRET_KEY": "test_secret", "APCA_API_BASE_URL": "https://paper-api.alpaca.markets"})
     def test_backtester_run_buy_strategy(self, mock_bars):
         """Test running backtest with BUY strategy."""
         # Strategy that buys on first bar
@@ -356,10 +347,7 @@ class TestBacktester:
         # Check that equity curve has entries
         assert len(results["equity_curve"]) == len(mock_bars)
     
-    @patch.dict(os.environ, {
-        "ALPACA_API_KEY": "test_key",
-        "ALPACA_SECRET_KEY": "test_secret"
-    })
+    @patch.dict(os.environ, {"APCA_API_KEY_ID": "test_key", "APCA_API_SECRET_KEY": "test_secret", "APCA_API_BASE_URL": "https://paper-api.alpaca.markets"})
     def test_calculate_metrics(self, mock_bars):
         """Test metrics calculation."""
         strategy = MockStrategy()
@@ -401,10 +389,10 @@ class TestBacktester:
         assert isinstance(metrics["win_rate"], float)
     
     def test_backtester_missing_credentials(self):
-        """Test that backtester raises error without API credentials."""
+        """Test that backtester fails fast without API credentials."""
         strategy = MockStrategy()
         
-        with pytest.raises(ValueError, match="Alpaca API credentials required"):
+        with pytest.raises(RuntimeError, match="Missing required Alpaca environment variables"):
             Backtester(
                 strategy=strategy,
                 symbol="SPY",

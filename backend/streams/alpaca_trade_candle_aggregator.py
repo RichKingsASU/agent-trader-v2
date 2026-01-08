@@ -16,7 +16,7 @@ from backend.dataplane.file_store import FileCandleStore, FileTickStore
 from backend.marketdata.candles.aggregator import CandleAggregator
 from backend.marketdata.candles.models import Candle, Tick
 from backend.marketdata.candles.timeframe import SUPPORTED_TIMEFRAMES
-from backend.streams.alpaca_env import load_alpaca_env
+from backend.config.alpaca_env import load_alpaca_auth_env
 from backend.utils.ops_markers import OpsDB
 
 logger = logging.getLogger(__name__)
@@ -244,7 +244,7 @@ async def main() -> None:
     if not cfg.symbols:
         raise RuntimeError("ALPACA_SYMBOLS resolved to empty list")
 
-    alpaca = load_alpaca_env()
+    auth = load_alpaca_auth_env()
     logger.info(
         "Starting Alpaca trade candle aggregator | symbols=%s | timeframes=%s | lateness=%ss | feed=%s",
         ",".join(cfg.symbols),
@@ -275,7 +275,7 @@ async def main() -> None:
         asyncio.create_task(_periodic_ops(agg, interval_sec=30.0)),
     ]
 
-    wss_client = StockDataStream(alpaca.key_id, alpaca.secret_key, feed=cfg.feed)
+    wss_client = StockDataStream(auth.api_key_id, auth.api_secret_key, feed=cfg.feed)
 
     async def trade_handler(data: Any) -> None:
         # Alpaca trade objects have .symbol/.price/.size/.timestamp

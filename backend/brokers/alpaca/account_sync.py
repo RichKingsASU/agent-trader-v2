@@ -7,7 +7,7 @@ from typing import Any
 import requests
 from google.cloud import firestore
 
-from backend.common.env import get_alpaca_api_key, get_alpaca_secret_key
+from backend.config.alpaca_env import load_alpaca_auth_env
 from backend.persistence.firestore_retry import with_firestore_retry
 from backend.persistence.firebase_client import get_firestore_client
 
@@ -58,9 +58,10 @@ def syncAlpacaAccount(
 
     Auth:
     - Uses Firebase Admin SDK (python `firebase-admin`) via ADC (see `backend.persistence.firebase_client`).
-    - Alpaca creds are read from env via `os.getenv` (through `backend.common.env`):
-      - ALPACA_API_KEY (preferred) or ALPACA_KEY_ID (back-compat)
-      - ALPACA_SECRET_KEY
+    - Alpaca creds are read from env via `backend.config.alpaca_env`:
+      - APCA_API_KEY_ID
+      - APCA_API_SECRET_KEY
+      - APCA_API_BASE_URL
       
     Args:
         tenant_id: Tenant ID for legacy tenant-scoped path
@@ -73,13 +74,12 @@ def syncAlpacaAccount(
     resolved_tenant_id = (tenant_id or os.getenv("TENANT_ID") or "").strip() or "local"
     resolved_user_id = (user_id or os.getenv("USER_ID") or "").strip()
 
-    trading_host = (alpaca_trading_host or os.getenv("ALPACA_TRADING_HOST") or "").strip()
-    if not trading_host:
-        trading_host = "https://paper-api.alpaca.markets"
+    auth = load_alpaca_auth_env()
+    trading_host = (alpaca_trading_host or auth.api_base_url).strip()
     trading_host = trading_host[:-1] if trading_host.endswith("/") else trading_host
 
-    key = (alpaca_api_key or get_alpaca_api_key(required=True)).strip()
-    sec = (alpaca_secret_key or get_alpaca_secret_key(required=True)).strip()
+    key = (alpaca_api_key or auth.api_key_id).strip()
+    sec = (alpaca_secret_key or auth.api_secret_key).strip()
 
     url = f"{trading_host}/v2/account"
     r = requests.get(

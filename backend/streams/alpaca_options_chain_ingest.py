@@ -8,7 +8,8 @@ from typing import Any, Dict, Optional, Tuple
 
 import requests
 
-from backend.common.env import get_alpaca_key_id, get_alpaca_secret_key, get_env
+from backend.common.env import get_env
+from backend.config.alpaca_env import load_alpaca_auth_env
 
 
 def _json_safe(v: Any) -> Any:
@@ -35,9 +36,8 @@ def _json_safe(v: Any) -> Any:
 
 
 def _alpaca_headers() -> Dict[str, str]:
-    key = get_alpaca_key_id(required=True)
-    secret = get_alpaca_secret_key(required=True)
-    return {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
+    auth = load_alpaca_auth_env()
+    return auth.headers
 
 
 def fetch_option_snapshots(

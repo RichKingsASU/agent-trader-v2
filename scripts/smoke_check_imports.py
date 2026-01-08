@@ -63,8 +63,7 @@ def main(argv: list[str]) -> int:
     # Optional contract vars (avoid accidental fail-fast if added later).
     os.environ.setdefault("APCA_API_KEY_ID", "smoke")
     os.environ.setdefault("APCA_API_SECRET_KEY", "smoke")
-    os.environ.setdefault("ALPACA_API_KEY", "smoke")
-    os.environ.setdefault("ALPACA_SECRET_KEY", "smoke")
+    os.environ.setdefault("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 
     targets: list[ImportTarget] = []
     if not args.no_defaults:

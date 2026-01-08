@@ -7,7 +7,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 from tenacity import retry, wait_exponential, stop_after_attempt
 
-from backend.streams.alpaca_env import load_alpaca_env
+from backend.config.alpaca_env import load_alpaca_auth_env
 from backend.time.providers import normalize_alpaca_timestamp
 from backend.utils.session import get_market_session
 
@@ -18,12 +18,16 @@ logger = logging.getLogger(__name__)
 DB_URL = os.getenv("DATABASE_URL")
 if not DB_URL:
     raise RuntimeError("Missing required env var: DATABASE_URL")
-alpaca = load_alpaca_env(require_keys=False)
-ALPACA_KEY = alpaca.key_id
-ALPACA_SEC = alpaca.secret_key
+auth = None
+try:
+    auth = load_alpaca_auth_env()
+except Exception:
+    auth = None
+ALPACA_KEY = auth.api_key_id if auth is not None else ""
+ALPACA_SEC = auth.api_secret_key if auth is not None else ""
 SYMBOLS = os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ").split(",")
 FEED = os.getenv("ALPACA_FEED", "iex")
-ALPACA_HOST = alpaca.data_host
+ALPACA_HOST = (os.getenv("ALPACA_DATA_HOST") or "https://data.alpaca.markets").rstrip("/")
 
 session = requests.Session()
 if ALPACA_KEY and ALPACA_SEC:

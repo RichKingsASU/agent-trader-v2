@@ -8,8 +8,9 @@ This script demonstrates how to:
 
 Usage:
     # Set environment variables
-    export ALPACA_KEY_ID="your_key_id"
-    export ALPACA_SECRET_KEY="your_secret_key"
+    export APCA_API_KEY_ID="your_key_id"
+    export APCA_API_SECRET_KEY="your_secret_key"
+    export APCA_API_BASE_URL="https://paper-api.alpaca.markets"
     
     # Run the example
     python functions/example_gex_usage.py
@@ -24,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import alpaca_trade_api as tradeapi
 from functions.utils.gex_engine import calculate_net_gex, get_market_regime_summary
+from backend.config.alpaca_env import load_alpaca_auth_env
 
 
 def main():
@@ -34,23 +36,18 @@ def main():
     print()
     
     # Initialize Alpaca API client
-    key_id = os.getenv("ALPACA_KEY_ID")
-    secret_key = os.getenv("ALPACA_SECRET_KEY")
-    base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-    
-    if not key_id or not secret_key:
-        print("ERROR: Please set ALPACA_KEY_ID and ALPACA_SECRET_KEY environment variables")
-        print()
-        print("Example:")
-        print("  export ALPACA_KEY_ID='your_key_id'")
-        print("  export ALPACA_SECRET_KEY='your_secret_key'")
+    try:
+        auth = load_alpaca_auth_env()
+    except Exception:
+        print("ERROR: Missing Alpaca credentials.")
+        print("Set: APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL")
         sys.exit(1)
     
-    print(f"Connecting to Alpaca API: {base_url}")
+    print(f"Connecting to Alpaca API: {auth.api_base_url}")
     api = tradeapi.REST(
-        key_id=key_id,
-        secret_key=secret_key,
-        base_url=base_url
+        key_id=auth.api_key_id,
+        secret_key=auth.api_secret_key,
+        base_url=auth.api_base_url,
     )
     print("✓ Connected successfully\n")
     

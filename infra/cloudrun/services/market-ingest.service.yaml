@@ -4,8 +4,9 @@
 #
 # Required env var names (set via deploy script / gcloud flags):
 # - FIREBASE_PROJECT_ID
-# - ALPACA_API_KEY
-# - ALPACA_SECRET_KEY
+# - APCA_API_KEY_ID
+# - APCA_API_SECRET_KEY
+# - APCA_API_BASE_URL
 # - MONITORED_SYMBOLS
 # - ALPACA_DATA_FEED
 #

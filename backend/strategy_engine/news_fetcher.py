@@ -14,7 +14,7 @@ from alpaca.data.historical import NewsClient
 from alpaca.data.requests import NewsRequest
 from alpaca.data.timeframe import TimeFrame
 
-from backend.common.env import get_alpaca_api_key, get_alpaca_secret_key
+from backend.config.alpaca_env import load_alpaca_auth_env
 from backend.strategy_engine.strategies.llm_sentiment_alpha import NewsItem
 
 logger = logging.getLogger(__name__)
@@ -37,12 +37,11 @@ def fetch_recent_news(
         List of NewsItem objects
     """
     try:
-        # Get Alpaca credentials
-        api_key = get_alpaca_api_key(required=True)
-        secret_key = get_alpaca_secret_key(required=True)
+        # Get Alpaca credentials (APCA_* only; fail-fast)
+        auth = load_alpaca_auth_env()
         
         # Initialize Alpaca News client
-        news_client = NewsClient(api_key=api_key, secret_key=secret_key)
+        news_client = NewsClient(api_key=auth.api_key_id, secret_key=auth.api_secret_key)
         
         # Calculate time range
         end_time = datetime.now(timezone.utc)

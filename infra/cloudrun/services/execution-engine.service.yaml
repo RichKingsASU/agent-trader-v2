@@ -5,7 +5,7 @@
 # Required env var names (set via deploy script / gcloud flags):
 # - FIREBASE_PROJECT_ID
 # - EXEC_DRY_RUN
-# - (if EXEC_DRY_RUN=0): ALPACA_API_KEY, ALPACA_SECRET_KEY
+# - (if EXEC_DRY_RUN=0): APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL
 #
 # NOTE: Replace REPLACE_ME_* placeholders before applying.
 

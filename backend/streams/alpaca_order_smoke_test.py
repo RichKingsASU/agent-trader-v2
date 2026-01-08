@@ -2,13 +2,11 @@ import os
 import requests
 import json
 
-from backend.streams.alpaca_env import load_alpaca_env
+from backend.config.alpaca_env import load_alpaca_auth_env
 
-alpaca = load_alpaca_env()
-BASE = alpaca.trading_base_v2
-KEY = alpaca.key_id
-SEC = alpaca.secret_key
-HEADERS = {"APCA-API-KEY-ID": KEY, "APCA-API-SECRET-KEY": SEC}
+auth = load_alpaca_auth_env()
+BASE = f"{auth.api_base_url}/v2"
+HEADERS = auth.headers
 
 def check_account():
     """Checks Alpaca account status."""

@@ -36,6 +36,7 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 from strategies.base_strategy import BaseStrategy, SignalType, TradingSignal
+from backend.config.alpaca_env import load_alpaca_auth_env
 
 logger = logging.getLogger(__name__)
 
@@ -214,8 +215,8 @@ class Backtester:
             initial_capital: Starting capital in USD
             commission: Commission per trade (not yet implemented)
             slippage: Slippage in decimal (not yet implemented)
-            alpaca_api_key: Alpaca API key (or use env var ALPACA_API_KEY)
-            alpaca_secret_key: Alpaca secret key (or use env var ALPACA_SECRET_KEY)
+            alpaca_api_key: Alpaca API key id (or use env var APCA_API_KEY_ID)
+            alpaca_secret_key: Alpaca API secret key (or use env var APCA_API_SECRET_KEY)
         """
         self.strategy = strategy
         self.symbol = symbol.upper()
@@ -235,14 +236,13 @@ class Backtester:
             self.start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
         
         # Alpaca client
-        api_key = alpaca_api_key or os.getenv("ALPACA_API_KEY")
-        secret_key = alpaca_secret_key or os.getenv("ALPACA_SECRET_KEY")
-        
-        if not api_key or not secret_key:
-            raise ValueError(
-                "Alpaca API credentials required. Set ALPACA_API_KEY and "
-                "ALPACA_SECRET_KEY environment variables or pass as parameters."
-            )
+        if alpaca_api_key and alpaca_secret_key:
+            api_key = alpaca_api_key
+            secret_key = alpaca_secret_key
+        else:
+            auth = load_alpaca_auth_env()
+            api_key = alpaca_api_key or auth.api_key_id
+            secret_key = alpaca_secret_key or auth.api_secret_key
         
         self.data_client = StockHistoricalDataClient(api_key, secret_key)
         

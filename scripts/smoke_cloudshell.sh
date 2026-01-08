@@ -12,8 +12,9 @@ need_var() {
 }
 
 # Required (do not print values)
-need_var "ALPACA_KEY_ID"
-need_var "ALPACA_SECRET_KEY"
+need_var "APCA_API_KEY_ID"
+need_var "APCA_API_SECRET_KEY"
+need_var "APCA_API_BASE_URL"
 need_var "DATABASE_URL"
 
 # Run bars ingest once

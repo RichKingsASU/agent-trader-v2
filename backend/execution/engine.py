@@ -19,7 +19,7 @@ from backend.common.kill_switch import (
     require_live_mode as require_kill_switch_off,
 )
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
-from backend.streams.alpaca_env import load_alpaca_env
+from backend.config.alpaca_env import load_alpaca_auth_env
 
 logger = logging.getLogger(__name__)
 
@@ -209,12 +209,10 @@ class MarketDataProvider:
     """
     
     def __init__(self, *, request_timeout_s: float = 10.0):
-        self._alpaca = load_alpaca_env(require_keys=True)
-        self._data_base = self._alpaca.data_base_v2
-        self._headers = {
-            "APCA-API-KEY-ID": self._alpaca.key_id,
-            "APCA-API-SECRET-KEY": self._alpaca.secret_key,
-        }
+        auth = load_alpaca_auth_env()
+        data_host = (os.getenv("ALPACA_DATA_HOST") or "https://data.alpaca.markets").strip().rstrip("/")
+        self._data_base = f"{data_host}/v2"
+        self._headers = auth.headers
         self._timeout = request_timeout_s
     
     def get_quote(self, *, symbol: str, asset_class: str = "EQUITY") -> dict[str, Any]:
@@ -283,12 +281,9 @@ class AlpacaBroker:
     """
 
     def __init__(self, *, request_timeout_s: float = 10.0):
-        self._alpaca = load_alpaca_env(require_keys=True)
-        self._base = self._alpaca.trading_base_v2
-        self._headers = {
-            "APCA-API-KEY-ID": self._alpaca.key_id,
-            "APCA-API-SECRET-KEY": self._alpaca.secret_key,
-        }
+        auth = load_alpaca_auth_env()
+        self._base = f"{auth.api_base_url}/v2"
+        self._headers = auth.headers
         self._timeout = request_timeout_s
 
     def place_order(self, *, intent: OrderIntent) -> dict[str, Any]:

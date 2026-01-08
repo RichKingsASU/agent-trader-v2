@@ -13,7 +13,7 @@ SERVICE_NAME="${SERVICE_NAME:-execution-engine}"
 IMAGE_NAME="${IMAGE_NAME:-execution-engine}"
 DOCKERFILE="${DOCKERFILE:-${ROOT_DIR}/infra/Dockerfile.execution_engine}"
 ENV_VARS_FILE="${ENV_VARS_FILE:-}"
-SECRETS="${SECRETS:-}"          # e.g. 'ALPACA_API_KEY=alpaca-api-key:latest,ALPACA_SECRET_KEY=alpaca-secret-key:latest'
+SECRETS="${SECRETS:-}"          # e.g. 'APCA_API_KEY_ID=alpaca-key-id:latest,APCA_API_SECRET_KEY=alpaca-secret-key:latest'
 VPC_CONNECTOR="${VPC_CONNECTOR:-}"
 VPC_EGRESS="${VPC_EGRESS:-private-ranges-only}" # all-traffic|private-ranges-only
 ALLOW_UNAUTHENTICATED="${ALLOW_UNAUTHENTICATED:-0}"

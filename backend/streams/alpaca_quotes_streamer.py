@@ -10,7 +10,7 @@ from alpaca.data.enums import DataFeed
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-from backend.streams.alpaca_env import load_alpaca_env
+from backend.config.alpaca_env import load_alpaca_auth_env
 from backend.utils.session import get_market_session
 from backend.common.ops_metrics import (
     errors_total,
@@ -45,9 +45,9 @@ def _mark_marketdata_seen(ts: datetime | None = None) -> None:
 
 
 try:
-    alpaca = load_alpaca_env()
-    API_KEY = alpaca.key_id
-    SECRET_KEY = alpaca.secret_key
+    auth = load_alpaca_auth_env()
+    API_KEY = auth.api_key_id
+    SECRET_KEY = auth.api_secret_key
     DB_URL = os.getenv("DATABASE_URL")
     if not DB_URL:
         raise KeyError("DATABASE_URL")
@@ -156,7 +156,7 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
     `ready_event` is an optional synchronization primitive used by the parent
     service to mark readiness once subscriptions are configured.
     """
-    alpaca = load_alpaca_env()
+    auth = load_alpaca_auth_env()
     symbols = _symbols_from_env()
 
     logging.info(f"Subscribing to quotes for: {symbols}")
@@ -176,7 +176,7 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
     while True:
         wss_client: StockDataStream | None = None
         try:
-            wss_client = StockDataStream(alpaca.key_id, alpaca.secret_key, feed=DataFeed.IEX)
+            wss_client = StockDataStream(auth.api_key_id, auth.api_secret_key, feed=DataFeed.IEX)
             _RESET_BACKOFF_ON_FIRST_QUOTE = True
             wss_client.subscribe_quotes(quote_data_handler, *symbols)
 

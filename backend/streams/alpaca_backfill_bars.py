@@ -13,7 +13,7 @@ from psycopg2.extras import execute_values
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from backend.common.agent_boot import configure_startup_logging
-from backend.streams.alpaca_env import load_alpaca_env
+from backend.config.alpaca_env import load_alpaca_auth_env
 from backend.time.providers import normalize_alpaca_timestamp
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -82,9 +82,10 @@ def main():
         logger.critical("Missing required env var: DATABASE_URL")
         return
 
-    alpaca = load_alpaca_env(require_keys=True)
-    headers = {"APCA-API-KEY-ID": alpaca.key_id, "APCA-API-SECRET-KEY": alpaca.secret_key}
-    base = alpaca.data_stocks_base_v2
+    auth = load_alpaca_auth_env()
+    headers = auth.headers
+    data_host = (os.getenv("ALPACA_DATA_HOST") or "https://data.alpaca.markets").strip().rstrip("/")
+    base = f"{data_host}/v2/stocks"
 
     feed = os.getenv("ALPACA_FEED", "iex")
     syms = [s.strip().upper() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM").split(",") if s.strip()]

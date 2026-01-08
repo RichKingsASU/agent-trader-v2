@@ -18,7 +18,7 @@ Fail-fast:
 - If total upserts == 0, exit non-zero.
 
 Env required:
-- ALPACA_KEY_ID, ALPACA_SECRET_KEY
+- APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL
 - DATABASE_URL
 
 Env read:
@@ -47,11 +47,6 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import requests
 
 # Task requirements: contracts from trading base; snapshots from Alpaca data host.
-TRADING_BASE = (
-    "https://paper-api.alpaca.markets"
-    if str(os.getenv("ALPACA_PAPER", "true")).lower() == "true"
-    else "https://api.alpaca.markets"
-)
 DATA_BASE = "https://data.alpaca.markets"
 
 from backend.common.agent_boot import configure_startup_logging
@@ -59,8 +54,7 @@ from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.env import get_env
 from backend.observability.build_fingerprint import get_build_fingerprint
 
-# Keep consistent with other backend/streams scripts
-from backend.streams.alpaca_env import load_alpaca_env
+from backend.config.alpaca_env import load_alpaca_auth_env
 
 
 logger = logging.getLogger(__name__)
@@ -553,8 +547,8 @@ def main() -> int:
         logger.error("DATABASE_URL is required")
         return 2
 
-    alpaca = load_alpaca_env(require_keys=True)
-    hdrs = _headers(alpaca.key_id, alpaca.secret_key)
+    auth = load_alpaca_auth_env()
+    hdrs = auth.headers
 
     # Use ALPACA_FEED as a stock feed only if it looks like one; otherwise omit.
     stock_feed: Optional[str] = None
@@ -590,14 +584,14 @@ def main() -> int:
             exp_lte = today + timedelta(days=dte_max)
 
             underlying_price = fetch_underlying_latest_price(
-                data_host=alpaca.data_host,
+                data_host=DATA_BASE,
                 headers=hdrs,
                 symbol=underlying,
                 stock_feed=stock_feed,
             )
 
             contracts = fetch_option_contracts(
-                trading_host=TRADING_BASE,
+                trading_host=auth.api_base_url,
                 headers=hdrs,
                 underlying=underlying,
                 exp_gte=today,
