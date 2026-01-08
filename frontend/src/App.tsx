@@ -31,6 +31,7 @@ import OptionsExplorer from "./pages/ops/OptionsExplorer";
 import NewsViewer from "./pages/ops/NewsViewer";
 import JobHealth from "./pages/ops/JobHealth";
 import OpsDebug from "./pages/ops/OpsDebug";
+import TopicHealth from "./pages/ops/TopicHealth";
 import MissionControl from "./pages/MissionControl";
 
 const queryClient = new QueryClient();
@@ -69,9 +70,11 @@ const App = () => (
                       <Route path="/lovable/developer" element={<LovableDeveloperPage />} />
                       <Route path="/ops" element={<OpsLayout />}>
                         <Route index element={<OpsOverview />} />
+                        <Route path="topics" element={<TopicHealth />} />
                         <Route path="options" element={<OptionsExplorer />} />
                         <Route path="news" element={<NewsViewer />} />
                         <Route path="jobs" element={<JobHealth />} />
+                        <Route path="debug" element={<OpsDebug />} />
                       </Route>
                       <Route path="/backtesting" element={<Backtesting />} />
 
