@@ -19,6 +19,18 @@ export type EventEnvelope<
 };
 
 /**
+ * Canonical EventEnvelope v1 (schemaVersion REQUIRED).
+ *
+ * Back-compat note:
+ * - `EventEnvelope` (without schemaVersion) is legacy and should not be used for new producers.
+ */
+export interface EventEnvelopeV1<
+  TPayload extends Record<string, unknown> = Record<string, unknown>,
+> extends EventEnvelope<TPayload> {
+  schemaVersion: 1;
+}
+
+/**
  * JSON-level runtime validator for the envelope shape.
  *
  * Notes:
@@ -38,5 +50,11 @@ export function isEventEnvelope(value: unknown): value is EventEnvelope {
     typeof v.payload === "object" &&
     typeof v.trace_id === "string"
   );
+}
+
+export function isEventEnvelopeV1(value: unknown): value is EventEnvelopeV1 {
+  if (!isEventEnvelope(value)) return false;
+  const v = value as Record<string, unknown>;
+  return v.schemaVersion === 1;
 }
 

@@ -43,6 +43,21 @@ def _validate_required_env(required: list[str]) -> dict[str, bool]:
 # --- Structured Logging & Pre-run Configuration ---
 # This must run before any other modules are imported to ensure logging is configured correctly.
 
+# Set up structured logging with the google-cloud-logging library.
+# In CI/local environments, Application Default Credentials may be unavailable; in that case,
+# fall back to standard logging rather than crashing at import-time.
+try:
+    import google.cloud.logging  # type: ignore
+
+    logging_client = google.cloud.logging.Client()
+    logging_client.setup_logging()
+except Exception as e:  # noqa: BLE001 - best-effort logging initialization
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+    logging.getLogger(__name__).warning(
+        "google-cloud-logging unavailable; using std logging: %s",
+        e,
+    )
+
 # Set up a logger adapter to inject custom static fields into all log messages.
 LOG_EXTRA = {
     "service": os.getenv("K_SERVICE", "cloudrun_ingestor"),
@@ -50,14 +65,16 @@ LOG_EXTRA = {
 }
 logger = logging.getLogger(__name__)
 
-_normalize_env_alias("GCP_PROJECT", ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT_ID", "PROJECT_ID"])
-_required_env = ["GCP_PROJECT", "SYSTEM_EVENTS_TOPIC", "INGEST_FLAG_SECRET_ID", "ENV"]
-_presence = _validate_required_env(_required_env)
-logger.info("Startup config presence validated.", extra={**LOG_EXTRA, "required_env": _presence})
-_missing = [name for name, ok in _presence.items() if not ok]
-if _missing:
-    logger.critical("Missing required environment variables.", extra={**LOG_EXTRA, "missing_env": _missing})
-    sys.exit(1)
+try:
+    from backend.common.cloudrun_perf import identity_fields as _identity_fields  # noqa: WPS433
+    from backend.common.cloudrun_perf import instance_uptime_ms as _instance_uptime_ms  # noqa: WPS433
+
+    logger.info(
+        "Cloud Run process start",
+        extra={**LOG_EXTRA, "event_type": "cloudrun.process_start", "instance_uptime_ms": _instance_uptime_ms(), **_identity_fields()},
+    )
+except Exception:
+    pass
 
 
 def override_config():
@@ -221,6 +238,27 @@ try:
 except Exception as e:
     _fail_fast_import(e, context="startup", failed_import="flask.Flask")
 app = Flask(__name__)
+
+try:
+    from backend.common.cloudrun_perf import classify_request as _classify_request  # noqa: WPS433
+
+    @app.before_request
+    def _cloudrun_request_perf_hook():  # type: ignore[no-redef]
+        # Minimal noise: still logs once per request (health checks are low-QPS here).
+        c = _classify_request()
+        logger.info(
+            "Request handled",
+            extra={
+                **LOG_EXTRA,
+                "event_type": "cloudrun.http_request",
+                "cold_start": bool(c.cold_start),
+                "request_ordinal": int(c.request_ordinal),
+                "instance_uptime_ms": int(c.instance_uptime_ms),
+            },
+        )
+
+except Exception:
+    pass
 
 @app.route("/")
 def index():

@@ -13,6 +13,7 @@ from backend.messaging.pubsub_attributes import (
     resolve_environment,
 )
 from backend.observability.ops_json_logger import log as log_json
+from backend.observability.ops_json_logger import log_once as log_json_once
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,10 @@ class PubSubPublisher:
 
         Returns a Pub/Sub message id (string).
         """
+        # Contract guardrail: schemaVersion is REQUIRED and must be supported.
+        schema_version = int(getattr(envelope, "schemaVersion", 0) or 0)
+        if schema_version != 1:
+            raise ValueError(f"Unsupported schemaVersion for EventEnvelope: {schema_version}")
 
         cfg = self._publish_retry_config()
         max_attempts = int(cfg["max_attempts"])
@@ -245,10 +250,38 @@ class PubSubPublisher:
                 future = self._client.publish(
                     self._topic_path,
                     envelope.to_bytes(),
-                    # Attributes only (payload bodies MUST NOT be mutated).
-                    **publish_attrs,
+                    # Also duplicate key fields as attributes for filtering/debugging.
+                    schemaVersion=str(schema_version),
+                    event_type=envelope.event_type,
+                    agent_name=envelope.agent_name,
+                    trace_id=envelope.trace_id,
+                    git_sha=envelope.git_sha,
+                    ts=envelope.ts,
                 )
                 message_id = str(future.result(timeout=timeout_s))
+
+                # Cloud Run performance marker: time-to-first-publish (logging-only).
+                try:
+                    from backend.common.cloudrun_perf import identity_fields, mark_first_publish  # noqa: WPS433
+
+                    marker = mark_first_publish()
+                    if marker.first_publish:
+                        log_json_once(
+                            None,
+                            key="cloudrun.first_publish",
+                            event="cloudrun.first_publish",
+                            severity="INFO",
+                            topic=self._topic_path,
+                            message_id=message_id,
+                            event_type=envelope.event_type,
+                            agent_name=envelope.agent_name,
+                            trace_id=envelope.trace_id,
+                            time_to_first_publish_ms=int(marker.time_to_first_publish_ms or 0),
+                            instance_uptime_ms=int(marker.instance_uptime_ms),
+                            **identity_fields(),
+                        )
+                except Exception:
+                    pass
 
                 log_json(
                     None,

@@ -10,7 +10,7 @@ import traceback
 from typing import Any, Optional, Tuple
 
 from idempotency import ensure_message_once
-from time_audit import ensure_utc
+from replay_support import ReplayContext, ensure_event_not_applied
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -101,46 +101,92 @@ class SourceInfo:
 
 
 class FirestoreWriter:
-    def __init__(self, *, project_id: str, database: str = "(default)") -> None:
+    def __init__(self, *, project_id: str, database: str = "(default)", collection_prefix: str = "") -> None:
         from google.cloud import firestore as firestore_mod
 
         self._firestore = firestore_mod
         self._db = firestore_mod.Client(project=project_id, database=database)
+        self._collection_prefix = str(collection_prefix or "").strip()
 
-    def _protect_published_at(self, *, existing: dict[str, Any], incoming_doc: dict[str, Any]) -> dict[str, Any]:
+    def _col(self, name: str) -> str:
+        p = self._collection_prefix
+        if not p:
+            return str(name)
+        # Keep simple; prefix should be Firestore-safe (no '/').
+        return f"{p}{name}"
+
+    def observe_pubsub_delivery(
+        self,
+        *,
+        message_id: str,
+        topic: str,
+        subscription: str,
+        handler: str,
+        published_at: datetime,
+        delivery_attempt: Optional[int] = None,
+    ) -> Optional[bool]:
         """
-        Best-effort monotonic protection for fields that may be used for ordering.
+        Visibility-only: record that a Pub/Sub push delivery occurred.
 
-        Invariants:
-        - If a document already has `publishedAt`, we never move it backwards.
-        - If a document already has `source.publishedAt`, we never move it backwards.
+        Returns:
+        - True if this messageId has been seen before (duplicate delivery)
+        - False if first observation
+        - None if observation failed (best-effort)
 
-        Note: This does NOT add new fields; it only prevents regressions.
+        IMPORTANT: this method must not be used to gate processing.
         """
-        out = dict(incoming_doc)
-        if not isinstance(existing, dict):
-            return out
+        mid = str(message_id or "").strip()
+        if not mid:
+            return None
 
-        existing_published_at = _parse_rfc3339(existing.get("publishedAt"))
-        incoming_published_at = _parse_rfc3339(out.get("publishedAt"))
-        if existing_published_at is not None and incoming_published_at is not None and incoming_published_at < existing_published_at:
-            out["publishedAt"] = existing_published_at
+        # Firestore doc ids cannot contain '/'.
+        doc_id = mid.replace("/", "_")
+        ref = self._db.collection("ops_pubsub_deliveries").document(doc_id)
 
-        existing_src = existing.get("source")
-        incoming_src = out.get("source")
-        existing_source_pub = _parse_rfc3339(existing_src.get("publishedAt")) if isinstance(existing_src, dict) else None
-        incoming_source_pub = _parse_rfc3339(incoming_src.get("publishedAt")) if isinstance(incoming_src, dict) else None
-        if (
-            isinstance(incoming_src, dict)
-            and existing_source_pub is not None
-            and incoming_source_pub is not None
-            and incoming_source_pub < existing_source_pub
-        ):
-            fixed_src = dict(incoming_src)
-            fixed_src["publishedAt"] = existing_source_pub
-            out["source"] = fixed_src
+        try:
+            # Prefer create() so we can detect duplicates without reads.
+            ref.create(
+                {
+                    "messageId": mid,
+                    "topic": str(topic or ""),
+                    "subscription": str(subscription or ""),
+                    "handler": str(handler or ""),
+                    "publishedAt": _as_utc(published_at),
+                    "deliveryAttempt": int(delivery_attempt) if delivery_attempt is not None else None,
+                    "firstSeenAt": self._firestore.SERVER_TIMESTAMP,
+                    "lastSeenAt": self._firestore.SERVER_TIMESTAMP,
+                    "seenCount": 1,
+                }
+            )
+            return False
+        except Exception as e:
+            # If it already exists, we treat as duplicate delivery and update counters best-effort.
+            try:
+                from google.api_core.exceptions import AlreadyExists  # type: ignore
+            except Exception:
+                AlreadyExists = None  # type: ignore[assignment]
 
-        return out
+            if AlreadyExists is not None and isinstance(e, AlreadyExists):  # type: ignore[arg-type]
+                try:
+                    ref.set(
+                        {
+                            "lastSeenAt": self._firestore.SERVER_TIMESTAMP,
+                            "seenCount": self._firestore.Increment(1),
+                            "lastTopic": str(topic or ""),
+                            "lastSubscription": str(subscription or ""),
+                            "lastHandler": str(handler or ""),
+                            "lastPublishedAt": _as_utc(published_at),
+                            "lastDeliveryAttempt": int(delivery_attempt) if delivery_attempt is not None else None,
+                        },
+                        merge=True,
+                    )
+                except Exception:
+                    # Observation must never break processing.
+                    pass
+                return True
+
+            # Unknown failure: treat as "no observation" (visibility only).
+            return None
 
     def _upsert_event_doc(
         self,
@@ -150,15 +196,29 @@ class FirestoreWriter:
         event_time: datetime,
         source: SourceInfo,
         doc: dict[str, Any],
+        replay: Optional[ReplayContext] = None,
+        replay_dedupe_key: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
         Generic upsert with stale protection:
         - doc id is deterministic (eventId if present else messageId)
         - ignore stale updates based on event_time vs existing produced/published/eventTime/source.publishedAt
         """
-        ref = self._db.collection(collection).document(doc_id)
+        ref = self._db.collection(self._col(collection)).document(doc_id)
 
         def _txn(txn: Any) -> Tuple[bool, str]:
+            if replay is not None:
+                ok, why = ensure_event_not_applied(
+                    txn=txn,
+                    db=self._db,
+                    replay=replay,
+                    dedupe_key=str(replay_dedupe_key or doc_id),
+                    event_time=_as_utc(event_time),
+                    message_id=str(source.message_id),
+                )
+                if not ok:
+                    return False, why
+
             snap = ref.get(transaction=txn)
             existing = snap.to_dict() if snap.exists else {}
 
@@ -197,6 +257,7 @@ class FirestoreWriter:
         symbol: Optional[str],
         data: dict[str, Any],
         source: SourceInfo,
+        replay: Optional[ReplayContext] = None,
     ) -> Tuple[bool, str]:
         doc = {
             "docId": doc_id,
@@ -206,16 +267,27 @@ class FirestoreWriter:
             "producedAt": ensure_utc(produced_at, source="cloudrun_consumer.firestore_writer.upsert_market_tick", field="produced_at") if isinstance(produced_at, datetime) else produced_at,
             "publishedAt": ensure_utc(published_at, source="cloudrun_consumer.firestore_writer.upsert_market_tick", field="published_at") if isinstance(published_at, datetime) else published_at,
             "data": data,
+            "lastAppliedMessageId": str(source.message_id),
+            "lastAppliedPublishedAt": _as_utc(source.published_at),
             "source": {
                 "topic": str(source.topic),
                 "messageId": str(source.message_id),
                 "publishedAt": _as_utc(source.published_at),
             },
             "ingestedAt": self._firestore.SERVER_TIMESTAMP,
+            "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
         }
         # Remove nulls for cleaner docs.
         doc = {k: v for k, v in doc.items() if v is not None}
-        return self._upsert_event_doc(collection="market_ticks", doc_id=doc_id, event_time=event_time, source=source, doc=doc)
+        return self._upsert_event_doc(
+            collection="market_ticks",
+            doc_id=doc_id,
+            event_time=event_time,
+            source=source,
+            doc=doc,
+            replay=replay,
+            replay_dedupe_key=event_id or doc_id,
+        )
 
     def upsert_market_bar_1m(
         self,
@@ -231,6 +303,7 @@ class FirestoreWriter:
         end: Optional[datetime],
         data: dict[str, Any],
         source: SourceInfo,
+        replay: Optional[ReplayContext] = None,
     ) -> Tuple[bool, str]:
         doc = {
             "docId": doc_id,
@@ -243,15 +316,26 @@ class FirestoreWriter:
             "producedAt": ensure_utc(produced_at, source="cloudrun_consumer.firestore_writer.upsert_market_bar_1m", field="produced_at") if isinstance(produced_at, datetime) else produced_at,
             "publishedAt": ensure_utc(published_at, source="cloudrun_consumer.firestore_writer.upsert_market_bar_1m", field="published_at") if isinstance(published_at, datetime) else published_at,
             "data": data,
+            "lastAppliedMessageId": str(source.message_id),
+            "lastAppliedPublishedAt": _as_utc(source.published_at),
             "source": {
                 "topic": str(source.topic),
                 "messageId": str(source.message_id),
                 "publishedAt": _as_utc(source.published_at),
             },
             "ingestedAt": self._firestore.SERVER_TIMESTAMP,
+            "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
         }
         doc = {k: v for k, v in doc.items() if v is not None}
-        return self._upsert_event_doc(collection="market_bars_1m", doc_id=doc_id, event_time=event_time, source=source, doc=doc)
+        return self._upsert_event_doc(
+            collection="market_bars_1m",
+            doc_id=doc_id,
+            event_time=event_time,
+            source=source,
+            doc=doc,
+            replay=replay,
+            replay_dedupe_key=event_id or doc_id,
+        )
 
     def upsert_trade_signal(
         self,
@@ -266,6 +350,7 @@ class FirestoreWriter:
         action: Optional[str],
         data: dict[str, Any],
         source: SourceInfo,
+        replay: Optional[ReplayContext] = None,
     ) -> Tuple[bool, str]:
         doc = {
             "docId": doc_id,
@@ -277,15 +362,26 @@ class FirestoreWriter:
             "producedAt": ensure_utc(produced_at, source="cloudrun_consumer.firestore_writer.upsert_trade_signal", field="produced_at") if isinstance(produced_at, datetime) else produced_at,
             "publishedAt": ensure_utc(published_at, source="cloudrun_consumer.firestore_writer.upsert_trade_signal", field="published_at") if isinstance(published_at, datetime) else published_at,
             "data": data,
+            "lastAppliedMessageId": str(source.message_id),
+            "lastAppliedPublishedAt": _as_utc(source.published_at),
             "source": {
                 "topic": str(source.topic),
                 "messageId": str(source.message_id),
                 "publishedAt": _as_utc(source.published_at),
             },
             "ingestedAt": self._firestore.SERVER_TIMESTAMP,
+            "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
         }
         doc = {k: v for k, v in doc.items() if v is not None}
-        return self._upsert_event_doc(collection="trade_signals", doc_id=doc_id, event_time=event_time, source=source, doc=doc)
+        return self._upsert_event_doc(
+            collection="trade_signals",
+            doc_id=doc_id,
+            event_time=event_time,
+            source=source,
+            doc=doc,
+            replay=replay,
+            replay_dedupe_key=event_id or doc_id,
+        )
 
     def upsert_ops_service(
         self,
@@ -306,7 +402,7 @@ class FirestoreWriter:
         - only overwrite if incoming `updated_at` >= max(stored.lastHeartbeatAt, stored.source.publishedAt)
         - `updatedAt` stored in Firestore is always a server timestamp (write time)
         """
-        ref = self._db.collection("ops_services").document(service_id)
+        ref = self._db.collection(self._col("ops_services")).document(service_id)
 
         def _txn(txn: Any) -> Tuple[bool, str]:
             snap = ref.get(transaction=txn)
@@ -354,6 +450,7 @@ class FirestoreWriter:
                     "messageId": str(source.message_id),
                     "publishedAt": _as_utc(source.published_at),
                 },
+                "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
             }
 
             txn.set(ref, doc)
@@ -366,6 +463,8 @@ class FirestoreWriter:
         self,
         *,
         message_id: str,
+        replay: Optional[ReplayContext] = None,
+        replay_dedupe_key: Optional[str] = None,
         service_id: str,
         env: str,
         status: str,
@@ -380,13 +479,25 @@ class FirestoreWriter:
         - checks/creates `ops_dedupe/{messageId}`
         - applies stale-protected write to ops_services
         """
-        dedupe_ref = self._db.collection("ops_dedupe").document(message_id)
-        service_ref = self._db.collection("ops_services").document(service_id)
+        dedupe_ref = self._db.collection(self._col("ops_dedupe")).document(message_id)
+        service_ref = self._db.collection(self._col("ops_services")).document(service_id)
 
         def _txn(txn: Any) -> Tuple[bool, str]:
             first_time, _ = ensure_message_once(txn=txn, dedupe_ref=dedupe_ref, message_id=message_id)
             if not first_time:
                 return False, "duplicate_message_noop"
+
+            if replay is not None:
+                ok, why = ensure_event_not_applied(
+                    txn=txn,
+                    db=self._db,
+                    replay=replay,
+                    dedupe_key=str(replay_dedupe_key or message_id),
+                    event_time=_as_utc(updated_at),
+                    message_id=str(message_id),
+                )
+                if not ok:
+                    return False, why
 
             snap = service_ref.get(transaction=txn)
             existing = snap.to_dict() if snap.exists else {}
@@ -434,6 +545,7 @@ class FirestoreWriter:
                     "messageId": str(source.message_id),
                     "publishedAt": _as_utc(source.published_at),
                 },
+                "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
             }
 
             txn.set(service_ref, doc)

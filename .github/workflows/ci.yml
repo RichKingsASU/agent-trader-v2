@@ -23,6 +23,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: TypeScript typecheck gate (packages/shared-types)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: TypeScript typecheck (shared-types)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No lockfile / workspace root; keep this fast and hermetic by running tsc via npx.
+          npx -y --package typescript@5.6.3 tsc -p packages/shared-types/tsconfig.json --noEmit
+
       - name: "Blockers: banned vendor refs + secret patterns"
         shell: bash
         run: |
@@ -96,7 +108,7 @@ jobs:
           cache: pip
           cache-dependency-path: |
             backend/requirements.lock
-            backend/ingestion/requirements.txt
+            cloudrun_ingestor/requirements.txt
 
       - name: Install backend dependencies (locked)
         run: |
@@ -189,11 +201,62 @@ jobs:
         shell: bash
         run: python3 scripts/smoke_check_imports.py
 
-      - name: Runtime module import check (deployment entrypoints)
+      - name: Pre-build Python import test (cloudrun_ingestor)
         shell: bash
         run: |
           set -euo pipefail
-          timeout 5s python3 scripts/import_runtime_modules.py
+          python3 -m pip install -r cloudrun_ingestor/requirements.txt
+
+          # Import the actual Cloud Run entrypoint with dummy env to ensure we catch:
+          # - missing dependencies
+          # - syntax / import errors
+          # - accidental early-exit on startup
+          GCP_PROJECT_ID=dummy \
+          SYSTEM_EVENTS_TOPIC=dummy \
+          MARKET_TICKS_TOPIC=dummy \
+          MARKET_BARS_1M_TOPIC=dummy \
+          TRADE_SIGNALS_TOPIC=dummy \
+          INGEST_FLAG_SECRET_ID=dummy \
+          python3 -c "import importlib.util; s=importlib.util.spec_from_file_location('cloudrun_ingestor_main','cloudrun_ingestor/main.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print('ok: imported cloudrun_ingestor/main.py')"
+
+      - name: Docker build + boot smoke test (cloudrun_ingestor)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="cloudrun-ingestor-smoke:${GITHUB_SHA}"
+          docker build -f cloudrun_ingestor/Dockerfile -t "${IMAGE}" .
+
+          # Run with dummy config so main.py doesn't exit immediately due to missing env vars.
+          CID="$(
+            docker run -d -p 18080:8080 \
+              -e GCP_PROJECT_ID=dummy \
+              -e SYSTEM_EVENTS_TOPIC=dummy \
+              -e MARKET_TICKS_TOPIC=dummy \
+              -e MARKET_BARS_1M_TOPIC=dummy \
+              -e TRADE_SIGNALS_TOPIC=dummy \
+              -e INGEST_FLAG_SECRET_ID=dummy \
+              "${IMAGE}"
+          )"
+          cleanup() { docker rm -f "${CID}" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          # Fail the build if gunicorn (container) exits early.
+          sleep 5
+          if ! docker ps -q --no-trunc | grep -q "${CID}"; then
+            echo "ERROR: cloudrun_ingestor container exited early (gunicorn boot failure)." >&2
+            docker logs "${CID}" || true
+            exit 1
+          fi
+
+          # Optional: ensure HTTP is accepting connections.
+          curl -fsS --max-time 2 --retry 10 --retry-connrefused http://localhost:18080/ >/dev/null || {
+            echo "ERROR: cloudrun_ingestor did not become reachable on HTTP." >&2
+            docker logs "${CID}" || true
+            exit 1
+          }
+
+          docker stop "${CID}" >/dev/null
 
       - name: Pub/Sub contract gate (Python envelope vs TS shared types)
         shell: bash

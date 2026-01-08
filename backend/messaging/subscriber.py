@@ -65,6 +65,8 @@ class PubSubSubscriber:
         def _callback(message: Any) -> None:
             try:
                 envelope = EventEnvelope.from_bytes(message.data)
+                if int(getattr(envelope, "schemaVersion", 0) or 0) != 1:
+                    raise ValueError(f"Unsupported schemaVersion for EventEnvelope: {getattr(envelope, 'schemaVersion', None)}")
                 handler(envelope)
                 message.ack()
             except Exception:
