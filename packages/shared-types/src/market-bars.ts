@@ -1,5 +1,3 @@
-import type { EventEnvelope } from "./event-bus";
-
 export const MARKET_BARS_1M_EVENT_TYPE = "market.bars.1m" as const;
 export const MARKET_BARS_1M_TOPIC_ID = "market-bars-1m" as const;
 
@@ -14,8 +12,9 @@ export type MarketBar1mPayload = {
   volume: number;
   source?: "alpaca" | "synthetic" | string;
 };
-
-export type MarketBar1mEvent = EventEnvelope<MarketBar1mPayload> & {
-  event_type: typeof MARKET_BARS_1M_EVENT_TYPE;
-};
+/**
+ * Payload-only contract.
+ *
+ * Envelope types live in adapter modules to keep a single canonical envelope definition.
+ */
 
