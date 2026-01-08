@@ -21,6 +21,7 @@ from backend.common.kill_switch import (
     is_kill_switch_enabled,
     require_live_mode as require_kill_switch_off,
 )
+from backend.safety.shutdown_gate import OrderSubmissionGuard, ShutdownRequestedError, check_not_shutting_down
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.risk.loss_acceleration_guard import LossAccelerationGuard
@@ -1736,6 +1737,18 @@ class ExecutionEngine:
         # Defense-in-depth: do not place broker orders unless explicitly authorized.
         # - Trading authority: AGENT_MODE must be LIVE (fail-closed; raises AgentModeError).
         # - Kill switch: must be OFF (convert to a rejected result for callers).
+        try:
+            check_not_shutting_down(operation="broker order placement")
+        except ShutdownRequestedError:
+            checks = list(risk.checks or [])
+            checks.append({"check": "shutdown_gate", "enabled": True, "reason": "shutdown_requested"})
+            halted_risk = RiskDecision(allowed=False, reason="shutdown_requested", checks=checks)
+            return ExecutionResult(
+                status="rejected",
+                risk=halted_risk,
+                routing=routing_decision,
+                message="shutdown_requested",
+            )
         require_trading_live_mode(action="broker order placement")
         try:
             require_kill_switch_off(operation="broker order placement")
@@ -1751,7 +1764,21 @@ class ExecutionEngine:
                 message="kill_switch_enabled",
             )
 
-        broker_order = self._broker.place_order(intent=intent)
+        # No partial orders: once shutdown is requested, refuse *starting* new broker submissions.
+        # Also track in-flight submissions so service shutdown can wait for them to finish.
+        try:
+            with OrderSubmissionGuard(operation="broker order placement"):
+                broker_order = self._broker.place_order(intent=intent)
+        except ShutdownRequestedError:
+            checks = list(risk.checks or [])
+            checks.append({"check": "shutdown_gate", "enabled": True, "reason": "shutdown_requested"})
+            halted_risk = RiskDecision(allowed=False, reason="shutdown_requested", checks=checks)
+            return ExecutionResult(
+                status="rejected",
+                risk=halted_risk,
+                routing=routing_decision,
+                message="shutdown_requested",
+            )
         broker_order_id = str(broker_order.get("id") or "").strip() or None
         logger.info(
             "exec.order_placed %s",
