@@ -3,7 +3,7 @@ from pydantic import BaseModel
 import requests
 import os
 from uuid import UUID, uuid4
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 import logging
 
@@ -13,6 +13,8 @@ from backend.persistence.firebase_client import get_firestore_client
 from backend.persistence.firestore_retry import with_firestore_retry
 from backend.common.kill_switch import get_kill_switch_state
 from google.cloud import firestore
+
+from backend.risk.loss_acceleration_guard import LossAccelerationGuard
 
 from ..db import build_raw_order, insert_paper_order
 from ..models import PaperOrderCreate
@@ -193,6 +195,169 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     Fail-safe: On any error reading the shadow mode flag, defaults to shadow mode = True
     """
     ctx: TenantContext = get_tenant_context(request)
+
+    # --- Loss acceleration guardrails (independent of strategy logic) ---
+    # Enforces:
+    # - rolling drawdown velocity monitoring (loss/time)
+    # - automatic throttling (HTTP 429 + Retry-After)
+    # - automatic pausing (disable trading + switch strategies to SHADOW_MODE)
+    try:
+        db = get_firestore_client()
+        now = datetime.now(timezone.utc)
+
+        # 1) Honor existing pause state (with optional auto-resume).
+        trading_status_ref = (
+            db.collection("users").document(ctx.uid).collection("status").document("trading")
+        )
+        trading_status_doc = with_firestore_retry(lambda: trading_status_ref.get())
+        if trading_status_doc.exists:
+            st = trading_status_doc.to_dict() or {}
+            enabled = bool(st.get("enabled", True))
+            disabled_until = st.get("disabled_until")
+            if not enabled:
+                if isinstance(disabled_until, datetime) and now >= disabled_until.astimezone(timezone.utc):
+                    # Auto-resume after cooldown.
+                    with_firestore_retry(
+                        lambda: trading_status_ref.set(
+                            {
+                                "enabled": True,
+                                "disabled_by": None,
+                                "disabled_at": None,
+                                "disabled_until": None,
+                                "reason": None,
+                                "last_resumed_at": firestore.SERVER_TIMESTAMP,
+                            },
+                            merge=True,
+                        )
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "trading_paused",
+                            "message": st.get("reason") or "Trading is paused by risk guardrails.",
+                            "disabled_until": disabled_until.isoformat() if isinstance(disabled_until, datetime) else None,
+                        },
+                    )
+
+        # 2) Honor existing throttle state.
+        throttle_ref = (
+            db.collection("users").document(ctx.uid).collection("status").document("trade_throttle")
+        )
+        throttle_doc = with_firestore_retry(lambda: throttle_ref.get())
+        if throttle_doc.exists:
+            td = throttle_doc.to_dict() or {}
+            next_allowed_at = td.get("next_allowed_at")
+            if isinstance(next_allowed_at, datetime) and now < next_allowed_at.astimezone(timezone.utc):
+                retry_after_s = max(1, int((next_allowed_at.astimezone(timezone.utc) - now).total_seconds()))
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "error": "trade_throttled",
+                        "message": td.get("reason") or "Trade throttled due to loss acceleration.",
+                        "retry_after_seconds": retry_after_s,
+                        "next_allowed_at": next_allowed_at.isoformat(),
+                    },
+                    headers={"Retry-After": str(retry_after_s)},
+                )
+
+        # 3) Compute drawdown velocity and apply conservative guardrails.
+        guard = LossAccelerationGuard()
+        decision = guard.decide(uid=ctx.uid)
+        m = decision.metrics
+        metrics_payload = (
+            {
+                "window_seconds": m.window_seconds,
+                "points_used": m.points_used,
+                "hwm_equity": m.hwm_equity,
+                "current_equity": m.current_equity,
+                "current_drawdown_pct": m.current_drawdown_pct,
+                "velocity_pct_per_min": m.velocity_pct_per_min,
+                "window_start": m.window_start.isoformat(),
+                "window_end": m.window_end.isoformat(),
+            }
+            if m is not None
+            else None
+        )
+
+        if decision.action == "pause" and decision.pause_until is not None:
+            # Persist pause state (auto-resume supported by disabled_until).
+            pause_until = decision.pause_until.astimezone(timezone.utc)
+            with_firestore_retry(
+                lambda: trading_status_ref.set(
+                    {
+                        "enabled": False,
+                        "disabled_by": "loss_acceleration_guard",
+                        "disabled_at": firestore.SERVER_TIMESTAMP,
+                        "disabled_until": pause_until,
+                        "reason": "Paused due to dangerous loss acceleration (drawdown velocity).",
+                        "metrics": metrics_payload,
+                    },
+                    merge=True,
+                )
+            )
+
+            # Switch all active strategies to SHADOW_MODE (best-effort).
+            try:
+                strategies_ref = (
+                    db.collection("tenants")
+                    .document(ctx.tenant_id)
+                    .collection("users")
+                    .document(ctx.uid)
+                    .collection("strategies")
+                )
+                for doc in strategies_ref.where("status", "==", "active").stream():
+                    strategies_ref.document(doc.id).set(
+                        {
+                            "execution_mode": "SHADOW_MODE",
+                            "shadow_mode_reason": "loss_acceleration_pause",
+                            "shadow_mode_activated_at": firestore.SERVER_TIMESTAMP,
+                        },
+                        merge=True,
+                    )
+            except Exception:
+                logger.exception("loss_accel: failed to switch strategies to SHADOW_MODE (best-effort)")
+
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "loss_acceleration_pause",
+                    "message": "Trading paused due to dangerous loss acceleration.",
+                    "paused_until": pause_until.isoformat(),
+                    "metrics": metrics_payload,
+                },
+            )
+
+        if decision.action == "throttle" and decision.retry_after_seconds is not None:
+            # Persist throttle state and reject with Retry-After (conservative).
+            next_allowed = now + timedelta(seconds=int(decision.retry_after_seconds))
+            with_firestore_retry(
+                lambda: throttle_ref.set(
+                    {
+                        "next_allowed_at": next_allowed,
+                        "reason": "Throttled due to elevated drawdown velocity (loss acceleration).",
+                        "throttled_at": firestore.SERVER_TIMESTAMP,
+                        "metrics": metrics_payload,
+                    },
+                    merge=True,
+                )
+            )
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "loss_acceleration_throttle",
+                    "message": "Trade throttled due to loss acceleration.",
+                    "retry_after_seconds": int(decision.retry_after_seconds),
+                    "next_allowed_at": next_allowed.isoformat(),
+                    "metrics": metrics_payload,
+                },
+                headers={"Retry-After": str(int(decision.retry_after_seconds))},
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Fail-safe: if guardrail evaluation fails, do NOT block trading here.
+        logger.warning("loss_accel: guard evaluation failed (non-fatal): %s", e)
     
     # Check shadow mode flag (fail-safe: defaults to True)
     is_shadow_mode = get_shadow_mode_flag()
