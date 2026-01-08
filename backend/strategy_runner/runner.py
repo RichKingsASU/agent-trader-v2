@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
 from backend.common.replay_events import build_replay_event, emit_replay_event
+from backend.common.shutdown import SHUTDOWN_EVENT, install_signal_handlers_once, wait_or_shutdown
 from .bundle import StrategyBundle, create_strategy_bundle
 from .firecracker import FirecrackerConfig, FirecrackerMicroVM
 from .protocol import PROTOCOL_VERSION, parse_order_intent
@@ -91,6 +92,8 @@ def _send_ndjson(sock_f, objs: Iterable[Dict[str, Any]]) -> None:
 
 
 def _connect_vsock(guest_cid: int, port: int, timeout_s: float = 5.0) -> socket.socket:
+    # Best-effort: allow SIGTERM/SIGINT to interrupt connection waits.
+    install_signal_handlers_once()
     if not hasattr(socket, "AF_VSOCK"):
         raise StrategyRunnerError("host kernel/python missing AF_VSOCK support")
     s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)  # type: ignore[attr-defined]
@@ -98,13 +101,15 @@ def _connect_vsock(guest_cid: int, port: int, timeout_s: float = 5.0) -> socket.
     start = time.time()
     last_err: Optional[Exception] = None
     while time.time() - start < timeout_s:
+        if SHUTDOWN_EVENT.is_set():
+            raise StrategyRunnerError("shutdown requested during vsock connect")
         try:
             s.connect((guest_cid, port))
             s.settimeout(None)
             return s
         except Exception as e:
             last_err = e
-            time.sleep(0.05)
+            wait_or_shutdown(0.05)
     try:
         s.close()
     except Exception:

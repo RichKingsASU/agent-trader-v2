@@ -9,7 +9,7 @@ from nats.aio.client import Client as NATS
 from backend.common.nats.subjects import market_wildcard_subject, signals_subject
 from backend.common.schemas.codec import decode_message, encode_message
 from backend.common.schemas.models import MarketEventV1, SignalEventV1
-from backend.risk.capital_state import get_warm_cache_available_capital_usd
+from backend.risk_allocator.warm_cache import get_warm_cache_buying_power_usd
 from backend.common.logging import init_structured_logging
 from backend.common.kill_switch import get_kill_switch_state
 

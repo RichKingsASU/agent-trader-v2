@@ -23,7 +23,16 @@ from .config import config
 from .models import fetch_recent_bars, fetch_recent_options_flow
 from .risk import can_place_trade, get_or_create_strategy_definition, log_decision
 from .strategies.naive_flow_trend import make_decision
-from backend.safety.strategy_breakers import check_abnormal_volatility, check_missing_market_data
+from backend.risk_allocator import RiskAllocator
+from backend.trading.agent_intent.emitter import emit_agent_intent
+from backend.trading.agent_intent.models import (
+    AgentIntent,
+    AgentIntentConstraints,
+    AgentIntentRationale,
+    IntentAssetType,
+    IntentKind,
+    IntentSide,
+)
 
 _last_cycle_at_iso: str | None = None
 
@@ -74,6 +83,7 @@ async def run_strategy(execute: bool):
     strategy_id = await get_or_create_strategy_definition(config.STRATEGY_NAME)
     today = date.today()
     iteration_id = uuid.uuid4().hex
+    allocator = RiskAllocator()
 
     try:
         log_json(intent_type="strategy_run_start", severity="INFO", strategy=config.STRATEGY_NAME, date=str(today), iteration_id=iteration_id)
@@ -267,12 +277,63 @@ async def run_strategy(execute: bool):
             except Exception:
                 pass
 
-        # Calculate notional
-        last_price = bars[0].close if bars else 0
-        notional = last_price * decision.get("size", 0)
-        # Risk check (proposal gating only; never executes).
-        risk_allowed = await can_place_trade(strategy_id, today, notional)
-        if not risk_allowed:
+        # Centralized decision flow:
+        # - strategies emit intent only (no qty/notional)
+        # - allocator sizes + applies capital-bearing gates (e.g., notional limits)
+        created_at_utc = datetime.now(timezone.utc)
+        side = (
+            IntentSide.BUY
+            if str(action).lower() == "buy"
+            else IntentSide.SELL
+            if str(action).lower() == "sell"
+            else IntentSide.FLAT
+        )
+        intent = AgentIntent(
+            created_at_utc=created_at_utc,
+            repo_id=str(os.getenv("REPO_ID") or "unknown_repo"),
+            agent_name=str(os.getenv("AGENT_NAME") or "strategy-engine"),
+            strategy_name=config.STRATEGY_NAME,
+            strategy_version=os.getenv("STRATEGY_VERSION") or None,
+            correlation_id=iteration_id,
+            symbol=symbol,
+            asset_type=IntentAssetType.EQUITY,
+            option=None,
+            kind=IntentKind.DIRECTIONAL,
+            side=side,
+            confidence=None,
+            rationale=AgentIntentRationale(
+                short_reason=str(decision.get("reason") or "").strip() or "Strategy decision",
+                indicators=decision.get("signal_payload") or {},
+            ),
+            constraints=AgentIntentConstraints(
+                valid_until_utc=(
+                    created_at_utc
+                    + timedelta(
+                        minutes=(
+                            int(os.getenv("INTENT_TTL_MINUTES") or "5")
+                            if str(os.getenv("INTENT_TTL_MINUTES") or "").strip().isdigit()
+                            else 5
+                        )
+                    )
+                ),
+                requires_human_approval=True,
+                order_type="market",
+                time_in_force="day",
+                limit_price=None,
+                delta_to_hedge=None,
+            ),
+        )
+        emit_agent_intent(intent)
+
+        last_price = float(bars[0].close) if bars else 0.0
+        allocation = await allocator.allocate_for_strategy_limits(
+            intent=intent,
+            strategy_id=strategy_id,
+            trading_date=today,
+            last_price=last_price,
+            can_place_trade_fn=can_place_trade,
+        )
+        if not allocation.allowed:
             reason = "Risk limit exceeded."
             await log_decision(strategy_id, symbol, action, reason, decision.get("signal_payload") or {}, False)
             try:

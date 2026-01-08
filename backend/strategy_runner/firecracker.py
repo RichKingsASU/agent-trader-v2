@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from backend.common.shutdown import SHUTDOWN_EVENT, install_signal_handlers_once, wait_or_shutdown
 from .firecracker_api import UnixHTTPClient
 
 
@@ -91,11 +92,15 @@ class FirecrackerMicroVM:
         self._configure()
 
     def _wait_for_api_socket(self, sock: Path, timeout_s: float) -> None:
+        # Best-effort: allow SIGTERM/SIGINT to interrupt waits.
+        install_signal_handlers_once()
         start = time.time()
         while time.time() - start < timeout_s:
             if sock.exists():
                 return
-            time.sleep(0.02)
+            if SHUTDOWN_EVENT.is_set():
+                raise FirecrackerError("shutdown requested while waiting for API socket")
+            wait_or_shutdown(0.02)
         raise FirecrackerError(f"firecracker API socket not created: {sock}")
 
     def _api(self) -> UnixHTTPClient:

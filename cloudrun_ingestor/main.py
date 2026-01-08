@@ -11,6 +11,7 @@ Runtime assumptions (documented for deploy/debug):
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import signal
@@ -211,6 +212,8 @@ _startup_checks()
 
 # --- Graceful Shutdown Handling ---
 SHUTDOWN_FLAG = threading.Event()
+_SHUTDOWN_HANDLERS_INSTALLED = False
+worker_thread: threading.Thread | None = None
 
 def shutdown_handler(signum: int, frame: Any) -> None:
     """Sets the shutdown flag on receiving SIGTERM or SIGINT."""
@@ -224,9 +227,85 @@ def shutdown_handler(signum: int, frame: Any) -> None:
     SHUTDOWN_FLAG.set()
 
 
-# Register the shutdown handler
-signal.signal(signal.SIGTERM, shutdown_handler)
-signal.signal(signal.SIGINT, shutdown_handler)
+    Important:
+    - Chain any previous handlers so Gunicorn/framework signal handling still works.
+    - If previous handler is SIG_DFL, emulate default termination via SystemExit so
+      `atexit` hooks can run and logs can flush.
+    """
+    global _SHUTDOWN_HANDLERS_INSTALLED
+    if _SHUTDOWN_HANDLERS_INSTALLED:
+        return
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for s in (signal.SIGTERM, signal.SIGINT):
+        try:
+            prev = signal.getsignal(s)
+
+            def _handler(signum: int, frame: Any, _prev: Any = prev) -> None:
+                log_data = {**LOG_EXTRA, "signal": signal.Signals(signum).name}
+                logger.warning("Shutdown signal received. Initiating shutdown.", extra=log_data)
+                try:
+                    SHUTDOWN_FLAG.set()
+                except Exception:
+                    pass
+
+                # Chain previous behavior (Gunicorn expects to manage worker exit).
+                try:
+                    if _prev == signal.SIG_IGN:
+                        return
+                    if _prev == signal.SIG_DFL:
+                        raise SystemExit(128 + int(signum))
+                    if callable(_prev):
+                        _prev(signum, frame)
+                except SystemExit:
+                    raise
+                except Exception:
+                    return
+
+            signal.signal(s, _handler)
+        except Exception:
+            # Never fail import due to signal constraints.
+            pass
+    _SHUTDOWN_HANDLERS_INSTALLED = True
+
+
+_install_shutdown_handlers_once()
+
+
+@atexit.register
+def _on_exit() -> None:
+    """
+    Best-effort log flush and thread join on process exit.
+    """
+    started = time.monotonic()
+    try:
+        logger.info("Process exit cleanup starting", extra={**LOG_EXTRA, "event_type": "cloudrun.process_exit_cleanup_start"})
+    except Exception:
+        pass
+    try:
+        SHUTDOWN_FLAG.set()
+    except Exception:
+        pass
+
+    t = globals().get("worker_thread")
+    if isinstance(t, threading.Thread) and t.is_alive():
+        try:
+            # Keep bounded so Cloud Run's 10s grace period isn't exceeded.
+            t.join(timeout=2.0)
+        except Exception:
+            pass
+    try:
+        logger.info(
+            "Process exit cleanup complete",
+            extra={**LOG_EXTRA, "event_type": "cloudrun.process_exit_cleanup", "elapsed_ms": int((time.monotonic() - started) * 1000)},
+        )
+    except Exception:
+        pass
+    try:
+        # Ensure buffered handlers flush.
+        logging.shutdown()
+    except Exception:
+        pass
 
 
 # --- Background Worker for Ingestion Loop ---
@@ -270,15 +349,15 @@ try:
             instance_uptime_ms=int(c.instance_uptime_ms),
         )
 
-except Exception:
-    pass
+    except Exception:
+        pass
 
-@app.route("/")
-def index():
-    # This endpoint is not strictly necessary for the worker but is useful for health checks.
-    return "Ingestion service is running.", 200
+    @app.route("/")
+    def index():
+        # This endpoint is not strictly necessary for the worker but is useful for health checks.
+        return "Ingestion service is running.", 200
 
 # Start the background worker thread when the Flask app initializes.
 if _running_under_gunicorn():
-    worker_thread = threading.Thread(target=ingestion_worker)
+    worker_thread = threading.Thread(target=ingestion_worker, name="cloudrun_ingestor.worker")
     worker_thread.start()
