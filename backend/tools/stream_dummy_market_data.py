@@ -4,9 +4,13 @@ import signal
 import threading
 import time
 import random
+import uuid
+import logging
 from datetime import datetime, timezone
 
 import psycopg
+
+from backend.common.logging import init_structured_logging
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -16,10 +20,15 @@ SYMBOL = "SPY"
 logger = logging.getLogger(__name__)
 _SHUTDOWN_EVENT = threading.Event()
 
+init_structured_logging(service="dummy-market-data-streamer")
+logger = logging.getLogger(__name__)
+
 
 def main() -> None:
-    print(f"[streamer] Starting dummy market data stream into public.market_data_1m for {SYMBOL}")
-    print(f"[streamer] Using DATABASE_URL={DATABASE_URL!r}")
+    logger.info(
+        "dummy_stream.startup",
+        extra={"event_type": "dummy_stream.startup", "symbol": SYMBOL},
+    )
 
     base_price = 500.0  # starting reference
 
@@ -44,6 +53,7 @@ def main() -> None:
             iteration += 1
             print(f"[streamer] loop_iteration={iteration}")
             try:
+                iteration_id = uuid.uuid4().hex
                 # random walk around base_price
                 base_price_delta = random.uniform(-0.5, 0.5)
                 base_price_local = base_price + base_price_delta
@@ -71,10 +81,19 @@ def main() -> None:
                     row = cur.fetchone()
                     conn.commit()
 
-                print(
-                    f"[streamer] Inserted: ts={row[0]} symbol={row[1]} "
-                    f"open={row[2]:.2f} high={row[3]:.2f} low={row[4]:.2f} "
-                    f"close={row[5]:.2f} volume={row[6]}"
+                logger.info(
+                    "dummy_stream.inserted",
+                    extra={
+                        "event_type": "dummy_stream.inserted",
+                        "iteration_id": iteration_id,
+                        "ts": row[0].isoformat() if hasattr(row[0], "isoformat") else str(row[0]),
+                        "symbol": row[1],
+                        "open": float(row[2]),
+                        "high": float(row[3]),
+                        "low": float(row[4]),
+                        "close": float(row[5]),
+                        "volume": int(row[6]),
+                    },
                 )
             except Exception as e:
                 print(f"[streamer] ERROR: {e!r}")

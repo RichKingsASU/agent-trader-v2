@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import json
+import sys
 from datetime import datetime
 
 import psycopg
@@ -132,10 +133,10 @@ def main():
     inserted = insert_paper_order(logical_order)
 
     # Plain-language echo for the user
-    print(
+    sys.stdout.write(
         f"Inserted paper order {inserted['id']} -> "
         f"{inserted['symbol']} notional ${inserted['notional']:.2f}, "
-        f"status={inserted['status']}, created_at={inserted['created_at']}"
+        f"status={inserted['status']}, created_at={inserted['created_at']}\n"
     )
 
 

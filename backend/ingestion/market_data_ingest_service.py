@@ -107,9 +107,14 @@ async def _startup() -> None:
     app.state.ops_logger = OpsLogger("market-ingest")
     try:
         fp = get_build_fingerprint()
-        print(
-            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
-            flush=True,
+        logger.info(
+            "build_fingerprint",
+            extra={
+                "event_type": "build_fingerprint",
+                "intent_type": "build_fingerprint",
+                "service": "market-ingest",
+                **fp,
+            },
         )
     except Exception:
         pass

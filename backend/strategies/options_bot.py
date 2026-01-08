@@ -1,12 +1,17 @@
 import asyncio
 import os
 import time
+import logging
 from nats.aio.client import Client as NATS
 
 from backend.common.nats.subjects import market_wildcard_subject, signals_subject
 from backend.common.schemas.codec import decode_message, encode_message
 from backend.common.schemas.models import MarketEventV1, SignalEventV1
 from backend.alpaca_signal_trader import get_warm_cache_buying_power_usd
+from backend.common.logging import init_structured_logging
+
+init_structured_logging(service="options-bot")
+logger = logging.getLogger(__name__)
 
 async def main():
     nc = NATS()
@@ -48,7 +53,10 @@ async def main():
             delta = None
 
         if delta is not None and delta > delta_threshold:
-            print(f"⚡ SIGNAL! {root} Delta {delta} is High. Buying Call.")
+            logger.warning(
+                "High delta detected; emitting buy_call signal",
+                extra={"event_type": "options_bot.signal_detected", "root": root, "delta": delta},
+            )
             
             # Warm-cache affordability gate: never emit a signal that the account cannot afford.
             # Options contracts typically represent 100 shares.
@@ -60,9 +68,14 @@ async def main():
             est_notional = (price * 100.0 * qty) if price is not None else None
             buying_power = await _get_buying_power_cached()
             if est_notional is not None and buying_power > 0 and est_notional > buying_power:
-                print(
-                    f"🛑 Skipping unaffordable signal: est_notional=${est_notional:,.2f} "
-                    f"> buying_power=${buying_power:,.2f}"
+                logger.warning(
+                    "Skipping unaffordable signal",
+                    extra={
+                        "event_type": "options_bot.signal_skipped_unaffordable",
+                        "root": root,
+                        "est_notional": est_notional,
+                        "buying_power": buying_power,
+                    },
                 )
                 return
 
@@ -92,7 +105,10 @@ async def main():
     # Listen to options chains for SPY, IWM, QQQ
     subject = os.getenv("NATS_MARKET_SUBJECT") or market_wildcard_subject(tenant_id)
     await nc.subscribe(subject, cb=options_handler)
-    print(f"🧠 Options Quant Bot Active. Subscribed to {subject}. Filtering for High Delta...")
+    logger.info(
+        "Options bot active",
+        extra={"event_type": "options_bot.subscribed", "subject": subject, "delta_threshold": delta_threshold},
+    )
 
     loop_iter = 0
     while True:

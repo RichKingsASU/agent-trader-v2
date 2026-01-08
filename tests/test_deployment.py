@@ -10,32 +10,37 @@ CONTAINER_NAME = "agenttrader-test-runner"
 # Local port mapping (Container 8080 -> Local 8080)
 PORT = "8080"
 
+
+def out(msg: str = "") -> None:
+    sys.stdout.write(str(msg) + "\n")
+
+
 def run_command(cmd, shell=False):
     """Executes a shell command and streams output."""
-    print(f"🔹 Running: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+    out(f"🔹 Running: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
     try:
         if shell:
             subprocess.check_call(cmd, shell=True)
         else:
             subprocess.check_call(cmd)
     except subprocess.CalledProcessError as e:
-        print(f"❌ Error executing command. Exit code: {e.returncode}")
+        out(f"❌ Error executing command. Exit code: {e.returncode}")
         sys.exit(1)
 
 def cleanup_container():
     """Forces removal of the test container if it exists."""
-    print(f"\n🧹 Cleaning up old container '{CONTAINER_NAME}'...")
+    out(f"\n🧹 Cleaning up old container '{CONTAINER_NAME}'...")
     subprocess.run(["docker", "rm", "-f", CONTAINER_NAME], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
 def build_image():
     """Builds the Docker image using the production Dockerfile."""
-    print("🔨 Building Docker image...")
+    out("🔨 Building Docker image...")
     # We use the actual Dockerfile to ensure we test exactly what we deploy
     run_command(["docker", "build", "-t", IMAGE_NAME, "."])
 
 def run_container():
     """Runs the container with simulated Cloud Run environment variables."""
-    print(f"🚀 Starting container '{CONTAINER_NAME}'...")
+    out(f"🚀 Starting container '{CONTAINER_NAME}'...")
     
     # Load secrets from your local environment or define dummies for smoke testing
     # NOTE: Ensure these vars are set in your terminal before running this script, 
@@ -72,30 +77,30 @@ def main():
     
     process = run_container()
     
-    print(f"\n✅ Container is running on http://localhost:{PORT}")
-    print("📋 Streaming logs (Press Ctrl+C to test Graceful Shutdown)...")
-    print("-" * 50)
+    out(f"\n✅ Container is running on http://localhost:{PORT}")
+    out("📋 Streaming logs (Press Ctrl+C to test Graceful Shutdown)...")
+    out("-" * 50)
 
     try:
         # Stream logs efficiently
         subprocess.run(["docker", "logs", "-f", CONTAINER_NAME])
     except KeyboardInterrupt:
-        print("\n\n🛑 Received Ctrl+C. Testing SIGTERM handling...")
+        out("\n\n🛑 Received Ctrl+C. Testing SIGTERM handling...")
         
         # Simulate Cloud Run shutting down the instance
         # Cloud Run sends SIGTERM, waits 10s, then kills.
         subprocess.run(["docker", "stop", "-t", "10", CONTAINER_NAME])
         
-        print("\n🔎 Verifying Shutdown Logs:")
-        print("-" * 20)
+        out("\n🔎 Verifying Shutdown Logs:")
+        out("-" * 20)
         # Fetch the last 20 lines of logs to see if the shutdown message appears
         logs = subprocess.check_output(["docker", "logs", "--tail", "20", CONTAINER_NAME]).decode("utf-8")
-        print(logs)
+        out(logs)
         
         if "Daemon Host: Cleanup complete" in logs or "Application shutdown complete" in logs:
-            print("\n✅ SUCCESS: Graceful shutdown detected!")
+            out("\n✅ SUCCESS: Graceful shutdown detected!")
         else:
-            print("\n⚠️ WARNING: Graceful shutdown message NOT found. Check entrypoint_wrapper.py.")
+            out("\n⚠️ WARNING: Graceful shutdown message NOT found. Check entrypoint_wrapper.py.")
 
     finally:
         cleanup_container()

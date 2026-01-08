@@ -209,10 +209,17 @@ async def _startup() -> None:
         async def _observe_heartbeat() -> None:
             while not getattr(app.state, "shutting_down", False):
                 ts = _utc_now_iso()
-                print(
-                    f"OBSERVE_HEARTBEAT: EXECUTION DISABLED service=strategy-engine ts={ts} interval_s={interval_s} path={path}",
-                    flush=True,
-                )
+                try:
+                    app.state.ops_logger.event(  # type: ignore[attr-defined]
+                        "observe_heartbeat",
+                        severity="INFO",
+                        execution_enabled=False,
+                        ts=ts,
+                        interval_s=interval_s,
+                        path=path,
+                    )
+                except Exception:
+                    pass
                 try:
                     _write_text_atomic(path, f"{ts}\nEXECUTION DISABLED\n")
                 except Exception:

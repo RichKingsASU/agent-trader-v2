@@ -13,10 +13,11 @@ from psycopg2.extras import execute_values
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from backend.common.agent_boot import configure_startup_logging
+from backend.common.logging import init_structured_logging
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.time.providers import normalize_alpaca_timestamp
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+init_structured_logging(service="alpaca-bars-backfill")
 logger = logging.getLogger(__name__)
 
 @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(5))
@@ -69,9 +70,14 @@ def main():
     )
     try:
         fp = get_build_fingerprint()
-        print(
-            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
-            flush=True,
+        logger.info(
+            "build_fingerprint",
+            extra={
+                "event_type": "build_fingerprint",
+                "intent_type": "build_fingerprint",
+                "service": "alpaca-bars-backfill",
+                **fp,
+            },
         )
     except Exception:
         pass
