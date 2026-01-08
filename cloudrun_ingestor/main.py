@@ -25,6 +25,17 @@ LOG_EXTRA = {
 }
 logger = logging.getLogger(__name__)
 
+try:
+    from backend.common.cloudrun_perf import identity_fields as _identity_fields  # noqa: WPS433
+    from backend.common.cloudrun_perf import instance_uptime_ms as _instance_uptime_ms  # noqa: WPS433
+
+    logger.info(
+        "Cloud Run process start",
+        extra={**LOG_EXTRA, "event_type": "cloudrun.process_start", "instance_uptime_ms": _instance_uptime_ms(), **_identity_fields()},
+    )
+except Exception:
+    pass
+
 
 def override_config():
     """Overrides hardcoded config from vm_ingest with environment variables."""
@@ -121,6 +132,27 @@ def ingestion_worker():
 # The actual work is done in the background thread.
 from flask import Flask
 app = Flask(__name__)
+
+try:
+    from backend.common.cloudrun_perf import classify_request as _classify_request  # noqa: WPS433
+
+    @app.before_request
+    def _cloudrun_request_perf_hook():  # type: ignore[no-redef]
+        # Minimal noise: still logs once per request (health checks are low-QPS here).
+        c = _classify_request()
+        logger.info(
+            "Request handled",
+            extra={
+                **LOG_EXTRA,
+                "event_type": "cloudrun.http_request",
+                "cold_start": bool(c.cold_start),
+                "request_ordinal": int(c.request_ordinal),
+                "instance_uptime_ms": int(c.instance_uptime_ms),
+            },
+        )
+
+except Exception:
+    pass
 
 @app.route("/")
 def index():

@@ -290,6 +290,13 @@ def install_fastapi_request_id_middleware(app: Any, *, service: str | None = Non
     async def _request_id_mw(request: "Request", call_next):  # type: ignore[name-defined]
         incoming = request.headers.get("x-request-id") or request.headers.get("x-correlation-id") or None
         rid = _clean_text(incoming, max_len=128) or uuid.uuid4().hex
+        try:
+            # Cloud Run perf markers (stdlib-only).
+            from backend.common.cloudrun_perf import classify_request as _classify_request  # noqa: WPS433
+
+            req_class = _classify_request()
+        except Exception:
+            req_class = None
         start = time.perf_counter()
         status_code: int | None = None
         with bind_request_id(request_id=rid) as bound:
@@ -313,6 +320,9 @@ def install_fastapi_request_id_middleware(app: Any, *, service: str | None = Non
                         path=str(getattr(request.url, "path", "")),
                         status_code=status_code,
                         duration_ms=dur_ms,
+                        cold_start=bool(getattr(req_class, "cold_start", False)) if req_class is not None else None,
+                        request_ordinal=int(getattr(req_class, "request_ordinal", 0)) if req_class is not None else None,
+                        instance_uptime_ms=int(getattr(req_class, "instance_uptime_ms", 0)) if req_class is not None else None,
                     )
                 except Exception:
                     pass
