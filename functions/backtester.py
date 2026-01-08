@@ -214,8 +214,8 @@ class Backtester:
             initial_capital: Starting capital in USD
             commission: Commission per trade (not yet implemented)
             slippage: Slippage in decimal (not yet implemented)
-            alpaca_api_key: Alpaca API key (or use env var ALPACA_API_KEY)
-            alpaca_secret_key: Alpaca secret key (or use env var ALPACA_SECRET_KEY)
+            alpaca_api_key: Alpaca API key id (or use env var APCA_API_KEY_ID)
+            alpaca_secret_key: Alpaca secret key (or use env var APCA_API_SECRET_KEY)
         """
         self.strategy = strategy
         self.symbol = symbol.upper()
@@ -235,13 +235,13 @@ class Backtester:
             self.start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
         
         # Alpaca client
-        api_key = alpaca_api_key or os.getenv("ALPACA_API_KEY")
-        secret_key = alpaca_secret_key or os.getenv("ALPACA_SECRET_KEY")
+        api_key = alpaca_api_key or os.getenv("APCA_API_KEY_ID")
+        secret_key = alpaca_secret_key or os.getenv("APCA_API_SECRET_KEY")
         
         if not api_key or not secret_key:
             raise ValueError(
-                "Alpaca API credentials required. Set ALPACA_API_KEY and "
-                "ALPACA_SECRET_KEY environment variables or pass as parameters."
+                "Alpaca API credentials required. Set APCA_API_KEY_ID and "
+                "APCA_API_SECRET_KEY environment variables or pass as parameters."
             )
         
         self.data_client = StockHistoricalDataClient(api_key, secret_key)

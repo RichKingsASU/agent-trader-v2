@@ -46,7 +46,7 @@ def calculate_drawdown(current: str, hwm: str) -> Decimal:
 **New Function**: `emergency_liquidate`
 - ✅ HTTPS Callable function
 - ✅ CORS: `cors_origins="*", cors_methods=["POST"]`
-- ✅ Secrets: `["ALPACA_KEY_ID", "ALPACA_SECRET_KEY"]`
+- ✅ Secrets: `["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"]`
 - ✅ Executes: `api.close_all_positions(cancel_orders=True)`
 - ✅ Locks trading gate: `trading_enabled: false`, `status: "EMERGENCY_HALT"`
 - ✅ Returns: `positions_closed`, `orders_canceled`
@@ -66,7 +66,7 @@ def calculate_drawdown(current: str, hwm: str) -> Decimal:
 ```python
 @https_fn.on_call(
     cors=options.CorsOptions(cors_origins="*", cors_methods=["POST"]),
-    secrets=["ALPACA_KEY_ID", "ALPACA_SECRET_KEY"]
+    secrets=["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"]
 )
 def emergency_liquidate(req: https_fn.CallableRequest) -> Dict[str, Any]:
     api = _get_alpaca()

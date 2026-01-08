@@ -13,11 +13,11 @@ def main():
     dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env.local')
     load_dotenv(dotenv_path=dotenv_path)
 
-    api_key = os.getenv("ALPACA_KEY_ID")
-    secret_key = os.getenv("ALPACA_SECRET_KEY")
+    api_key = os.getenv("APCA_API_KEY_ID")
+    secret_key = os.getenv("APCA_API_SECRET_KEY")
 
     if not api_key or not secret_key:
-        print("ERROR: ALPACA_KEY_ID and ALPACA_SECRET_KEY must be set in .env.local.")
+        print("ERROR: APCA_API_KEY_ID and APCA_API_SECRET_KEY must be set in .env.local.")
         exit(1)
 
     print("--> Placing test order: SPY BUY 1 Qty")

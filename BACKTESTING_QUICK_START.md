@@ -4,8 +4,8 @@
 
 ### Step 1: Set Environment Variables
 ```bash
-export ALPACA_API_KEY="your_api_key_here"
-export ALPACA_SECRET_KEY="your_secret_key_here"
+export APCA_API_KEY_ID="your_api_key_here"
+export APCA_API_SECRET_KEY="your_secret_key_here"
 ```
 
 ### Step 2: Run the Example Script
@@ -156,8 +156,8 @@ tests/test_backtester.py::TestBacktestAccount::test_account_initialization PASSE
 ### "Alpaca API credentials not configured"
 ```bash
 # Make sure to export your credentials:
-export ALPACA_API_KEY="your_key"
-export ALPACA_SECRET_KEY="your_secret"
+export APCA_API_KEY_ID="your_key"
+export APCA_API_SECRET_KEY="your_secret"
 ```
 
 ### "No data available for backtesting"
