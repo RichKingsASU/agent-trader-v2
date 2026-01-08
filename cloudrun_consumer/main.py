@@ -124,6 +124,49 @@ def _parse_rfc3339(value: Any) -> Optional[datetime]:
         return None
 
 
+def _maybe_unwrap_event_envelope(payload: dict[str, Any]) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
+    """
+    Back-compat adapter:
+    - If message.data is an EventEnvelope (v1), validate schemaVersion and unwrap to its `payload`.
+    - Otherwise, treat message.data as payload-only (legacy producers).
+    """
+    # Heuristic: require both an envelope discriminator + a nested payload object.
+    if not isinstance(payload.get("payload"), dict):
+        return payload, None
+
+    if not (
+        isinstance(payload.get("event_type"), str)
+        or isinstance(payload.get("eventType"), str)
+        or isinstance(payload.get("agent_name"), str)
+        or isinstance(payload.get("agentName"), str)
+    ):
+        return payload, None
+
+    schema_v = payload.get("schemaVersion")
+    if schema_v is None:
+        schema_v = payload.get("schema_version")
+    if schema_v is None:
+        raise ValueError("missing_schemaVersion")
+
+    try:
+        sv_int = int(schema_v)
+    except Exception as e:
+        raise ValueError("invalid_schemaVersion") from e
+
+    if sv_int != 1:
+        raise ValueError(f"unsupported_schemaVersion:{sv_int}")
+
+    inner = payload.get("payload")
+    assert isinstance(inner, dict)  # guarded above
+
+    # Preserve envelope timestamp for ordering if the payload doesn't already carry it.
+    ts = payload.get("ts")
+    if isinstance(ts, str) and ts.strip():
+        inner.setdefault("producedAt", ts.strip())
+
+    return inner, payload
+
+
 def log(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
     payload: dict[str, Any] = {
         "timestamp": _utc_now().isoformat(),
@@ -225,14 +268,39 @@ def _float_env(name: str, *, default: str) -> float:
             return 0.0
 
 
+def _normalize_env_alias(target: str, aliases: list[str]) -> None:
+    """
+    Ensures `target` is present by copying from the first present alias.
+    Logs nothing and never exposes values.
+    """
+    v = os.getenv(target)
+    if v is not None and str(v).strip():
+        return
+    for a in aliases:
+        av = os.getenv(a)
+        if av is not None and str(av).strip():
+            os.environ[target] = str(av).strip()
+            return
+
+
+def _validate_required_env(required: list[str]) -> None:
+    presence = {name: bool((os.getenv(name) or "").strip()) for name in required}
+    log("config.env_validation", severity="INFO", required_env=presence)
+    missing = [name for name, ok in presence.items() if not ok]
+    if missing:
+        log("config.env_missing", severity="CRITICAL", missing_env=missing)
+        raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+
+
 app = FastAPI(title="Cloud Run Pub/Sub → Firestore Materializer", version="0.1.0")
 
 
 @app.on_event("startup")
 async def _startup() -> None:
-    project_id = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCLOUD_PROJECT")
-    if not project_id:
-        raise RuntimeError("Missing GCP_PROJECT (or GOOGLE_CLOUD_PROJECT).")
+    _normalize_env_alias("GCP_PROJECT", ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT_ID", "PROJECT_ID"])
+    _validate_required_env(["GCP_PROJECT", "SYSTEM_EVENTS_TOPIC", "INGEST_FLAG_SECRET_ID", "ENV"])
+
+    project_id = _require_env("GCP_PROJECT")
 
     database = os.getenv("FIRESTORE_DATABASE") or "(default)"
     app.state.firestore_writer = FirestoreWriter(project_id=project_id, database=database)
@@ -241,11 +309,12 @@ async def _startup() -> None:
     log(
         "startup",
         severity="INFO",
-        gcp_project=project_id,
+        has_gcp_project=True,
+        has_system_events_topic=True,
+        has_ingest_flag_secret_id=True,
+        has_env=True,
         firestore_database=database,
-        env=os.getenv("ENV") or "unknown",
         default_region=os.getenv("DEFAULT_REGION") or "unknown",
-        system_events_topic=os.getenv("SYSTEM_EVENTS_TOPIC") or "",
         subscription_topic_map=bool((os.getenv("SUBSCRIPTION_TOPIC_MAP") or "").strip()),
     )
 
@@ -483,6 +552,12 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         )
         raise HTTPException(status_code=400, detail="payload_not_object")
 
+    try:
+        payload, envelope = _maybe_unwrap_event_envelope(payload)
+    except ValueError as e:
+        log("pubsub.invalid_event_envelope", severity="ERROR", error=str(e), messageId=message_id)
+        raise HTTPException(status_code=400, detail="invalid_event_envelope") from e
+
     inferred_topic = infer_topic(attributes=attributes, payload=payload, subscription=subscription_str)
     handler = route_payload(payload=payload, attributes=attributes, topic=inferred_topic)
     if handler is None:
@@ -500,10 +575,16 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
     env = os.getenv("ENV") or "unknown"
     default_region = os.getenv("DEFAULT_REGION") or "unknown"
     if handler.name == "system_events":
-        source_topic = os.getenv("SYSTEM_EVENTS_TOPIC") or ""
+        # System events should be materializable even if SYSTEM_EVENTS_TOPIC isn't set,
+        # since producers may be absent/misconfigured and we still want the consumer healthy.
+        source_topic = (
+            (os.getenv("SYSTEM_EVENTS_TOPIC") or "").strip()
+            or (inferred_topic or "").strip()
+            or (attributes.get("topic") or "").strip()
+            or ""
+        )
         if not source_topic:
-            log("config.missing_system_events_topic", severity="ERROR")
-            raise HTTPException(status_code=500, detail="missing_SYSTEM_EVENTS_TOPIC")
+            log("config.missing_system_events_topic", severity="WARNING")
     else:
         # For non-system streams, prefer the inferred topic (from attributes/payload/subscription mapping).
         source_topic = inferred_topic or ""
@@ -544,7 +625,7 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             severity="INFO",
             handler=handler.name,
             messageId=message_id,
-            publishTime=publish_time_raw,
+            **{"source.messageId": message_id},
             topic=source_topic,
             subscription=subscription_str,
             deliveryAttempt=delivery_attempt,
@@ -576,8 +657,7 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             error=str(e),
             handler=handler.name,
             messageId=message_id,
-            publishTime=publish_time_raw,
-            subscription=subscription_str,
+            **{"source.messageId": message_id},
         )
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -587,8 +667,7 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             error=str(e),
             handler=handler.name,
             messageId=message_id,
-            publishTime=publish_time_raw,
-            subscription=subscription_str,
+            **{"source.messageId": message_id},
         )
         raise HTTPException(status_code=500, detail="materialize_exception") from e
 

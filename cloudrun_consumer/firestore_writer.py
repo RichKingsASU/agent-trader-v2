@@ -183,7 +183,8 @@ class FirestoreWriter:
             if existing_max is not None and incoming < existing_max:
                 return False, "stale_event_ignored"
 
-            txn.set(ref, doc)
+            protected = self._protect_published_at(existing=existing or {}, incoming_doc=doc)
+            txn.set(ref, protected)
             return True, "applied"
 
         txn = self._db.transaction()
@@ -315,7 +316,8 @@ class FirestoreWriter:
         Writes `ops_services/{serviceId}` with stale protection.
 
         Stale protection rule (per mission):
-        - only overwrite if incoming `updated_at` >= max(stored.lastHeartbeatAt, stored.updatedAt)
+        - only overwrite if incoming `updated_at` >= max(stored.lastHeartbeatAt, stored.source.publishedAt)
+        - `updatedAt` stored in Firestore is always a server timestamp (write time)
         """
         ref = self._db.collection("ops_services").document(service_id)
 
@@ -324,8 +326,12 @@ class FirestoreWriter:
             existing = snap.to_dict() if snap.exists else {}
 
             existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
-            existing_u = _parse_rfc3339(existing.get("updatedAt")) if isinstance(existing, dict) else None
-            existing_max = _max_dt(existing_lh, existing_u)
+            existing_source_pub = None
+            if isinstance(existing, dict):
+                src = existing.get("source")
+                if isinstance(src, dict):
+                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
+            existing_max = _max_dt(existing_lh, existing_source_pub)
 
             incoming = _as_utc(updated_at)
             if existing_max is not None and incoming < existing_max:
@@ -385,8 +391,12 @@ class FirestoreWriter:
             existing = snap.to_dict() if snap.exists else {}
 
             existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
-            existing_u = _parse_rfc3339(existing.get("updatedAt")) if isinstance(existing, dict) else None
-            existing_max = _max_dt(existing_lh, existing_u)
+            existing_source_pub = None
+            if isinstance(existing, dict):
+                src = existing.get("source")
+                if isinstance(src, dict):
+                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
+            existing_max = _max_dt(existing_lh, existing_source_pub)
 
             incoming = _as_utc(updated_at)
             if existing_max is not None and incoming < existing_max:
