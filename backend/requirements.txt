@@ -21,6 +21,9 @@ nats-py
 pandas
 pyyaml
 
+# Contract validation (contracts/ JSON Schemas)
+jsonschema
+
 # Optional DB drivers (Postgres)
 psycopg[binary]
 asyncpg==0.29.0
