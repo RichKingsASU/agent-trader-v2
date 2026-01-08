@@ -159,6 +159,7 @@ class MarketDataIngestor:
                     agent_name=pipeline_id,
                     git_sha=git_sha,
                     validate_credentials=False,
+                    shutdown_event=self._stop,
                 )
             except Exception as e:
                 # Never fail startup due to optional telemetry.

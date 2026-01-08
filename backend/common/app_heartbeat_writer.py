@@ -178,7 +178,7 @@ def _heartbeat_thread(
         # Sleep in small increments so shutdown is responsive.
         deadline = time.monotonic() + interval_s
         while not stop.is_set() and time.monotonic() < deadline:
-            time.sleep(min(0.5, max(0.05, deadline - time.monotonic())))
+            stop.wait(timeout=min(0.5, max(0.05, deadline - time.monotonic())))
 
 
 @dataclass(frozen=True, slots=True)
