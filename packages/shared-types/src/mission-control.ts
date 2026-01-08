@@ -17,18 +17,74 @@ export type Agent = {
 
 export type MissionControlAgentsResponse = Agent[] | { agents: Agent[] };
 
-export type Event = {
-  id?: string;
-  ts?: string | number;
-  timestamp?: string | number;
+/**
+ * Versioned envelope required on all governed events.
+ */
+export type EventEnvelopeV1 = {
+  /**
+   * Schema version for this event shape.
+   *
+   * Increment when making backward-incompatible changes to required fields.
+   */
+  schemaVersion: 1;
+
+  /**
+   * Stable unique identifier for the event (UUID recommended).
+   */
+  eventId: string;
+
+  /**
+   * When the event was produced.
+   *
+   * Recommended: ISO-8601 UTC string. Also accepts epoch milliseconds for compatibility.
+   */
+  producedAt: string | number;
+};
+
+/**
+ * Mission Control event payload.
+ *
+ * Canonical field names are camelCase. Legacy aliases remain optional for compatibility with
+ * older producers/consumers.
+ */
+export type Event = EventEnvelopeV1 & {
+  /**
+   * Optional agent identifier/name associated with the event.
+   */
   agent?: string;
-  agent_name?: string;
+
+  /**
+   * Canonical agent name field (camelCase).
+   */
+  agentName?: string;
+
   kind?: string;
   type?: string;
   level?: string;
   message?: string;
   summary?: string;
   outcome?: string;
+
+  /**
+   * @deprecated Use eventId.
+   */
+  id?: string;
+
+  /**
+   * @deprecated Use producedAt.
+   */
+  ts?: string | number;
+
+  /**
+   * @deprecated Use producedAt.
+   */
+  timestamp?: string | number;
+
+  /**
+   * @deprecated Use agentName.
+   */
+  agent_name?: string;
+
   [k: string]: unknown;
 };
 
