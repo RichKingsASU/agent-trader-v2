@@ -50,6 +50,7 @@ from backend.trading.proposals.models import (
     ProposalRationale,
     ProposalSide,
 )
+from backend.risk.risk_allocator import allocate_risk
 
 # Configure logging
 logging.basicConfig(
@@ -208,9 +209,30 @@ async def run_sentiment_strategy(
                 )
                 continue
             
-            # Calculate notional (simple implementation - could be enhanced)
-            # For now, assume a fixed position size
-            notional = 1000.0  # $1000 per position
+            # Canonical risk sizing (deterministic; no hidden globals inside allocator).
+            # Preserve legacy behavior by using the existing $1000 request as the intent,
+            # then constraining via portfolio-level caps if configured.
+            daily_cap_pct = float(os.getenv("RISK_DAILY_CAP_PCT") or "1.0")
+            max_strategy_pct = float(os.getenv("RISK_MAX_STRATEGY_ALLOCATION_PCT") or "1.0")
+            daily_cap_pct = max(0.0, min(1.0, daily_cap_pct))
+            max_strategy_pct = max(0.0, min(1.0, max_strategy_pct))
+
+            notional = float(
+                allocate_risk(
+                    strategy_id="llm_sentiment_alpha",
+                    signal_confidence=float(signal_payload.get("confidence") or 1.0),
+                    market_state={
+                        # This driver does not have buying power context; use the $1000 request
+                        # with an explicit USD cap if desired via env.
+                        "daily_risk_cap_usd": float(os.getenv("RISK_DAILY_CAP_USD") or "0") or 0.0,
+                        "daily_risk_cap_pct": daily_cap_pct,
+                        "max_strategy_allocation_pct": max_strategy_pct,
+                        "current_allocations_usd": {},
+                        "requested_notional_usd": 1000.0,  # legacy fixed size
+                        "confidence_scaling": False,
+                    },
+                )
+            )
             
             # The risk check is now handled within make_decision
             # We only proceed if action is not 'flat' (i.e., approved by risk)
