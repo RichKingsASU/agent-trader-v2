@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import random
 import time
@@ -7,6 +8,8 @@ from typing import Any, Mapping, Optional
 
 from backend.messaging.envelope import EventEnvelope
 from backend.observability.ops_json_logger import log as log_json
+
+logger = logging.getLogger(__name__)
 
 
 class PubSubPublisher:
@@ -294,6 +297,7 @@ class PubSubPublisher:
             if callable(stop):
                 stop()
         except Exception:
+            logger.exception("pubsub_publisher.client_stop_failed")
             pass
 
         # Close transport / channels (newer versions).
@@ -302,6 +306,7 @@ class PubSubPublisher:
             if callable(close):
                 close()
         except Exception:
+            logger.exception("pubsub_publisher.client_close_failed")
             pass
 
         try:
@@ -310,6 +315,7 @@ class PubSubPublisher:
             if callable(transport_close):
                 transport_close()
         except Exception:
+            logger.exception("pubsub_publisher.transport_close_failed")
             pass
 
     def __enter__(self) -> "PubSubPublisher":

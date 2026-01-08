@@ -81,7 +81,12 @@ def main(argv: list[str]) -> int:
     try:
         traceback.print_exc()
     except Exception:
-        pass
+        try:
+            sys.stderr.write("dependency_parity_check: traceback_print_failed\n")
+            sys.stderr.write(traceback.format_exc() + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
     return 1
 
 

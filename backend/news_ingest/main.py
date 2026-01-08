@@ -41,6 +41,7 @@ def main() -> None:
         fp = get_build_fingerprint()
         print(json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False), flush=True)
     except Exception:
+        logger.exception("news_ingest.build_fingerprint_log_failed")
         pass
 
     cfg = from_env()
@@ -55,6 +56,7 @@ def main() -> None:
         try:
             signal.signal(s, _handle_signal)
         except Exception:
+            logger.exception("news_ingest.signal_handler_install_failed signum=%s", s)
             pass
 
     once = (os.getenv("NEWS_INGEST_ONCE") or "").strip().lower() in {"1", "true", "t", "yes", "y", "on"}

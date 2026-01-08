@@ -41,6 +41,7 @@ class NewsStreamClient:
                 published_since_last=int(self._pub_since_log),
             )
         except Exception:
+            logger.exception("stream_bridge.news.log_stats_failed")
             pass
         self._recv_since_log = 0
         self._pub_since_log = 0
@@ -71,6 +72,7 @@ class NewsStreamClient:
                         url_configured=True,
                     )
                 except Exception:
+                    logger.exception("stream_bridge.news.ws_connect_attempt_log_failed")
                     pass
 
                 async with websockets.connect(self.cfg.news_stream_url, extra_headers=headers) as websocket:
@@ -84,6 +86,7 @@ class NewsStreamClient:
                             stream="news",
                         )
                     except Exception:
+                        logger.exception("stream_bridge.news.ws_connected_log_failed")
                         pass
                     while True:
                         message = await websocket.recv()
@@ -92,6 +95,7 @@ class NewsStreamClient:
                         try:
                             messages_received_total.inc(1.0, labels={"component": "stream-bridge", "stream": "news"})
                         except Exception:
+                            logger.exception("stream_bridge.news.metrics_messages_received_inc_failed")
                             pass
                         payload = json.loads(message)
                         event = map_devconsole_news(payload)
@@ -101,6 +105,7 @@ class NewsStreamClient:
                         try:
                             messages_published_total.inc(1.0, labels={"component": "stream-bridge", "stream": "news"})
                         except Exception:
+                            logger.exception("stream_bridge.news.metrics_messages_published_inc_failed")
                             pass
                         self._maybe_log_stats()
             except Exception as e:
@@ -114,6 +119,7 @@ class NewsStreamClient:
                         error=f"{type(e).__name__}: {e}",
                     )
                 except Exception:
+                    logger.exception("stream_bridge.news.ws_disconnected_log_failed")
                     pass
                 logger.exception(f"NewsStreamClient error: {e}")
                 attempt += 1
@@ -121,5 +127,6 @@ class NewsStreamClient:
                 try:
                     reconnect_attempts_total.inc(1.0, labels={"component": "stream-bridge", "stream": "news"})
                 except Exception:
+                    logger.exception("stream_bridge.news.metrics_reconnect_attempt_inc_failed")
                     pass
                 await asyncio.sleep(5)
