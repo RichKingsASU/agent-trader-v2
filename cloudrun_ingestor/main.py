@@ -71,6 +71,7 @@ def ingestion_worker():
             HEARTBEAT_INTERVAL_SECONDS,
             FLAG_CHECK_INTERVAL_SECONDS,
         )
+        from backend.common.ingest_switch import get_effective_ingest_enabled_state
     except ImportError as e:
         logger.critical("Failed to import ingestion service: %s", e, extra=LOG_EXTRA)
         return
@@ -79,23 +80,67 @@ def ingestion_worker():
     service = IngestionService()
     service.health_checker.sanity_checks()
 
+    # Startup gate: log effective ingest enabled state.
+    eff_enabled, eff_source = get_effective_ingest_enabled_state(default_enabled=True)
+    logger.info(
+        "INGEST_ENABLED startup state: enabled=%s source=%s",
+        bool(eff_enabled),
+        str(eff_source or ""),
+        extra=LOG_EXTRA,
+    )
+
+    last_effective_enabled: bool | None = None
+    last_effective_source: str | None = None
+
     while not SHUTDOWN_FLAG.is_set():
         iteration_id = uuid.uuid4().hex
         loop_log_extra = {**LOG_EXTRA, "iteration_id": iteration_id}
 
         try:
+            # Combine the repo-wide kill switch with the operator ingest switch.
+            effective_enabled, effective_source = get_effective_ingest_enabled_state(default_enabled=True)
+            if last_effective_enabled is None or effective_enabled != last_effective_enabled:
+                last_effective_enabled = bool(effective_enabled)
+                last_effective_source = str(effective_source or "")
+                if effective_enabled:
+                    logger.info(
+                        "INGEST_ENABLED transition: enabled=%s source=%s",
+                        bool(effective_enabled),
+                        str(effective_source or ""),
+                        extra=loop_log_extra,
+                    )
+                else:
+                    logger.warning(
+                        "INGEST_ENABLED transition: enabled=%s source=%s",
+                        bool(effective_enabled),
+                        str(effective_source or ""),
+                        extra=loop_log_extra,
+                    )
+
             # Check for kill switch
             if time.time() - service.last_flag_check > FLAG_CHECK_INTERVAL_SECONDS:
                 service.ingest_enabled = service.health_checker.check_ingest_flag()
                 service.last_flag_check = time.time()
 
-            if not service.ingest_enabled:
-                logger.warning("Ingestion is disabled via feature flag. Sleeping.", extra=loop_log_extra)
-                time.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            # Always emit a lightweight system heartbeat (even when disabled) for visibility.
+            try:
+                service.publish_system_event(
+                    "info",
+                    "Ingestion heartbeat (enabled=%s, source=%s)." % (bool(effective_enabled and service.ingest_enabled), str(last_effective_source or "")),
+                )
+            except Exception:
+                # Heartbeat must be best-effort; don't break the loop.
+                pass
+
+            if (not effective_enabled) or (not service.ingest_enabled):
+                # Log only on transitions to avoid log storms.
+                if not service.ingest_enabled:
+                    logger.warning("Ingestion is disabled via feature flag.", extra=loop_log_extra)
+                # Sleep can be interrupted by shutdown.
+                SHUTDOWN_FLAG.wait(timeout=HEARTBEAT_INTERVAL_SECONDS)
                 continue
 
             # Publish events (business logic is unchanged)
-            service.publish_system_event("info", "Ingestion heartbeat.")
             logger.info("Published system heartbeat.", extra={**loop_log_extra, "published_topic": service.system_events_topic_path})
             
             service.publish_market_tick()

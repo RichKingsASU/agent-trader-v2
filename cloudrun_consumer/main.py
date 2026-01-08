@@ -191,10 +191,16 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
     env = os.getenv("ENV") or "unknown"
     default_region = os.getenv("DEFAULT_REGION") or "unknown"
     if handler.name == "system_events":
-        source_topic = os.getenv("SYSTEM_EVENTS_TOPIC") or ""
+        # System events should be materializable even if SYSTEM_EVENTS_TOPIC isn't set,
+        # since producers may be absent/misconfigured and we still want the consumer healthy.
+        source_topic = (
+            (os.getenv("SYSTEM_EVENTS_TOPIC") or "").strip()
+            or (inferred_topic or "").strip()
+            or (attributes.get("topic") or "").strip()
+            or ""
+        )
         if not source_topic:
-            log("config.missing_system_events_topic", severity="ERROR")
-            raise HTTPException(status_code=500, detail="missing_SYSTEM_EVENTS_TOPIC")
+            log("config.missing_system_events_topic", severity="WARNING")
     else:
         # For non-system streams, prefer the inferred topic (from attributes/payload/subscription mapping).
         source_topic = inferred_topic or ""
