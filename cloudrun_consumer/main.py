@@ -1,12 +1,9 @@
 """
-cloudrun_consumer entrypoint diagnostics
+Cloud Run Pub/Sub → Firestore materializer (push subscription).
 
-Runtime assumptions (documented for deploy/debug):
-- This module is typically imported by `uvicorn` (e.g. `uvicorn main:app`) from the
-  service working directory (or an image that places this file on `sys.path`).
-- If you see import failures for sibling modules (e.g. `event_utils`), ensure the
-  service directory is on `sys.path` (often via `PYTHONPATH`) and log `sys.path`
-  to confirm.
+Contract Unification Gate:
+- Validate topic-specific canonical schemas from `contracts/` before processing.
+- If invalid: record (DLQ sample / ops alert), log structured error, and ACK (2xx).
 """
 
 from __future__ import annotations
@@ -32,15 +29,16 @@ from backend.common.logging import install_fastapi_request_id_middleware
 from backend.common.logging import log_standard_event
 from backend.observability.correlation import bind_correlation_id, get_or_create_correlation_id
 
+from backend.contracts.ops_alerts import try_write_contract_violation_alert
+from backend.contracts.registry import validate_topic_event
 from event_utils import infer_topic
 from firestore_writer import FirestoreWriter
-from replay_support import ReplayContext, write_replay_marker
 from schema_router import route_payload
 from time_audit import ensure_utc
 
 
 SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"
-DLQ_SAMPLE_RATE_DEFAULT = "0.01"  # 1% (deterministic per messageId)
+DLQ_SAMPLE_RATE_DEFAULT = "0.01"
 DLQ_SAMPLE_TTL_HOURS_DEFAULT = "72"
 
 # Emit structured JSON to stdout (Cloud Run will ingest as jsonPayload).
@@ -63,54 +61,9 @@ def _parse_rfc3339(value: Any) -> Optional[datetime]:
     try:
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
-        dt = datetime.fromisoformat(s)
-        return ensure_utc(dt, source="cloudrun_consumer.main._parse_rfc3339", field="iso_string")
+        return ensure_utc(datetime.fromisoformat(s), source="cloudrun_consumer.main._parse_rfc3339", field="iso_string")
     except Exception:
-        log("time.parse_failed", severity="ERROR", value=s, exception=traceback.format_exc()[-8000:])
         return None
-
-
-def _maybe_unwrap_event_envelope(payload: dict[str, Any]) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
-    """
-    Back-compat adapter:
-    - If message.data is an EventEnvelope (v1), validate schemaVersion and unwrap to its `payload`.
-    - Otherwise, treat message.data as payload-only (legacy producers).
-    """
-    # Heuristic: require both an envelope discriminator + a nested payload object.
-    if not isinstance(payload.get("payload"), dict):
-        return payload, None
-
-    if not (
-        isinstance(payload.get("event_type"), str)
-        or isinstance(payload.get("eventType"), str)
-        or isinstance(payload.get("agent_name"), str)
-        or isinstance(payload.get("agentName"), str)
-    ):
-        return payload, None
-
-    schema_v = payload.get("schemaVersion")
-    if schema_v is None:
-        schema_v = payload.get("schema_version")
-    if schema_v is None:
-        raise ValueError("missing_schemaVersion")
-
-    try:
-        sv_int = int(schema_v)
-    except Exception as e:
-        raise ValueError("invalid_schemaVersion") from e
-
-    if sv_int != 1:
-        raise ValueError(f"unsupported_schemaVersion:{sv_int}")
-
-    inner = payload.get("payload")
-    assert isinstance(inner, dict)  # guarded above
-
-    # Preserve envelope timestamp for ordering if the payload doesn't already carry it.
-    ts = payload.get("ts")
-    if isinstance(ts, str) and ts.strip():
-        inner.setdefault("producedAt", ts.strip())
-
-    return inner, payload
 
 
 def log(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
@@ -133,25 +86,7 @@ def log(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
             **fields,
         )
     except Exception:
-        # Preserve stack traces even if stdout/serialization is broken.
-        try:
-            sys.stderr.write(
-                json.dumps(
-                    {
-                        "timestamp": _utc_now().isoformat(),
-                        "severity": "ERROR",
-                        "service": SERVICE_NAME,
-                        "event_type": "logging.emit_failed",
-                        "exception": traceback.format_exc()[-8000:],
-                    },
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-            sys.stderr.flush()
-        except Exception:
-            return
+        return
 
 
 def _require_json_content_type(req: Request) -> None:
@@ -162,71 +97,29 @@ def _require_json_content_type(req: Request) -> None:
         raise HTTPException(status_code=415, detail="unsupported_media_type")
 
 
-def _validate_pubsub_headers(*, req: Request, subscription_from_body: str) -> dict[str, Optional[str]]:
+def _coerce_system_event_to_envelope(
+    *, payload: dict[str, Any], message_id: str, published_at: datetime
+) -> dict[str, Any]:
     """
-    Best-effort Pub/Sub push header validation.
-
-    - Enforce JSON content type.
-    - If X-Goog-* headers are present, validate they are well-formed.
-    - If X-Goog-Subscription is present, require it matches body.subscription (full or short name).
-
-    No authentication decisions are made here.
+    Legacy adapter: payload-only system event record -> EventEnvelopeV1.
     """
-    _require_json_content_type(req)
-
-    x_sub = str(req.headers.get("x-goog-subscription") or req.headers.get("x-goog-subscription-name") or "").strip()
-    x_topic = str(req.headers.get("x-goog-topic") or "").strip()
-
-    for v in (x_sub, x_topic):
-        if ("\n" in v) or ("\r" in v):
-            raise HTTPException(status_code=400, detail="invalid_header_value")
-
-    if x_topic and (not x_topic.startswith("projects/") or "/topics/" not in x_topic):
-        raise HTTPException(status_code=400, detail="invalid_x_goog_topic")
-
-    if x_sub:
-        body_short = subscription_from_body.split("/subscriptions/")[-1]
-        hdr_short = x_sub.split("/subscriptions/")[-1]
-        if subscription_from_body and (subscription_from_body != x_sub) and (body_short != hdr_short):
-            raise HTTPException(status_code=400, detail="subscription_header_mismatch")
-
-    return {"header_subscription": x_sub or None, "header_topic": x_topic or None}
-
-
-def _require_env(name: str, *, default: Optional[str] = None) -> str:
-    v = os.getenv(name)
-    if v is None or not str(v).strip():
-        if default is not None:
-            return default
-        raise RuntimeError(f"Missing required env var: {name}")
-    return str(v).strip()
-
-def _float_env(name: str, *, default: str) -> float:
-    raw = (os.getenv(name) or "").strip()
-    if not raw:
-        raw = default
-    try:
-        return float(raw)
-    except Exception:
-        try:
-            return float(default)
-        except Exception:
-            return 0.0
-
-
-def _normalize_env_alias(target: str, aliases: list[str]) -> None:
-    """
-    Ensures `target` is present by copying from the first present alias.
-    Logs nothing and never exposes values.
-    """
-    v = os.getenv(target)
-    if v is not None and str(v).strip():
-        return
-    for a in aliases:
-        av = os.getenv(a)
-        if av is not None and str(av).strip():
-            os.environ[target] = str(av).strip()
-            return
+    ts = payload.get("timestamp")
+    ts_s = str(ts).strip() if isinstance(ts, str) else ""
+    if not ts_s:
+        ts_s = published_at.isoformat()
+    agent = str(payload.get("service") or "unknown").strip() or "unknown"
+    sha = str(payload.get("git_sha") or payload.get("sha") or "unknown").strip() or "unknown"
+    trace = str(payload.get("correlation_id") or payload.get("request_id") or message_id).strip() or message_id
+    ev_type = str(payload.get("event_type") or payload.get("event") or "system.event").strip() or "system.event"
+    return {
+        "schemaVersion": 1,
+        "event_type": ev_type,
+        "agent_name": agent,
+        "git_sha": sha,
+        "ts": ts_s,
+        "trace_id": trace,
+        "payload": payload,
+    }
 
 
 def _validate_required_env(required: list[str]) -> None:
@@ -244,11 +137,9 @@ install_fastapi_request_id_middleware(app, service=SERVICE_NAME)
 
 @app.on_event("startup")
 async def _startup() -> None:
-    _normalize_env_alias("GCP_PROJECT", ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT_ID", "PROJECT_ID"])
-    _validate_required_env(["GCP_PROJECT", "SYSTEM_EVENTS_TOPIC", "INGEST_FLAG_SECRET_ID", "ENV"])
-
-    project_id = _require_env("GCP_PROJECT")
-
+    project_id = (os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
+    if not project_id:
+        raise RuntimeError("Missing required env var: GCP_PROJECT (or GOOGLE_CLOUD_PROJECT)")
     database = os.getenv("FIRESTORE_DATABASE") or "(default)"
     collection_prefix = os.getenv("FIRESTORE_COLLECTION_PREFIX") or ""
     app.state.firestore_writer = FirestoreWriter(project_id=project_id, database=database, collection_prefix=collection_prefix)
@@ -295,15 +186,6 @@ async def livez(response: Response) -> dict[str, Any]:
 
 @app.post("/pubsub/push")
 async def pubsub_push(req: Request) -> dict[str, Any]:
-    """
-    Pub/Sub push handler for Cloud Run.
-
-    Required behavior:
-    - validate + decode base64 JSON payload
-    - idempotency via messageId -> ops_dedupe/{messageId}
-    - stale protection for ops_services/{serviceId}
-    - structured JSON logs
-    """
     app.state.loop_heartbeat_monotonic = time.monotonic()
     start_perf = time.perf_counter()
 
@@ -347,7 +229,6 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             or None,
         )
         raise HTTPException(status_code=400, detail="invalid_json") from e
-
     if not isinstance(body, dict):
         log(
             "pubsub.rejected",
@@ -412,7 +293,7 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         )
         raise HTTPException(status_code=400, detail="invalid_envelope")
 
-    message_id = str(message.get("messageId") or "").strip()
+    message_id = str(msg.get("messageId") or "").strip()
     if not message_id:
         log(
             "pubsub.rejected",
@@ -453,13 +334,12 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             attributes[str(k)] = "" if v is None else str(v)
 
     writer: FirestoreWriter = app.state.firestore_writer
-    dlq_sample_rate = _float_env("DLQ_SAMPLE_RATE", default=DLQ_SAMPLE_RATE_DEFAULT)
-    dlq_sample_ttl_hours = _float_env("DLQ_SAMPLE_TTL_HOURS", default=DLQ_SAMPLE_TTL_HOURS_DEFAULT)
+    dlq_sample_rate = float(os.getenv("DLQ_SAMPLE_RATE") or DLQ_SAMPLE_RATE_DEFAULT)
+    dlq_sample_ttl_hours = float(os.getenv("DLQ_SAMPLE_TTL_HOURS") or DLQ_SAMPLE_TTL_HOURS_DEFAULT)
 
-    def _record_dlq_candidate(*, reason: str, error: str, handler_name: str, topic: str, payload: Optional[dict[str, Any]]) -> None:
-        # "DLQ" is enforced by Pub/Sub dead-letter policy; we log + sample so we can debug without relying on DLQ retention.
+    def _ack_invalid(*, reason: str, error: str, handler: str, payload: dict[str, Any], errors: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
         log(
-            "pubsub.dlq_candidate",
+            "contract.invalid",
             severity="ERROR",
             outcome="failure",
             correlation_id=correlation_id,
@@ -471,19 +351,20 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             handler=handler_name,
             reason=reason,
             error=error,
-            http_status=400,
-            deliveryAttempt=delivery_attempt,
-            dlq_sample_rate=dlq_sample_rate,
+            errors=errors[:10] if isinstance(errors, list) else None,
+            topic=topic,
+            subscription=subscription,
+            messageId=message_id,
         )
-        wrote = writer.maybe_write_sampled_dlq_event(
+        writer.maybe_write_sampled_dlq_event(
             message_id=message_id,
-            subscription=subscription_str,
-            topic=topic or "",
-            handler=handler_name,
-            http_status=400,
+            subscription=subscription,
+            topic=topic,
+            handler=handler,
+            http_status=200,
             reason=reason,
             error=error,
-            delivery_attempt=delivery_attempt,
+            delivery_attempt=None,
             attributes=attributes,
             payload=payload,
             sample_rate=dlq_sample_rate,
@@ -536,10 +417,20 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             publishTime=publish_time_raw,
             subscription=subscription_str,
         )
-        raise HTTPException(status_code=400, detail="invalid_base64") from e
+        return {"ok": True, "applied": False, "reason": reason}
 
+    # Coerce/validate canonical envelope per topic.
+    envelope: dict[str, Any]
+    if _is_event_envelope_v1(decoded):
+        envelope = decoded
+    elif topic == "system-events":
+        envelope = _coerce_system_event_to_envelope(payload=decoded, message_id=message_id, published_at=publish_time)
+    else:
+        return _ack_invalid(reason="missing_event_envelope", error="expected_EventEnvelopeV1", handler="none", payload=decoded)
+
+    schema_errors = None
     try:
-        payload = json.loads(raw.decode("utf-8"))
+        schema_errors = validate_topic_event(topic=topic, event=envelope)
     except Exception as e:
         log(
             "pubsub.rejected",
@@ -570,7 +461,6 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             publishTime=publish_time_raw,
             subscription=subscription_str,
         )
-        raise HTTPException(status_code=400, detail="payload_not_object")
 
     try:
         payload, envelope = _maybe_unwrap_event_envelope(payload)
@@ -783,7 +673,7 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             raise HTTPException(status_code=500, detail="materialize_exception") from e
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     import uvicorn
 
     port = int(os.getenv("PORT") or "8080")
