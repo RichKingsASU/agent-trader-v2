@@ -7,6 +7,7 @@ _enforce_agent_mode_guard()
 import json
 import logging
 import os
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -41,6 +42,8 @@ from backend.common.vertex_ai import init_vertex_ai_or_log
 from backend.execution.marketdata_health import check_market_ingest_heartbeat
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
+from backend.safety.shutdown_gate import request_shutdown as _request_shutdown, wait_for_inflight_zero as _wait_for_inflight_zero
+from backend.safety.strategy_breakers import check_consecutive_losses_from_ledger_trades
 from backend.safety.startup_validation import (
     validate_agent_mode_or_exit,
     validate_flag_exact_false_or_exit,
@@ -146,15 +149,33 @@ def _startup() -> None:
     app.state.engine = engine
     app.state.risk = risk
     app.state.agent_sm = AgentStateMachine(agent_id=str(os.getenv("EXEC_AGENT_ID") or "execution_engine"))
+    app.state.shutting_down = False
     try:
         app.state.ops_logger.readiness(ready=True)  # type: ignore[attr-defined]
     except Exception:
         pass
 
 @app.on_event("shutdown")
-def _shutdown() -> None:
+async def _shutdown() -> None:
+    # Prevent new /execute calls and refuse starting new broker submissions.
+    try:
+        app.state.shutting_down = True
+    except Exception:
+        pass
+    try:
+        _request_shutdown(reason="fastapi_shutdown")
+    except Exception:
+        pass
     try:
         app.state.ops_logger.shutdown(phase="initiated")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    # Best-effort: wait briefly for any in-flight broker submissions to finish.
+    try:
+        timeout_s = float(os.getenv("EXEC_SHUTDOWN_DRAIN_TIMEOUT_S") or "8")
+        drained = await asyncio.to_thread(_wait_for_inflight_zero, timeout_s=timeout_s)
+        if not drained:
+            logger.warning("exec_service.shutdown_drain_timeout timeout_s=%s", timeout_s)
     except Exception:
         pass
 
@@ -301,6 +322,9 @@ def recover(request: Request) -> dict[str, Any]:
 
 @app.post("/execute", response_model=ExecuteIntentResponse)
 def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
+    if bool(getattr(app.state, "shutting_down", False)):
+        # Graceful shutdown contract: refuse new executions (prevents partial submissions).
+        raise HTTPException(status_code=503, detail="shutting_down")
     engine: ExecutionEngine = app.state.engine
     risk: RiskManager = app.state.risk
     sm: AgentStateMachine = app.state.agent_sm
@@ -363,6 +387,63 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
     # Enforce the "refuse live trading unless READY + LIVE + kill-switch off" policy.
     # Note: dry-run execution (no broker routing) is allowed even when not LIVE.
     if not engine.dry_run:
+        # --- Per-strategy circuit breaker: consecutive losses (operator-configured, default disabled) ---
+        max_consec = _int_env("EXEC_CB_MAX_CONSECUTIVE_LOSSES", 0)
+        if max_consec > 0 and tenant_id:
+            uid = str(req.metadata.get("uid") or os.getenv("EXEC_UID") or "").strip() or None
+            if uid:
+                try:
+                    from backend.persistence.firebase_client import get_firestore_client  # noqa: WPS433
+
+                    db = get_firestore_client()
+                    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                    q = (
+                        db.collection("tenants")
+                        .document(str(tenant_id))
+                        .collection("ledger_trades")
+                        .where("uid", "==", str(uid))
+                        .where("strategy_id", "==", str(req.strategy_id))
+                        .where("ts", ">=", today_start)
+                    )
+                    trades: list[dict[str, Any]] = []
+                    for doc in q.stream():
+                        d = doc.to_dict() or {}
+                        d["trade_id"] = doc.id
+                        trades.append(d)
+                    cb = check_consecutive_losses_from_ledger_trades(trades=trades, max_consecutive_losses=max_consec)
+                    if cb.triggered:
+                        logger.warning(
+                            "exec_service.circuit_breaker_triggered %s",
+                            json.dumps(
+                                {
+                                    "breaker_type": "consecutive_losses",
+                                    "reason_code": cb.reason_code,
+                                    "strategy_id": req.strategy_id,
+                                    "tenant_id": tenant_id,
+                                    "uid": uid,
+                                    "details": cb.details,
+                                }
+                            ),
+                        )
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "refused": True,
+                                "reason": "circuit_breaker_consecutive_losses",
+                                "breaker": {
+                                    "type": "consecutive_losses",
+                                    "reason_code": cb.reason_code,
+                                    "message": cb.message,
+                                    "details": cb.details,
+                                },
+                            },
+                        )
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    # Safety posture here is best-effort: do not crash request path due to breaker telemetry.
+                    logger.exception("exec_service.circuit_breaker_eval_failed: %s", e)
+
         allowed, reason = trading_allowed(state=sm.state, agent_mode=agent_mode, kill_switch_enabled=kill)
         if not allowed:
             logger.warning(
