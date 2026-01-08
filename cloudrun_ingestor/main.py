@@ -20,6 +20,43 @@ import time
 import uuid
 from typing import Any
 
+# --- Runtime detection helpers ---
+def _running_under_gunicorn() -> bool:
+    """
+    Best-effort detection for "real" service runtime vs local import checks.
+
+    We intentionally avoid relying on sys.path hacks or environment-specific flags.
+    """
+    try:
+        if (os.getenv("GUNICORN_CMD_ARGS") or "").strip():
+            return True
+        argv0 = os.path.basename(sys.argv[0] or "")
+        if "gunicorn" in argv0.lower():
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _fail_fast_import(exc: BaseException, *, context: str, failed_import: str) -> None:
+    """
+    Crash the process in real runtime if a required import fails.
+
+    During local/CI import smoke checks (not under gunicorn), we only log CRITICAL
+    and allow import to succeed.
+    """
+    logger.critical(
+        "Import failed (%s): %s: %s",
+        str(context),
+        str(failed_import),
+        str(exc),
+        extra={**LOG_EXTRA, "context": str(context), "failed_import": str(failed_import)},
+        exc_info=True,
+    )
+    if _running_under_gunicorn():
+        raise SystemExit(1)
+
+
 # --- Env normalization + validation (log presence, fail fast) ---
 def _normalize_env_alias(target: str, aliases: list[str]) -> None:
     """
@@ -90,11 +127,11 @@ def override_config():
         logger.info("Configuration overridden from environment.", extra={**LOG_EXTRA, "config_overridden": True})
     except KeyError as e:
         logger.critical("Missing required environment variable: %s", e, extra=LOG_EXTRA)
-        sys.exit(1)
+        if _running_under_gunicorn():
+            raise SystemExit(1)
+        return
     except ImportError as e:
         _fail_fast_import(e, context="override_config", failed_import="backend.ingestion.config")
-
-override_config()
 
 def _assert_required_imports() -> None:
     """
@@ -116,7 +153,16 @@ def _assert_required_imports() -> None:
         _fail_fast_import(e, context="startup", failed_import="backend.ingestion.config.(HEARTBEAT_INTERVAL_SECONDS, FLAG_CHECK_INTERVAL_SECONDS)")
 
 
-_assert_required_imports()
+def _startup_checks() -> None:
+    # In production (gunicorn), do these checks at import time so the container crashes fast.
+    # In local/CI import smoke checks, we skip to allow `import cloudrun_ingestor.main`.
+    if not _running_under_gunicorn():
+        return
+    override_config()
+    _assert_required_imports()
+
+
+_startup_checks()
 
 
 # --- Graceful Shutdown Handling ---
@@ -266,5 +312,6 @@ def index():
     return "Ingestion service is running.", 200
 
 # Start the background worker thread when the Flask app initializes.
-worker_thread = threading.Thread(target=ingestion_worker)
-worker_thread.start()
+if _running_under_gunicorn():
+    worker_thread = threading.Thread(target=ingestion_worker)
+    worker_thread.start()
