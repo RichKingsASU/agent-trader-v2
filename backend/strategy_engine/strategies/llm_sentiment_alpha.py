@@ -14,11 +14,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-import httpx
-
-from backend.common.a2a_sdk import RiskAgentClient
-from backend.contracts.risk import TradeCheckRequest
-
 logger = logging.getLogger(__name__)
 
 
@@ -188,7 +183,6 @@ async def make_decision(
     symbol: str,
     sentiment_threshold: float = 0.7,
     confidence_threshold: float = 0.8,
-    risk_agent_client: Optional[RiskAgentClient] = None
 ) -> Dict:
     """
     Make trading decision based on LLM sentiment analysis and risk check.
@@ -203,8 +197,7 @@ async def make_decision(
         symbol: Stock symbol to trade
         sentiment_threshold: Minimum absolute sentiment score (default 0.7)
         confidence_threshold: Minimum confidence level (default 0.8)
-        risk_agent_client: Optional client for the Risk Agent service.
-    
+
     Returns:
         Decision dict with action, reason, and signal_payload
     """
@@ -269,60 +262,8 @@ async def make_decision(
             f"Reasoning: {analysis.reasoning}"
         )
 
-    risk_checked = False
-    risk_approved = None
-
-    # Perform risk check only when:
-    # - a trade action is proposed (buy/sell)
-    # - and the caller provided a RiskAgentClient
-    # - and required request context is available (no guessing/placeholder ids)
-    if risk_agent_client and action in {"buy", "sell"}:
-        broker_account_id = str(os.getenv("RISK_BROKER_ACCOUNT_ID") or "").strip()
-        strategy_id = str(os.getenv("RISK_STRATEGY_ID") or "").strip()
-        auth = str(os.getenv("RISK_AUTHORIZATION") or "").strip() or None
-        notional = str(os.getenv("RISK_NOTIONAL_USD") or "1000.0").strip()
-
-        if not broker_account_id or not strategy_id:
-            # Fail-safe: do not assume tenant/broker identifiers.
-            risk_checked = False
-            risk_approved = False
-            action = "flat"
-            reason = "Risk check context missing (set RISK_BROKER_ACCOUNT_ID and RISK_STRATEGY_ID); refusing trade."
-        else:
-            try:
-                req = TradeCheckRequest(
-                    broker_account_id=broker_account_id,
-                    strategy_id=strategy_id,
-                    symbol=symbol,
-                    notional=notional,
-                    side=action,
-                    current_open_positions=0,
-                    current_trades_today=0,
-                    current_day_loss="0.0",
-                    current_day_drawdown="0.0",
-                )
-                res = await risk_agent_client.check_trade(req, authorization=auth)
-                risk_checked = True
-                risk_approved = bool(res.allowed)
-                if not res.allowed:
-                    action = "flat"
-                    reason = f"Trade blocked by Risk Agent: {res.reason or 'unknown_reason'}"
-            except httpx.HTTPError as e:
-                logger.error("Risk check HTTP error: %s", e)
-                risk_checked = True
-                risk_approved = False
-                action = "flat"  # fail-safe
-                reason = f"Risk check failed (http_error): {e}"
-            except Exception as e:
-                logger.exception("Unexpected error during risk check: %s", e)
-                risk_checked = True
-                risk_approved = False
-                action = "flat"  # fail-safe
-                reason = f"Risk check failed (unexpected_error): {e}"
-    
     return {
         "action": action,
-        "size": 1,  # Default position size
         "reason": reason,
         "signal_payload": {
             "news_count": len(news_items),
@@ -334,7 +275,7 @@ async def make_decision(
             "target_symbols": analysis.target_symbols,
             "analyzed_at": datetime.now(timezone.utc).isoformat(),
             "model_id": "gemini-1.5-flash",
-            "risk_checked": bool(risk_checked),
-            "risk_approved": risk_approved,
+            # Risk allocation happens centrally; strategies never self-authorize capital.
+            "risk_checked": False,
         }
     }
