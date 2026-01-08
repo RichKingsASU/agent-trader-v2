@@ -10,6 +10,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
+from event_utils import infer_topic
 from firestore_writer import FirestoreWriter
 from schema_router import route_payload
 
@@ -88,6 +89,7 @@ async def _startup() -> None:
         env=os.getenv("ENV") or "unknown",
         default_region=os.getenv("DEFAULT_REGION") or "unknown",
         system_events_topic=os.getenv("SYSTEM_EVENTS_TOPIC") or "",
+        subscription_topic_map=bool((os.getenv("SUBSCRIPTION_TOPIC_MAP") or "").strip()),
     )
 
 
@@ -137,6 +139,9 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log("pubsub.invalid_envelope", severity="ERROR", reason="body_not_object")
         raise HTTPException(status_code=400, detail="invalid_envelope")
 
+    subscription = body.get("subscription")
+    subscription_str = str(subscription).strip() if subscription is not None else ""
+
     message = body.get("message")
     if not isinstance(message, dict):
         log("pubsub.invalid_envelope", severity="ERROR", reason="missing_message")
@@ -177,17 +182,22 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log("pubsub.payload_not_object", severity="ERROR", messageId=message_id, payloadType=str(type(payload).__name__))
         raise HTTPException(status_code=400, detail="payload_not_object")
 
-    handler = route_payload(payload=payload, attributes=attributes)
+    inferred_topic = infer_topic(attributes=attributes, payload=payload, subscription=subscription_str)
+    handler = route_payload(payload=payload, attributes=attributes, topic=inferred_topic)
     if handler is None:
-        log("pubsub.unroutable_payload", severity="ERROR", messageId=message_id)
+        log("pubsub.unroutable_payload", severity="ERROR", messageId=message_id, topic=inferred_topic or "", subscription=subscription_str)
         raise HTTPException(status_code=400, detail="unroutable_payload")
 
     env = os.getenv("ENV") or "unknown"
     default_region = os.getenv("DEFAULT_REGION") or "unknown"
-    source_topic = os.getenv("SYSTEM_EVENTS_TOPIC") or ""
-    if not source_topic:
-        log("config.missing_system_events_topic", severity="ERROR")
-        raise HTTPException(status_code=500, detail="missing_SYSTEM_EVENTS_TOPIC")
+    if handler.name == "system_events":
+        source_topic = os.getenv("SYSTEM_EVENTS_TOPIC") or ""
+        if not source_topic:
+            log("config.missing_system_events_topic", severity="ERROR")
+            raise HTTPException(status_code=500, detail="missing_SYSTEM_EVENTS_TOPIC")
+    else:
+        # For non-system streams, prefer the inferred topic (from attributes/payload/subscription mapping).
+        source_topic = inferred_topic or ""
 
     writer: FirestoreWriter = app.state.firestore_writer
 
@@ -206,6 +216,8 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             severity="INFO",
             handler=handler.name,
             messageId=message_id,
+            topic=source_topic,
+            subscription=subscription_str,
             serviceId=result.get("serviceId"),
             applied=result.get("applied"),
             reason=result.get("reason"),

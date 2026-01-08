@@ -17,6 +17,77 @@ Phase 1 scope: **system events → `ops_services/{serviceId}`**.
     - `source: { topic, messageId, publishedAt }`
 - Emits **structured JSON logs** to stdout
 
+### Additional topics (market data + signals)
+
+This service can also materialize the following Pub/Sub topics:
+
+- `market-ticks` → `market_ticks/{docId}`
+- `market-bars-1m` → `market_bars_1m/{docId}`
+- `trade-signals` → `trade_signals/{docId}`
+
+**Idempotency** for these streams is implemented via deterministic doc IDs:
+
+- `docId = eventId` if present and non-empty, else `docId = messageId`
+
+**Stale protection** for these streams:
+
+- writes are ignored if the incoming event time is older than the stored doc’s `eventTime`/`producedAt`/`publishedAt` (whichever is latest)
+- incoming event time preference: `producedAt` → `publishedAt` → `timestamp`/`ts`/`time` → Pub/Sub `publishTime`
+
+#### Topic inference
+
+Pub/Sub push does not include the topic name by default. This service infers topic via:
+
+- message attributes: `attributes.topic` (preferred)
+- payload fields: `topic` / `pubsubTopic` / `sourceTopic`
+- optional env mapping:
+  - `SUBSCRIPTION_TOPIC_MAP='{"your-subscription-name":"market-ticks"}'`
+
+### Expected Firestore collections + fields (server-written only)
+
+- **`ops_services/{serviceId}`**
+  - `serviceId` (string)
+  - `env` (string)
+  - `status` (string)
+  - `lastHeartbeatAt` (timestamp, optional)
+  - `version` (string)
+  - `region` (string)
+  - `updatedAt` (timestamp)
+  - `source.topic` (string), `source.messageId` (string), `source.publishedAt` (timestamp)
+
+- **`market_ticks/{docId}`**
+  - `docId` (string)
+  - `eventId` (string, optional)
+  - `symbol` (string, optional)
+  - `eventTime` (timestamp)
+  - `producedAt` (timestamp, optional)
+  - `publishedAt` (timestamp, optional)
+  - `data` (map; original payload)
+  - `source.topic` (string), `source.messageId` (string), `source.publishedAt` (timestamp)
+  - `ingestedAt` (server timestamp)
+
+- **`market_bars_1m/{docId}`**
+  - `docId` (string)
+  - `eventId` (string, optional)
+  - `symbol` (string, optional)
+  - `timeframe` (string; default `"1m"`)
+  - `start` / `end` (timestamps, optional)
+  - `eventTime` (timestamp)
+  - `producedAt` / `publishedAt` (timestamps, optional)
+  - `data` (map; original payload)
+  - `source.*`, `ingestedAt` (as above)
+
+- **`trade_signals/{docId}`**
+  - `docId` (string)
+  - `eventId` (string, optional)
+  - `symbol` (string, optional)
+  - `strategy` (string, optional)
+  - `action` (string, optional)
+  - `eventTime` (timestamp)
+  - `producedAt` / `publishedAt` (timestamps, optional)
+  - `data` (map; original payload)
+  - `source.*`, `ingestedAt` (as above)
+
 ### Env vars
 
 - **Required**
@@ -27,6 +98,7 @@ Phase 1 scope: **system events → `ops_services/{serviceId}`**.
 - **Optional**
   - `FIRESTORE_DATABASE` (default: `(default)`)
   - `PORT` (default: `8080`)
+  - `SUBSCRIPTION_TOPIC_MAP` (JSON map: subscription name → topic)
 
 ### Run locally
 
@@ -44,6 +116,16 @@ export DEFAULT_REGION="us-central1"
 
 python main.py
 ```
+
+### Minimal test strategy (local harness)
+
+This folder includes a small stdlib unittest suite for routing + id selection:
+
+```bash
+python -m unittest discover -s cloudrun_consumer/tests -p "test_*.py"
+```
+
+For end-to-end testing, point the service at a Firestore emulator and POST a Pub/Sub push envelope to `/pubsub/push` (with `attributes.topic` set to one of the supported topics).
 
 ### Pub/Sub push format
 
