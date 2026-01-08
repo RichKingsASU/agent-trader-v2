@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from event_utils import choose_doc_id, ordering_ts, parse_ts
 from firestore_writer import SourceInfo
+from replay_support import ReplayContext
 
 
 def handle_trade_signal(
@@ -16,6 +17,7 @@ def handle_trade_signal(
     message_id: str,
     pubsub_published_at: datetime,
     firestore_writer: Any,
+    replay: ReplayContext | None = None,
 ) -> dict[str, Any]:
     """
     Materialize trade signal events into `trade_signals/{eventId|messageId}`.
@@ -48,6 +50,7 @@ def handle_trade_signal(
         action=action,
         data=payload,
         source=source,
+        replay=replay,
     )
 
     return {

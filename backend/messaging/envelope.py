@@ -5,7 +5,7 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 
 def _utc_now_iso() -> str:
@@ -23,6 +23,32 @@ def _default_git_sha() -> str:
     )
 
 
+def _first_present(data: Mapping[str, Any], keys: Sequence[str]) -> Any:
+    for k in keys:
+        if k in data:
+            return data.get(k)
+    return None
+
+
+def _require_str(data: Mapping[str, Any], keys: Sequence[str], *, field_name: str) -> str:
+    v = _first_present(data, keys)
+    s = str(v).strip() if v is not None else ""
+    if not s:
+        raise ValueError(f"Missing required field: {field_name}")
+    return s
+
+
+def _require_int(data: Mapping[str, Any], keys: Sequence[str], *, field_name: str) -> int:
+    v = _first_present(data, keys)
+    if v is None:
+        raise ValueError(f"Missing required field: {field_name}")
+    try:
+        # Accept numeric strings but keep the canonical type as int.
+        return int(v)
+    except Exception as e:
+        raise ValueError(f"Invalid integer for field: {field_name}") from e
+
+
 @dataclass(frozen=True, slots=True)
 class EventEnvelope:
     """
@@ -35,11 +61,13 @@ class EventEnvelope:
       - ts: ISO-8601 timestamp (UTC recommended)
       - payload: JSON-serializable object
       - trace_id: correlation id for distributed tracing/log stitching
+      - schemaVersion: REQUIRED envelope schema version (this contract: 1)
 
     Cross-language reference:
       - TypeScript: packages/shared-types/src/envelope.ts
     """
 
+    schemaVersion: int
     event_type: str
     agent_name: str
     git_sha: str
@@ -56,8 +84,10 @@ class EventEnvelope:
         trace_id: Optional[str] = None,
         git_sha: Optional[str] = None,
         ts: Optional[str] = None,
+        schemaVersion: Optional[int] = None,
     ) -> "EventEnvelope":
         return EventEnvelope(
+            schemaVersion=int(schemaVersion if schemaVersion is not None else 1),
             event_type=str(event_type),
             agent_name=str(agent_name),
             git_sha=str(git_sha or _default_git_sha()),
@@ -68,6 +98,7 @@ class EventEnvelope:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "schemaVersion": int(self.schemaVersion),
             "event_type": self.event_type,
             "agent_name": self.agent_name,
             "git_sha": self.git_sha,
@@ -85,13 +116,36 @@ class EventEnvelope:
     @staticmethod
     def from_dict(data: Mapping[str, Any]) -> "EventEnvelope":
         # Be tolerant of extra fields; enforce required ones.
+        allow_legacy = (os.getenv("ALLOW_LEGACY_SCHEMALESS_ENVELOPE") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
+        if ("schemaVersion" not in data) and ("schema_version" not in data):
+            if allow_legacy:
+                schema_version = 0
+            else:
+                raise ValueError("Missing required field: schemaVersion")
+        else:
+            schema_version = _require_int(
+                data, ("schemaVersion", "schema_version"), field_name="schemaVersion"
+            )
+
         return EventEnvelope(
-            event_type=str(data["event_type"]),
-            agent_name=str(data["agent_name"]),
-            git_sha=str(data["git_sha"]),
-            ts=str(data["ts"]),
+            schemaVersion=int(schema_version),
+            # Aliases (do not remove): eventType/type -> event_type
+            event_type=_require_str(data, ("event_type", "eventType", "type"), field_name="event_type"),
+            # Aliases (do not remove): agentName -> agent_name
+            agent_name=_require_str(data, ("agent_name", "agentName"), field_name="agent_name"),
+            # Aliases (do not remove): gitSha/sha -> git_sha
+            git_sha=_require_str(data, ("git_sha", "gitSha", "sha"), field_name="git_sha"),
+            # Aliases (do not remove): producedAt -> ts
+            ts=_require_str(data, ("ts", "producedAt"), field_name="ts"),
             payload=dict(data.get("payload") or {}),
-            trace_id=str(data["trace_id"]),
+            # Aliases (do not remove): traceId -> trace_id
+            trace_id=_require_str(data, ("trace_id", "traceId"), field_name="trace_id"),
         )
 
     @staticmethod
