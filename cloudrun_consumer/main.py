@@ -24,69 +24,10 @@ def _startup_diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> 
     """
     Print a structured JSON diagnostic log.
 
-    This file uses print-based structured logging, so this helper is safe to call
-    even before framework logging is configured.
-    """
-    payload: dict[str, Any] = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "severity": str(severity).upper(),
-        "service": SERVICE_NAME if "SERVICE_NAME" in globals() else "cloudrun_consumer",
-        "env": os.getenv("ENV") or "unknown",
-        "event_type": str(event_type),
-    }
-    payload.update(fields)
-    try:
-        print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
-    except Exception:
-        return
-
-
-# Log Python import/resolve context as early as possible.
-_startup_diag(
-    "python.startup",
-    severity="INFO",
-    python_executable=sys.executable,
-    python_version=sys.version,
-    cwd=os.getcwd(),
-    pythonpath_env=os.getenv("PYTHONPATH") or "",
-    sys_path=list(sys.path),
-    pythonpath_assumption="Service dir must be on sys.path for sibling imports (often via PYTHONPATH).",
-)
-
-try:
-    from fastapi import FastAPI, HTTPException, Request
-    from fastapi.responses import Response
-except Exception as e:
-    _startup_diag(
-        "python.import_failed",
-        severity="CRITICAL",
-        errorType=e.__class__.__name__,
-        error=str(e),
-        module="cloudrun_consumer.main",
-        failed_imports=["fastapi"],
-        cwd=os.getcwd(),
-        pythonpath_env=os.getenv("PYTHONPATH") or "",
-        sys_path=list(sys.path),
-    )
-    raise
-
-try:
-    from event_utils import infer_topic
-    from firestore_writer import FirestoreWriter
-    from schema_router import route_payload
-except Exception as e:
-    _startup_diag(
-        "python.import_failed",
-        severity="CRITICAL",
-        errorType=e.__class__.__name__,
-        error=str(e),
-        module="cloudrun_consumer.main",
-        failed_imports=["event_utils", "firestore_writer", "schema_router"],
-        cwd=os.getcwd(),
-        pythonpath_env=os.getenv("PYTHONPATH") or "",
-        sys_path=list(sys.path),
-    )
-    raise
+from event_utils import infer_topic
+from firestore_writer import FirestoreWriter
+from replay_support import ReplayContext, write_replay_marker
+from schema_router import route_payload
 
 
 SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"
@@ -303,7 +244,8 @@ async def _startup() -> None:
     project_id = _require_env("GCP_PROJECT")
 
     database = os.getenv("FIRESTORE_DATABASE") or "(default)"
-    app.state.firestore_writer = FirestoreWriter(project_id=project_id, database=database)
+    collection_prefix = os.getenv("FIRESTORE_COLLECTION_PREFIX") or ""
+    app.state.firestore_writer = FirestoreWriter(project_id=project_id, database=database, collection_prefix=collection_prefix)
     app.state.loop_heartbeat_monotonic = time.monotonic()
 
     log(
@@ -314,6 +256,8 @@ async def _startup() -> None:
         has_ingest_flag_secret_id=True,
         has_env=True,
         firestore_database=database,
+        firestore_collection_prefix=collection_prefix,
+        env=os.getenv("ENV") or "unknown",
         default_region=os.getenv("DEFAULT_REGION") or "unknown",
         subscription_topic_map=bool((os.getenv("SUBSCRIPTION_TOPIC_MAP") or "").strip()),
     )
@@ -589,6 +533,12 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         # For non-system streams, prefer the inferred topic (from attributes/payload/subscription mapping).
         source_topic = inferred_topic or ""
 
+    writer: FirestoreWriter = app.state.firestore_writer
+    replay_run_id = (os.getenv("REPLAY_RUN_ID") or "").strip() or None
+    replay: ReplayContext | None = None
+    if replay_run_id and source_topic:
+        replay = ReplayContext(run_id=replay_run_id, consumer=SERVICE_NAME, topic=str(source_topic))
+
     try:
         # Visibility-only: detect duplicate deliveries (never gate processing).
         is_dup = writer.observe_pubsub_delivery(
@@ -619,7 +569,23 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             message_id=message_id,
             pubsub_published_at=publish_time,
             firestore_writer=writer,
+            replay=replay,
         )
+        if replay is not None:
+            try:
+                # Best-effort markers; never fail the message due to marker writes.
+                write_replay_marker(
+                    db=writer._db,  # intentionally internal; minimal hook
+                    replay=replay,
+                    message_id=message_id,
+                    pubsub_published_at=publish_time,
+                    event_time=_parse_rfc3339(result.get("eventTime") or result.get("updatedAt")) or publish_time,
+                    handler=handler.name,
+                    applied=bool(result.get("applied")),
+                    reason=str(result.get("reason") or ""),
+                )
+            except Exception:
+                pass
         log(
             "materialize.ok",
             severity="INFO",

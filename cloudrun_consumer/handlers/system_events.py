@@ -7,7 +7,7 @@ import traceback
 from typing import Any, Optional
 
 from firestore_writer import SourceInfo
-from time_audit import ensure_utc
+from replay_support import ReplayContext
 
 def _as_utc(dt: datetime) -> datetime:
     return ensure_utc(dt, source="cloudrun_consumer.handlers.system_events._as_utc", field="dt")
@@ -92,6 +92,7 @@ def handle_system_event(
     message_id: str,
     pubsub_published_at: datetime,
     firestore_writer: Any,
+    replay: ReplayContext | None = None,
 ) -> dict[str, Any]:
     """
     Materialize `SystemEventPayload` into `ops_services/{serviceId}`.
@@ -132,8 +133,18 @@ def handle_system_event(
         published_at=ensure_utc(pubsub_published_at, source="cloudrun_consumer.handlers.system_events.handle_system_event", field="pubsub_published_at"),
     )
 
+    # Best-effort stable key for replay-mode dedupe.
+    # Prefer a producer-issued eventId if present; otherwise fall back to a tuple-ish key.
+    replay_key = None
+    if isinstance(payload.get("eventId"), str) and str(payload.get("eventId")).strip():
+        replay_key = str(payload.get("eventId")).strip()
+    else:
+        replay_key = f"{env}__{service_id}__{updated_at.isoformat()}"
+
     applied, reason = firestore_writer.dedupe_and_upsert_ops_service(
         message_id=str(message_id),
+        replay=replay,
+        replay_dedupe_key=replay_key,
         service_id=service_id,
         env=str(env or "unknown"),
         status=status,

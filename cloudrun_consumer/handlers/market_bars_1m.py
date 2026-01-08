@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from event_utils import choose_doc_id, ordering_ts, parse_ts
 from firestore_writer import SourceInfo
+from replay_support import ReplayContext
 
 
 def handle_market_bar_1m(
@@ -16,6 +17,7 @@ def handle_market_bar_1m(
     message_id: str,
     pubsub_published_at: datetime,
     firestore_writer: Any,
+    replay: ReplayContext | None = None,
 ) -> dict[str, Any]:
     """
     Materialize 1m bar events into `market_bars_1m/{eventId|messageId}`.
@@ -50,6 +52,7 @@ def handle_market_bar_1m(
         end=end,
         data=payload,
         source=source,
+        replay=replay,
     )
 
     return {
