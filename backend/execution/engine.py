@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
+import threading
 import uuid
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional, Protocol, runtime_checkable
@@ -20,6 +23,7 @@ from backend.common.kill_switch import (
 )
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.streams.alpaca_env import load_alpaca_env
+from backend.risk.loss_acceleration_guard import LossAccelerationGuard
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +161,87 @@ class RiskConfig:
             max_daily_trades=_int("EXEC_MAX_DAILY_TRADES", 50),
             fail_open=_bool("EXEC_RISK_FAIL_OPEN", False),
         )
+
+
+def _as_float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return float(s)
+        except Exception:
+            return None
+    return None
+
+
+def _as_int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        # Only accept whole floats (avoid surprising truncation).
+        if float(value).is_integer():
+            return int(value)
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return int(s)
+        except Exception:
+            return None
+    return None
+
+
+@dataclass(frozen=True)
+class AgentExecutionBudget:
+    """
+    Per-agent execution budget for a single UTC day.
+
+    - max_daily_executions: maximum number of allowed executions (risk-approved intents)
+    - max_daily_capital_pct: maximum fraction of daily capital deployable by this agent (0..1]
+    """
+
+    max_daily_executions: int | None = None
+    max_daily_capital_pct: float | None = None
+
+    def normalized(self) -> "AgentExecutionBudget":
+        mde = self.max_daily_executions
+        if mde is not None and mde < 0:
+            mde = 0
+        pct = self.max_daily_capital_pct
+        if pct is not None:
+            pct = float(pct)
+            # Support "percent" inputs like 10 => 10%.
+            if pct > 1.0:
+                pct = pct / 100.0
+            if pct < 0.0:
+                pct = 0.0
+        return AgentExecutionBudget(max_daily_executions=mde, max_daily_capital_pct=pct)
+
+    def is_effectively_unlimited(self) -> bool:
+        b = self.normalized()
+        no_exec_cap = b.max_daily_executions is None
+        no_capital_cap = (b.max_daily_capital_pct is None) or (b.max_daily_capital_pct >= 1.0)
+        return bool(no_exec_cap and no_capital_cap)
+
+
+@dataclass
+class _AgentBudgetUsage:
+    executions_used: int = 0
+    notional_used_usd: float = 0.0
+
 
 
 @runtime_checkable
@@ -642,6 +727,570 @@ class RiskManager:
         self._ledger = ledger
         self._positions = positions
 
+        # --- Per-agent execution budgets (silent safety) ---
+        self._budgets_enabled = str(os.getenv("EXEC_AGENT_BUDGETS_ENABLED") or "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self._budgets_use_firestore = str(os.getenv("EXEC_AGENT_BUDGETS_USE_FIRESTORE") or "true").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self._budgets_fail_open = str(os.getenv("EXEC_AGENT_BUDGETS_FAIL_OPEN") or "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self._budget_cache_s = float(os.getenv("EXEC_AGENT_BUDGET_CACHE_S") or "60")
+
+        default_execs = _as_int_or_none(os.getenv("EXEC_AGENT_DEFAULT_MAX_DAILY_EXECUTIONS"))
+        default_pct = _as_float_or_none(os.getenv("EXEC_AGENT_DEFAULT_MAX_DAILY_CAPITAL_PCT"))
+        self._default_budget = AgentExecutionBudget(
+            max_daily_executions=default_execs,
+            max_daily_capital_pct=default_pct,
+        ).normalized()
+
+        # Optional per-agent overrides via env JSON:
+        #   EXEC_AGENT_BUDGETS_JSON='{"agent_a":{"max_daily_executions":5,"max_daily_capital_pct":0.1}}'
+        self._budget_overrides: dict[str, AgentExecutionBudget] = {}
+        raw_overrides = str(os.getenv("EXEC_AGENT_BUDGETS_JSON") or "").strip()
+        if raw_overrides:
+            try:
+                obj = json.loads(raw_overrides)
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        if not isinstance(k, str) or not isinstance(v, dict):
+                            continue
+                        self._budget_overrides[k.strip()] = AgentExecutionBudget(
+                            max_daily_executions=_as_int_or_none(v.get("max_daily_executions")),
+                            max_daily_capital_pct=_as_float_or_none(v.get("max_daily_capital_pct")),
+                        ).normalized()
+            except Exception:
+                # Never crash startup for config parse issues; budgets remain default-only.
+                pass
+
+        # Cache budgets read from Firestore: (tenant_id, agent_id) -> (cached_at_mono, budget)
+        self._budget_cache: dict[tuple[str, str], tuple[float, AgentExecutionBudget]] = {}
+
+        # Local fallback usage store (also used in unit tests). Keyed by tenant|agent|date.
+        self._budget_usage_lock = threading.Lock()
+        self._budget_usage_local: dict[str, _AgentBudgetUsage] = {}
+
+    def _firestore_consume_budget_usage(
+        self,
+        *,
+        tenant_id: str,
+        agent_id: str,
+        trading_date: str,
+        proposed_execs: int,
+        proposed_notional_usd: float,
+        budget: AgentExecutionBudget,
+        daily_capital_usd: float | None,
+    ) -> tuple[bool, dict[str, Any]]:
+        """
+        Atomically check+consume budget usage in Firestore.
+
+        Returns (allowed, usage_snapshot).
+        """
+        from google.cloud import firestore  # type: ignore
+        from backend.persistence.firebase_client import get_firestore_client
+
+        b = budget.normalized()
+        db = get_firestore_client()
+        doc_ref = (
+            db.collection("tenants")
+            .document(str(tenant_id))
+            .collection("agent_execution_usage")
+            .document(f"{agent_id}__{trading_date}")
+        )
+
+        usage_snapshot: dict[str, Any] = {}
+
+        @firestore.transactional
+        def _txn(txn):  # type: ignore[no-untyped-def]
+            snap = doc_ref.get(transaction=txn)
+            data = snap.to_dict() if getattr(snap, "exists", False) else {}
+            execs_used = int(_as_int_or_none((data or {}).get("executions_used")) or 0)
+            notional_used = float(_as_float_or_none((data or {}).get("notional_used_usd")) or 0.0)
+
+            execs_next = execs_used + int(proposed_execs)
+            notional_next = notional_used + float(proposed_notional_usd)
+
+            # Check execution cap
+            if b.max_daily_executions is not None and execs_next > int(b.max_daily_executions):
+                usage_snapshot.update(
+                    {
+                        "executions_used": execs_used,
+                        "notional_used_usd": notional_used,
+                        "executions_next": execs_next,
+                        "notional_next_usd": notional_next,
+                    }
+                )
+                raise RuntimeError("budget_exceeded:max_daily_executions")
+
+            # Check capital pct cap
+            if (
+                b.max_daily_capital_pct is not None
+                and b.max_daily_capital_pct < 1.0
+                and daily_capital_usd is not None
+                and daily_capital_usd > 0
+            ):
+                limit_notional = float(daily_capital_usd) * float(b.max_daily_capital_pct)
+                if notional_next > limit_notional:
+                    usage_snapshot.update(
+                        {
+                            "executions_used": execs_used,
+                            "notional_used_usd": notional_used,
+                            "executions_next": execs_next,
+                            "notional_next_usd": notional_next,
+                            "notional_limit_usd": limit_notional,
+                        }
+                    )
+                    raise RuntimeError("budget_exceeded:max_daily_capital_pct")
+
+            payload = {
+                "agent_id": agent_id,
+                "tenant_id": tenant_id,
+                "trading_date": trading_date,
+                "executions_used": execs_next,
+                "notional_used_usd": notional_next,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+                "updated_at_iso": _utc_now().isoformat(),
+            }
+            txn.set(doc_ref, payload, merge=True)
+            usage_snapshot.update(
+                {
+                    "executions_used": execs_next,
+                    "notional_used_usd": notional_next,
+                }
+            )
+
+        txn = db.transaction()
+        try:
+            _txn(txn)
+            return True, usage_snapshot
+        except RuntimeError as e:
+            if str(e).startswith("budget_exceeded:"):
+                usage_snapshot.setdefault("error", str(e))
+                return False, usage_snapshot
+            raise
+
+    def _resolve_agent_id(self, *, intent: OrderIntent) -> str:
+        md = dict(intent.metadata or {})
+        for k in ("agent_id", "agentId", "agent_name", "agentName"):
+            v = md.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        # Fall back to strategy_id (best available stable identity).
+        return str(intent.strategy_id).strip() or "unknown_agent"
+
+    def _resolve_tenant_id_from_intent(self, *, intent: OrderIntent) -> str | None:
+        md = dict(intent.metadata or {})
+        v = md.get("tenant_id") or md.get("tenantId") or os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        return None
+
+    def _resolve_uid_from_intent(self, *, intent: OrderIntent) -> str | None:
+        md = dict(intent.metadata or {})
+        v = md.get("uid") or md.get("user_id") or md.get("userId") or os.getenv("USER_ID") or os.getenv("EXEC_UID")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        return None
+
+    def _resolve_budget(self, *, tenant_id: str | None, agent_id: str) -> AgentExecutionBudget:
+        """
+        Resolve the effective budget for (tenant, agent):
+        - Firestore override (best-effort, cached)
+        - Env JSON override
+        - Env defaults
+        """
+        agent_id = str(agent_id or "").strip() or "unknown_agent"
+
+        # Start with defaults; layer overrides on top.
+        budget = self._default_budget
+        if agent_id in self._budget_overrides:
+            # Override is absolute (not merged) to keep behavior predictable.
+            budget = self._budget_overrides[agent_id]
+
+        if not self._budgets_use_firestore or tenant_id is None:
+            return budget.normalized()
+
+        cache_key = (str(tenant_id), agent_id)
+        now_mono = time.monotonic()
+        cached = self._budget_cache.get(cache_key)
+        if cached is not None:
+            cached_at, cached_budget = cached
+            if (now_mono - cached_at) <= float(self._budget_cache_s):
+                # Merge cached Firestore config over env config.
+                fb = cached_budget.normalized()
+                merged = AgentExecutionBudget(
+                    max_daily_executions=fb.max_daily_executions if fb.max_daily_executions is not None else budget.max_daily_executions,
+                    max_daily_capital_pct=fb.max_daily_capital_pct if fb.max_daily_capital_pct is not None else budget.max_daily_capital_pct,
+                )
+                return merged.normalized()
+
+        # Best-effort Firestore read.
+        try:
+            from backend.persistence.firebase_client import get_firestore_client
+
+            db = get_firestore_client()
+            doc = (
+                db.collection("tenants")
+                .document(str(tenant_id))
+                .collection("agent_execution_budgets")
+                .document(agent_id)
+                .get()
+            )
+            data = doc.to_dict() if getattr(doc, "exists", False) else None
+            fs_budget = AgentExecutionBudget(
+                max_daily_executions=_as_int_or_none((data or {}).get("max_daily_executions")),
+                max_daily_capital_pct=_as_float_or_none((data or {}).get("max_daily_capital_pct")),
+            ).normalized()
+            self._budget_cache[cache_key] = (now_mono, fs_budget)
+            merged = AgentExecutionBudget(
+                max_daily_executions=fs_budget.max_daily_executions if fs_budget.max_daily_executions is not None else budget.max_daily_executions,
+                max_daily_capital_pct=fs_budget.max_daily_capital_pct if fs_budget.max_daily_capital_pct is not None else budget.max_daily_capital_pct,
+            )
+            return merged.normalized()
+        except Exception:
+            # Firestore unavailable: fall back to env config.
+            return budget.normalized()
+
+    def _estimate_intent_notional_usd(self, *, intent: OrderIntent) -> float | None:
+        """
+        Best-effort notional estimate, in USD.
+        """
+        md = dict(intent.metadata or {})
+        for k in (
+            "notional_usd",
+            "notionalUsd",
+            "notional",
+            "suggested_notional",
+            "suggestedNotional",
+            "order_notional_usd",
+        ):
+            v = _as_float_or_none(md.get(k))
+            if v is not None and v > 0:
+                return float(abs(v))
+
+        if intent.limit_price is not None and float(intent.limit_price) > 0:
+            return float(abs(float(intent.qty) * float(intent.limit_price)))
+
+        # As a last resort, try a quote mid price (best-effort; can fail in CI).
+        try:
+            quote = MarketDataProvider().get_quote(symbol=intent.symbol, asset_class=intent.asset_class)
+            mid = _as_float_or_none(quote.get("mid_price"))
+            if mid is None or mid <= 0:
+                return None
+            return float(abs(float(intent.qty) * float(mid)))
+        except Exception:
+            return None
+
+    def _resolve_daily_capital_usd(self, *, intent: OrderIntent, tenant_id: str | None, uid: str | None) -> float | None:
+        """
+        Resolve the 'daily capital' baseline for budget enforcement.
+        Prefers explicit metadata; otherwise reads warm-cache account snapshot (equity/buying_power).
+        """
+        md = dict(intent.metadata or {})
+        for k in ("daily_capital_usd", "dailyCapitalUsd", "portfolio_value", "equity", "buying_power"):
+            v = _as_float_or_none(md.get(k))
+            if v is not None and v > 0:
+                return float(v)
+
+        # Fallback: read from Firestore warm-cache snapshot.
+        try:
+            from backend.persistence.firebase_client import get_firestore_client
+
+            db = get_firestore_client()
+            snap = None
+            if uid:
+                snap = (
+                    db.collection("users")
+                    .document(str(uid))
+                    .collection("alpacaAccounts")
+                    .document("snapshot")
+                    .get()
+                )
+            elif tenant_id:
+                snap = db.collection("tenants").document(str(tenant_id)).collection("accounts").document("primary").get()
+            if not snap or not getattr(snap, "exists", False):
+                return None
+            data = snap.to_dict() or {}
+            equity = _as_float_or_none(data.get("equity"))
+            if equity is not None and equity > 0:
+                return float(equity)
+            buying_power = _as_float_or_none(data.get("buying_power"))
+            if buying_power is not None and buying_power > 0:
+                return float(buying_power)
+            return None
+        except Exception:
+            return None
+
+    def _consume_agent_budget_or_reject(self, *, intent: OrderIntent, checks: list[dict[str, Any]]) -> RiskDecision | None:
+        """
+        Side-effecting budget enforcement.
+
+        Returns a rejecting RiskDecision if caps are hit; otherwise returns None.
+        """
+        if not self._budgets_enabled:
+            return None
+
+        agent_id = self._resolve_agent_id(intent=intent)
+        tenant_id = self._resolve_tenant_id_from_intent(intent=intent)
+        uid = self._resolve_uid_from_intent(intent=intent)
+        today = _iso_date_utc()
+        budget = self._resolve_budget(tenant_id=tenant_id, agent_id=agent_id)
+
+        # If budgets are not configured, don't block.
+        if budget.is_effectively_unlimited():
+            checks.append(
+                {
+                    "check": "agent_execution_budget",
+                    "enabled": True,
+                    "effective": "unlimited",
+                    "agent_id": agent_id,
+                    "tenant_id": tenant_id,
+                    "today": today,
+                }
+            )
+            return None
+
+        proposed_execs = 1
+        proposed_notional = self._estimate_intent_notional_usd(intent=intent)
+
+        daily_capital = None
+        if budget.max_daily_capital_pct is not None and budget.max_daily_capital_pct < 1.0:
+            daily_capital = self._resolve_daily_capital_usd(intent=intent, tenant_id=tenant_id, uid=uid)
+
+        if budget.max_daily_capital_pct is not None and budget.max_daily_capital_pct < 1.0:
+            if daily_capital is None or daily_capital <= 0:
+                checks.append(
+                    {
+                        "check": "agent_execution_budget",
+                        "enabled": True,
+                        "agent_id": agent_id,
+                        "tenant_id": tenant_id,
+                        "today": today,
+                        "error": "daily_capital_unavailable",
+                    }
+                )
+                logger.warning(
+                    "exec.agent_budget_refused %s",
+                    json.dumps(
+                        _to_jsonable(
+                            {
+                                "event_type": "risk",
+                                "intent_type": "agent_execution_budget_refused",
+                                "agent_id": agent_id,
+                                "strategy_id": intent.strategy_id,
+                                "tenant_id": tenant_id,
+                                "uid": uid,
+                                "trading_date": today,
+                                "reason": "daily_capital_unavailable",
+                            }
+                        )
+                    ),
+                )
+                return RiskDecision(allowed=False, reason="agent_budget_state_unavailable", checks=checks)
+
+            if proposed_notional is None or proposed_notional <= 0:
+                checks.append(
+                    {
+                        "check": "agent_execution_budget",
+                        "enabled": True,
+                        "agent_id": agent_id,
+                        "tenant_id": tenant_id,
+                        "today": today,
+                        "daily_capital_usd": daily_capital,
+                        "error": "notional_unavailable",
+                    }
+                )
+                logger.warning(
+                    "exec.agent_budget_refused %s",
+                    json.dumps(
+                        _to_jsonable(
+                            {
+                                "event_type": "risk",
+                                "intent_type": "agent_execution_budget_refused",
+                                "agent_id": agent_id,
+                                "strategy_id": intent.strategy_id,
+                                "tenant_id": tenant_id,
+                                "uid": uid,
+                                "trading_date": today,
+                                "reason": "notional_unavailable",
+                            }
+                        )
+                    ),
+                )
+                return RiskDecision(allowed=False, reason="agent_budget_state_unavailable", checks=checks)
+
+        # Preferred enforcement: Firestore transaction for cross-instance correctness.
+        if self._budgets_use_firestore and tenant_id is not None and not budget.is_effectively_unlimited():
+            try:
+                allowed, usage = self._firestore_consume_budget_usage(
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    trading_date=today,
+                    proposed_execs=proposed_execs,
+                    proposed_notional_usd=float(proposed_notional or 0.0),
+                    budget=budget,
+                    daily_capital_usd=daily_capital,
+                )
+                if not allowed:
+                    # Determine which cap was hit from the error.
+                    err = str((usage or {}).get("error") or "")
+                    cap_hit = "unknown"
+                    if "max_daily_executions" in err:
+                        cap_hit = "max_daily_executions"
+                    elif "max_daily_capital_pct" in err:
+                        cap_hit = "max_daily_capital_pct"
+                    cap_check = {
+                        "check": "agent_execution_budget",
+                        "enabled": True,
+                        "cap_hit": cap_hit,
+                        "agent_id": agent_id,
+                        "tenant_id": tenant_id,
+                        "today": today,
+                        "executions_used": usage.get("executions_used"),
+                        "notional_used_usd": usage.get("notional_used_usd"),
+                        "executions_proposed": proposed_execs,
+                        "notional_proposed_usd": proposed_notional,
+                        "max_daily_executions": budget.max_daily_executions,
+                        "max_daily_capital_pct": budget.max_daily_capital_pct,
+                        "daily_capital_usd": daily_capital,
+                        "note": "enforced_via_firestore_transaction",
+                    }
+                    checks.append(cap_check)
+                    logger.warning("exec.agent_budget_cap_hit %s", json.dumps(_to_jsonable(cap_check)))
+                    return RiskDecision(allowed=False, reason="agent_execution_budget_exceeded", checks=checks)
+
+                checks.append(
+                    {
+                        "check": "agent_execution_budget",
+                        "enabled": True,
+                        "agent_id": agent_id,
+                        "tenant_id": tenant_id,
+                        "today": today,
+                        "executions_used_after": usage.get("executions_used"),
+                        "notional_used_usd_after": usage.get("notional_used_usd"),
+                        "max_daily_executions": budget.max_daily_executions,
+                        "max_daily_capital_pct": budget.max_daily_capital_pct,
+                        "note": "enforced_via_firestore_transaction",
+                    }
+                )
+                return None
+            except Exception as e:
+                # Firestore unavailable: fail-closed unless explicitly configured otherwise.
+                checks.append(
+                    {
+                        "check": "agent_execution_budget",
+                        "enabled": True,
+                        "agent_id": agent_id,
+                        "tenant_id": tenant_id,
+                        "today": today,
+                        "error": f"firestore_unavailable:{type(e).__name__}",
+                    }
+                )
+                logger.warning(
+                    "exec.agent_budget_refused %s",
+                    json.dumps(
+                        _to_jsonable(
+                            {
+                                "event_type": "risk",
+                                "intent_type": "agent_execution_budget_refused",
+                                "agent_id": agent_id,
+                                "strategy_id": intent.strategy_id,
+                                "tenant_id": tenant_id,
+                                "uid": uid,
+                                "trading_date": today,
+                                "reason": "budget_usage_store_unavailable",
+                                "error": f"{type(e).__name__}: {e}",
+                            }
+                        )
+                    ),
+                )
+                if not self._budgets_fail_open:
+                    return RiskDecision(allowed=False, reason="agent_budget_state_unavailable", checks=checks)
+                # Otherwise fall through to local fallback.
+
+        # Fallback enforcement: local in-process usage store.
+        usage_key = f"{tenant_id or 'local'}|{agent_id}|{today}"
+        with self._budget_usage_lock:
+            usage = self._budget_usage_local.get(usage_key) or _AgentBudgetUsage()
+
+            execs_next = int(usage.executions_used) + int(proposed_execs)
+            notional_next = float(usage.notional_used_usd) + float(proposed_notional or 0.0)
+
+            # Execution-count cap
+            if budget.max_daily_executions is not None and execs_next > int(budget.max_daily_executions):
+                cap_check = {
+                    "check": "agent_execution_budget",
+                    "enabled": True,
+                    "cap_hit": "max_daily_executions",
+                    "agent_id": agent_id,
+                    "tenant_id": tenant_id,
+                    "today": today,
+                    "executions_used": usage.executions_used,
+                    "executions_proposed": proposed_execs,
+                    "executions_limit": budget.max_daily_executions,
+                }
+                checks.append(cap_check)
+                logger.warning("exec.agent_budget_cap_hit %s", json.dumps(_to_jsonable(cap_check)))
+                return RiskDecision(allowed=False, reason="agent_execution_budget_exceeded", checks=checks)
+
+            # Capital-percent cap
+            if (
+                budget.max_daily_capital_pct is not None
+                and budget.max_daily_capital_pct < 1.0
+                and daily_capital is not None
+                and daily_capital > 0
+            ):
+                limit_notional = float(daily_capital) * float(budget.max_daily_capital_pct)
+                if notional_next > limit_notional:
+                    cap_check = {
+                        "check": "agent_execution_budget",
+                        "enabled": True,
+                        "cap_hit": "max_daily_capital_pct",
+                        "agent_id": agent_id,
+                        "tenant_id": tenant_id,
+                        "today": today,
+                        "notional_used_usd": usage.notional_used_usd,
+                        "notional_proposed_usd": proposed_notional,
+                        "notional_limit_usd": limit_notional,
+                        "daily_capital_usd": daily_capital,
+                        "max_daily_capital_pct": budget.max_daily_capital_pct,
+                    }
+                    checks.append(cap_check)
+                    logger.warning("exec.agent_budget_cap_hit %s", json.dumps(_to_jsonable(cap_check)))
+                    return RiskDecision(allowed=False, reason="agent_execution_budget_exceeded", checks=checks)
+
+            # Allowed => consume locally.
+            usage.executions_used = execs_next
+            usage.notional_used_usd = notional_next
+            self._budget_usage_local[usage_key] = usage
+
+        checks.append(
+            {
+                "check": "agent_execution_budget",
+                "enabled": True,
+                "agent_id": agent_id,
+                "tenant_id": tenant_id,
+                "today": today,
+                "executions_used_after": execs_next,
+                "notional_used_usd_after": notional_next,
+                "max_daily_executions": budget.max_daily_executions,
+                "max_daily_capital_pct": budget.max_daily_capital_pct,
+            }
+        )
+
+        return None
+
     def kill_switch_enabled(self) -> bool:
         """
         Returns True if the execution kill-switch is enabled.
@@ -686,6 +1335,43 @@ class RiskManager:
         checks.append({"check": "kill_switch", "enabled": enabled})
         if enabled:
             return RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
+
+        # Loss acceleration guard (rolling drawdown velocity)
+        # Operates independently of strategy logic: pure risk gate on intent routing.
+        try:
+            uid = str(intent.metadata.get("uid") or intent.metadata.get("user_id") or os.getenv("EXEC_UID") or "").strip() or None
+            guard = LossAccelerationGuard()
+            decision = guard.decide(uid=uid)
+            m = decision.metrics
+            checks.append(
+                {
+                    "check": "loss_acceleration_guard",
+                    "action": decision.action,
+                    "reason": decision.reason,
+                    "uid": uid,
+                    "metrics": (
+                        {
+                            "window_seconds": m.window_seconds,
+                            "points_used": m.points_used,
+                            "hwm_equity": m.hwm_equity,
+                            "current_equity": m.current_equity,
+                            "current_drawdown_pct": m.current_drawdown_pct,
+                            "velocity_pct_per_min": m.velocity_pct_per_min,
+                            "window_start": m.window_start.isoformat(),
+                            "window_end": m.window_end.isoformat(),
+                        }
+                        if m is not None
+                        else None
+                    ),
+                    "retry_after_seconds": decision.retry_after_seconds,
+                    "pause_until": decision.pause_until.isoformat() if decision.pause_until else None,
+                }
+            )
+            if decision.action in {"pause", "throttle"}:
+                return RiskDecision(allowed=False, reason=decision.reason or "loss_acceleration", checks=checks)
+        except Exception as e:
+            # Best-effort: never block if telemetry/reads fail.
+            checks.append({"check": "loss_acceleration_guard", "error": str(e)})
 
         # Daily trades
         try:
@@ -761,6 +1447,11 @@ class RiskManager:
             checks.append({"check": "max_position_size", "error": str(e)})
             if not self._config.fail_open:
                 return RiskDecision(allowed=False, reason="risk_data_unavailable", checks=checks)
+
+        # Per-agent budgets (exec count + % of daily capital). Enforced centrally here.
+        budget_reject = self._consume_agent_budget_or_reject(intent=intent, checks=checks)
+        if budget_reject is not None:
+            return budget_reject
 
         return RiskDecision(allowed=True, reason="ok", checks=checks)
 
@@ -1196,6 +1887,8 @@ class ExecutionEngine:
         """
         try:
             from backend.persistence.firebase_client import get_firestore_client
+            from backend.persistence.firestore_retry import with_firestore_retry
+            from google.api_core.exceptions import AlreadyExists
             
             db = get_firestore_client()
             
@@ -1224,8 +1917,11 @@ class ExecutionEngine:
             if isinstance(filled_at_raw, datetime):
                 ts = filled_at_raw.astimezone(timezone.utc)
             
-            # Create portfolio history entry
-            history_id = f"{broker_order_id}_{int(ts.timestamp() * 1000)}"
+            # Restart-safe idempotency: use a deterministic doc id per (order, fill).
+            # This prevents duplicate portfolio history rows if execution is retried
+            # or restarted after placing an order / receiving a fill.
+            fill_fingerprint = f"{broker_order_id}|{filled_qty}|{filled_avg_price}|{filled_at_raw or ''}"
+            history_id = hashlib.sha1(fill_fingerprint.encode("utf-8")).hexdigest()
             
             history_entry = {
                 # Core trade data
@@ -1268,7 +1964,11 @@ class ExecutionEngine:
                 .collection("trades")
                 .document(history_id)
             )
-            doc_ref.set(history_entry)
+            try:
+                with_firestore_retry(lambda: doc_ref.create(history_entry))
+            except AlreadyExists:
+                # Already written on a previous attempt; treat as success.
+                return
             
             logger.info(
                 "exec.portfolio_history_written uid=%s symbol=%s qty=%s price=%s",
