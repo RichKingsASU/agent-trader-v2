@@ -36,6 +36,13 @@ class TestRouter(unittest.TestCase):
         assert h is not None
         self.assertEqual(h.name, "trade_signals")
 
+    def test_routes_ingest_pipelines_by_topic(self) -> None:
+        payload = {"pipeline_id": "market-ingest", "status": "healthy"}
+        h = route_payload(payload=payload, attributes={}, topic="ingest-heartbeat")
+        self.assertIsNotNone(h)
+        assert h is not None
+        self.assertEqual(h.name, "ingest_pipelines")
+
 
 if __name__ == "__main__":
     unittest.main()

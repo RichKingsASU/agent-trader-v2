@@ -59,6 +59,41 @@ def _max_dt(*values: Optional[datetime]) -> Optional[datetime]:
     return max(_as_utc(v) for v in xs)
 
 
+def _lww_key(*, published_at: Optional[datetime], message_id: Optional[str]) -> tuple[datetime, str]:
+    """
+    Ordering key for last-write-wins.
+
+    Primary: published_at (UTC)
+    Tie-breaker: message_id (string, lexicographic)
+    """
+    if isinstance(published_at, datetime):
+        pub = _as_utc(published_at)
+    else:
+        pub = datetime.min.replace(tzinfo=timezone.utc)
+    mid = str(message_id or "")
+    return (pub, mid)
+
+
+def _existing_pubsub_lww(existing: Any) -> tuple[Optional[datetime], str]:
+    """
+    Best-effort extraction of existing LWW ordering fields from a read-model doc.
+    Supports both camelCase and snake_case.
+    """
+    if not isinstance(existing, dict):
+        return None, ""
+
+    # Prefer explicit top-level publishedAt / published_at if present.
+    pub = _parse_rfc3339(existing.get("publishedAt")) or _parse_rfc3339(existing.get("published_at"))
+    src = existing.get("source")
+    if pub is None and isinstance(src, dict):
+        pub = _parse_rfc3339(src.get("publishedAt")) or _parse_rfc3339(src.get("published_at"))
+
+    mid = ""
+    if isinstance(src, dict):
+        mid = str(src.get("messageId") or src.get("message_id") or "") or ""
+    return pub, mid
+
+
 @dataclass(frozen=True)
 class SourceInfo:
     topic: str
@@ -362,11 +397,11 @@ class FirestoreWriter:
         source: SourceInfo,
     ) -> Tuple[bool, str]:
         """
-        Writes `ops_services/{serviceId}` with stale protection.
+        Writes `ops_services/{serviceId}` with last-write-wins ordering.
 
-        Stale protection rule (per mission):
-        - only overwrite if incoming `updated_at` >= max(stored.lastHeartbeatAt, stored.source.publishedAt)
-        - `updatedAt` stored in Firestore is always a server timestamp (write time)
+        Ordering rule (per mission):
+        - only overwrite if incoming `source.published_at` >= stored `publishedAt`/`source.publishedAt`
+        - tie-breaker: `source.messageId` lexicographic
         """
         ref = self._db.collection(self._col("ops_services")).document(service_id)
 
@@ -374,37 +409,40 @@ class FirestoreWriter:
             snap = ref.get(transaction=txn)
             existing = snap.to_dict() if snap.exists else {}
 
-            existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
-            existing_source_pub = None
-            if isinstance(existing, dict):
-                src = existing.get("source")
-                if isinstance(src, dict):
-                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
-            existing_max = _max_dt(existing_lh, existing_source_pub)
+            existing_pub, existing_mid = _existing_pubsub_lww(existing)
+            existing_key = _lww_key(published_at=existing_pub, message_id=existing_mid)
+            incoming_key = _lww_key(published_at=source.published_at, message_id=source.message_id)
+            if existing_pub is not None and incoming_key < existing_key:
+                return False, "out_of_order_event_ignored"
 
-            incoming = _as_utc(updated_at)
-            if existing_max is not None and incoming < existing_max:
-                return False, "stale_event_ignored"
-
+            incoming_updated_at = _as_utc(updated_at)
             doc = {
                 "serviceId": str(service_id),
+                "service_id": str(service_id),
                 "env": str(env),
                 "status": str(status),
-                "lastHeartbeatAt": ensure_utc(last_heartbeat_at, source="cloudrun_consumer.firestore_writer.upsert_ops_service", field="last_heartbeat_at") if isinstance(last_heartbeat_at, datetime) else last_heartbeat_at,
+                "lastHeartbeatAt": last_heartbeat_at,
+                "last_heartbeat_at": last_heartbeat_at,
                 "version": str(version),
                 "region": str(region),
-                "updatedAt": incoming,
-                "lastAppliedMessageId": str(source.message_id),
-                "lastAppliedPublishedAt": _as_utc(source.published_at),
+                # Keep the producer-derived timestamp (used for business semantics).
+                "updatedAt": incoming_updated_at,
+                # Add a server-updated timestamp for dashboard queries (non-breaking).
+                "updated_at": self._firestore.SERVER_TIMESTAMP,
+                # LWW ordering field: Pub/Sub publish time of the message we accepted.
+                "publishedAt": _as_utc(source.published_at),
+                "published_at": _as_utc(source.published_at),
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
+                    "message_id": str(source.message_id),
                     "publishedAt": _as_utc(source.published_at),
+                    "published_at": _as_utc(source.published_at),
                 },
                 "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
             }
 
-            txn.set(ref, doc)
+            txn.set(ref, doc, merge=True)
             return True, "applied"
 
         txn = self._db.transaction()
@@ -428,13 +466,24 @@ class FirestoreWriter:
         """
         Transactionally:
         - checks/creates `ops_dedupe/{messageId}`
-        - applies stale-protected write to ops_services
+        - applies last-write-wins write to ops_services using `publishedAt`
+        - records outcome metadata on the dedupe doc for visibility
         """
         dedupe_ref = self._db.collection(self._col("ops_dedupe")).document(message_id)
         service_ref = self._db.collection(self._col("ops_services")).document(service_id)
 
         def _txn(txn: Any) -> Tuple[bool, str]:
-            first_time, _ = ensure_message_once(txn=txn, dedupe_ref=dedupe_ref, message_id=message_id)
+            first_time, _ = ensure_message_once(
+                txn=txn,
+                dedupe_ref=dedupe_ref,
+                message_id=message_id,
+                doc={
+                    "kind": "ops_services",
+                    "targetDoc": f"ops_services/{service_id}",
+                    "sourceTopic": str(source.topic),
+                    "sourcePublishedAt": _as_utc(source.published_at),
+                },
+            )
             if not first_time:
                 return False, "duplicate_message_noop"
 
@@ -453,38 +502,126 @@ class FirestoreWriter:
             snap = service_ref.get(transaction=txn)
             existing = snap.to_dict() if snap.exists else {}
 
-            existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
-            existing_source_pub = None
-            if isinstance(existing, dict):
-                src = existing.get("source")
-                if isinstance(src, dict):
-                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
-            existing_max = _max_dt(existing_lh, existing_source_pub)
-
-            incoming = _as_utc(updated_at)
-            if existing_max is not None and incoming < existing_max:
+            existing_pub, existing_mid = _existing_pubsub_lww(existing)
+            existing_key = _lww_key(published_at=existing_pub, message_id=existing_mid)
+            incoming_key = _lww_key(published_at=source.published_at, message_id=source.message_id)
+            if existing_pub is not None and incoming_key < existing_key:
                 # Marked dedupe already; do not reprocess on retries.
-                return False, "stale_event_ignored"
+                txn.set(
+                    dedupe_ref,
+                    {
+                        "outcome": "out_of_order_ignored",
+                        "reason": "incoming_publishedAt_older_than_stored",
+                        "storedPublishedAt": existing_pub,
+                        "storedMessageId": existing_mid,
+                    },
+                    merge=True,
+                )
+                return False, "out_of_order_event_ignored"
 
+            incoming_updated_at = _as_utc(updated_at)
             doc = {
                 "serviceId": str(service_id),
+                "service_id": str(service_id),
                 "env": str(env),
                 "status": str(status),
-                "lastHeartbeatAt": ensure_utc(last_heartbeat_at, source="cloudrun_consumer.firestore_writer.dedupe_and_upsert_ops_service", field="last_heartbeat_at") if isinstance(last_heartbeat_at, datetime) else last_heartbeat_at,
+                "lastHeartbeatAt": last_heartbeat_at,
+                "last_heartbeat_at": last_heartbeat_at,
                 "version": str(version),
                 "region": str(region),
-                "updatedAt": incoming,
-                "lastAppliedMessageId": str(source.message_id),
-                "lastAppliedPublishedAt": _as_utc(source.published_at),
+                "updatedAt": incoming_updated_at,
+                "updated_at": self._firestore.SERVER_TIMESTAMP,
+                "publishedAt": _as_utc(source.published_at),
+                "published_at": _as_utc(source.published_at),
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
+                    "message_id": str(source.message_id),
                     "publishedAt": _as_utc(source.published_at),
+                    "published_at": _as_utc(source.published_at),
+                },
+            }
+
+            txn.set(service_ref, doc, merge=True)
+            txn.set(dedupe_ref, {"outcome": "applied"}, merge=True)
+            return True, "applied"
+
+        txn = self._db.transaction()
+        return self._firestore.transactional(_txn)(txn)
+
+    def dedupe_and_upsert_ingest_pipeline(
+        self,
+        *,
+        message_id: str,
+        pipeline_id: str,
+        fields: dict[str, Any],
+        source: SourceInfo,
+    ) -> Tuple[bool, str]:
+        """
+        Transactionally:
+        - checks/creates `ingest_pipelines_dedupe/{messageId}`
+        - applies last-write-wins write to `ingest_pipelines/{pipelineId}` using `publishedAt`
+        - records outcome metadata on the dedupe doc for visibility
+        """
+        dedupe_ref = self._db.collection("ingest_pipelines_dedupe").document(message_id)
+        pipeline_ref = self._db.collection("ingest_pipelines").document(pipeline_id)
+
+        def _txn(txn: Any) -> Tuple[bool, str]:
+            first_time, _ = ensure_message_once(
+                txn=txn,
+                dedupe_ref=dedupe_ref,
+                message_id=message_id,
+                doc={
+                    "kind": "ingest_pipelines",
+                    "targetDoc": f"ingest_pipelines/{pipeline_id}",
+                    "sourceTopic": str(source.topic),
+                    "sourcePublishedAt": _as_utc(source.published_at),
+                },
+            )
+            if not first_time:
+                return False, "duplicate_message_noop"
+
+            snap = pipeline_ref.get(transaction=txn)
+            existing = snap.to_dict() if snap.exists else {}
+            existing_pub, existing_mid = _existing_pubsub_lww(existing)
+            existing_key = _lww_key(published_at=existing_pub, message_id=existing_mid)
+            incoming_key = _lww_key(published_at=source.published_at, message_id=source.message_id)
+            if existing_pub is not None and incoming_key < existing_key:
+                txn.set(
+                    dedupe_ref,
+                    {
+                        "outcome": "out_of_order_ignored",
+                        "reason": "incoming_publishedAt_older_than_stored",
+                        "storedPublishedAt": existing_pub,
+                        "storedMessageId": existing_mid,
+                    },
+                    merge=True,
+                )
+                return False, "out_of_order_event_ignored"
+
+            doc: dict[str, Any] = {
+                # Deterministic doc id: pipeline_id
+                "pipeline_id": str(pipeline_id),
+                "pipelineId": str(pipeline_id),
+                "publishedAt": _as_utc(source.published_at),
+                "published_at": _as_utc(source.published_at),
+                "updated_at": self._firestore.SERVER_TIMESTAMP,
+                "source": {
+                    "topic": str(source.topic),
+                    "messageId": str(source.message_id),
+                    "message_id": str(source.message_id),
+                    "publishedAt": _as_utc(source.published_at),
+                    "published_at": _as_utc(source.published_at),
                 },
                 "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
             }
+            if isinstance(fields, dict) and fields:
+                for k, v in fields.items():
+                    if v is not None:
+                        doc[k] = v
 
-            txn.set(service_ref, doc)
+            txn.set(pipeline_ref, doc, merge=True)
+            txn.set(dedupe_ref, {"outcome": "applied"}, merge=True)
             return True, "applied"
 
         txn = self._db.transaction()
