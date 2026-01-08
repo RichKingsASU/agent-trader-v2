@@ -1,0 +1,42 @@
+[Unit]
+Description=AgentTrader VM Congressional Disclosure Ingest
+Wants=network-online.target
+After=network-online.target
+
+# Prevent tight restart loops when config/code isn't present.
+ConditionPathExists=/etc/agenttrader/congressional-ingest.env
+ConditionPathExists=/opt/agenttrader/agent-trader-v2
+
+[Service]
+Type=simple
+
+User=agenttrader
+Group=agenttrader
+
+WorkingDirectory=/opt/agenttrader/agent-trader-v2
+
+# Inject secrets/config without printing them.
+EnvironmentFile=/etc/agenttrader/congressional-ingest.env
+
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/agenttrader/agent-trader-v2
+
+ExecStart=/usr/bin/python3 -m backend.ingestion.congressional_disclosures
+
+# Restart hardening: backoff + circuit-breaker.
+Restart=on-failure
+RestartSec=60s
+StartLimitIntervalSec=15min
+StartLimitBurst=3
+
+KillSignal=SIGINT
+TimeoutStopSec=30s
+
+SyslogIdentifier=agenttrader-congressional-ingest
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
