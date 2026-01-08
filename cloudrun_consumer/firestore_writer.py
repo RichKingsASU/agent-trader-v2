@@ -59,39 +59,38 @@ def _max_dt(*values: Optional[datetime]) -> Optional[datetime]:
     return max(_as_utc(v) for v in xs)
 
 
-def _lww_key(*, published_at: Optional[datetime], message_id: Optional[str]) -> tuple[datetime, str]:
-    """
-    Ordering key for last-write-wins.
-
-    Primary: published_at (UTC)
-    Tie-breaker: message_id (string, lexicographic)
-    """
-    if isinstance(published_at, datetime):
-        pub = _as_utc(published_at)
-    else:
-        pub = datetime.min.replace(tzinfo=timezone.utc)
-    mid = str(message_id or "")
-    return (pub, mid)
+OPS_SERVICE_STATUSES = ("healthy", "degraded", "down", "unknown", "maintenance")
 
 
-def _existing_pubsub_lww(existing: Any) -> tuple[Optional[datetime], str]:
-    """
-    Best-effort extraction of existing LWW ordering fields from a read-model doc.
-    Supports both camelCase and snake_case.
-    """
-    if not isinstance(existing, dict):
-        return None, ""
+def _normalize_ops_service_status(raw: Any) -> tuple[str, str]:
+    raw_s = "" if raw is None else str(raw)
+    s = raw_s.strip().lower()
+    if not s:
+        return "unknown", raw_s
 
-    # Prefer explicit top-level publishedAt / published_at if present.
-    pub = _parse_rfc3339(existing.get("publishedAt")) or _parse_rfc3339(existing.get("published_at"))
-    src = existing.get("source")
-    if pub is None and isinstance(src, dict):
-        pub = _parse_rfc3339(src.get("publishedAt")) or _parse_rfc3339(src.get("published_at"))
+    if s in {"ok", "okay", "healthy", "running", "up", "online", "alive", "serving", "ready"}:
+        return "healthy", raw_s
+    if s in {"degraded", "warn", "warning", "partial", "slow", "lagging"}:
+        return "degraded", raw_s
+    if s in {"down", "offline", "error", "failed", "failure", "fatal", "critical", "unhealthy", "crashloop"}:
+        return "down", raw_s
+    if s in {"maintenance", "maint", "draining", "paused", "pause"}:
+        return "maintenance", raw_s
+    if s in {"unknown", "n/a", "na", "none", "null", "undefined", "?"}:
+        return "unknown", raw_s
+    if s in set(OPS_SERVICE_STATUSES):
+        return s, raw_s
+    return "unknown", raw_s
 
-    mid = ""
-    if isinstance(src, dict):
-        mid = str(src.get("messageId") or src.get("message_id") or "") or ""
-    return pub, mid
+
+def _transition_allowed(prev: str, nxt: str) -> bool:
+    p = (prev or "unknown").strip().lower() or "unknown"
+    n = (nxt or "unknown").strip().lower() or "unknown"
+    if p == n:
+        return True
+    if p in {"healthy", "degraded", "down", "maintenance"} and n == "unknown":
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -409,29 +408,43 @@ class FirestoreWriter:
             snap = ref.get(transaction=txn)
             existing = snap.to_dict() if snap.exists else {}
 
-            existing_pub, existing_mid = _existing_pubsub_lww(existing)
-            existing_key = _lww_key(published_at=existing_pub, message_id=existing_mid)
-            incoming_key = _lww_key(published_at=source.published_at, message_id=source.message_id)
-            if existing_pub is not None and incoming_key < existing_key:
-                return False, "out_of_order_event_ignored"
+            existing_source_pub = None
+            if isinstance(existing, dict):
+                src = existing.get("source")
+                if isinstance(src, dict):
+                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
 
-            incoming_updated_at = _as_utc(updated_at)
+            existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
+            existing_lh_sc = _parse_rfc3339(existing.get("last_heartbeat_at")) if isinstance(existing, dict) else None
+            existing_u = _parse_rfc3339(existing.get("updatedAt")) if isinstance(existing, dict) else None
+            existing_u_sc = _parse_rfc3339(existing.get("updated_at")) if isinstance(existing, dict) else None
+            existing_max = _max_dt(existing_lh, existing_lh_sc, existing_u, existing_u_sc, existing_source_pub)
+
+            incoming = _as_utc(updated_at)
+            incoming_eff = _max_dt(incoming, last_heartbeat_at, source.published_at) or incoming
+            if existing_max is not None and incoming_eff < existing_max:
+                return False, "stale_event_ignored"
+
+            prev_status, _ = _normalize_ops_service_status(existing.get("status") if isinstance(existing, dict) else None)
+            next_status, raw_status = _normalize_ops_service_status(status)
+            if not _transition_allowed(prev_status, next_status):
+                next_status = prev_status
+            if next_status == "unknown" and prev_status != "unknown":
+                next_status = prev_status
+
             doc = {
                 "serviceId": str(service_id),
                 "service_id": str(service_id),
                 "env": str(env),
-                "status": str(status),
+                "environment": str(env),
+                "status": str(next_status),
+                "status_raw": str(raw_status),
                 "lastHeartbeatAt": last_heartbeat_at,
                 "last_heartbeat_at": last_heartbeat_at,
                 "version": str(version),
                 "region": str(region),
-                # Keep the producer-derived timestamp (used for business semantics).
-                "updatedAt": incoming_updated_at,
-                # Add a server-updated timestamp for dashboard queries (non-breaking).
-                "updated_at": self._firestore.SERVER_TIMESTAMP,
-                # LWW ordering field: Pub/Sub publish time of the message we accepted.
-                "publishedAt": _as_utc(source.published_at),
-                "published_at": _as_utc(source.published_at),
+                "updatedAt": incoming_eff,
+                "updated_at": incoming_eff,
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
@@ -502,10 +515,21 @@ class FirestoreWriter:
             snap = service_ref.get(transaction=txn)
             existing = snap.to_dict() if snap.exists else {}
 
-            existing_pub, existing_mid = _existing_pubsub_lww(existing)
-            existing_key = _lww_key(published_at=existing_pub, message_id=existing_mid)
-            incoming_key = _lww_key(published_at=source.published_at, message_id=source.message_id)
-            if existing_pub is not None and incoming_key < existing_key:
+            existing_source_pub = None
+            if isinstance(existing, dict):
+                src = existing.get("source")
+                if isinstance(src, dict):
+                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
+
+            existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
+            existing_lh_sc = _parse_rfc3339(existing.get("last_heartbeat_at")) if isinstance(existing, dict) else None
+            existing_u = _parse_rfc3339(existing.get("updatedAt")) if isinstance(existing, dict) else None
+            existing_u_sc = _parse_rfc3339(existing.get("updated_at")) if isinstance(existing, dict) else None
+            existing_max = _max_dt(existing_lh, existing_lh_sc, existing_u, existing_u_sc, existing_source_pub)
+
+            incoming = _as_utc(updated_at)
+            incoming_eff = _max_dt(incoming, last_heartbeat_at, source.published_at) or incoming
+            if existing_max is not None and incoming_eff < existing_max:
                 # Marked dedupe already; do not reprocess on retries.
                 txn.set(
                     dedupe_ref,
@@ -519,93 +543,26 @@ class FirestoreWriter:
                 )
                 return False, "out_of_order_event_ignored"
 
-            incoming_updated_at = _as_utc(updated_at)
+            prev_status, _ = _normalize_ops_service_status(existing.get("status") if isinstance(existing, dict) else None)
+            next_status, raw_status = _normalize_ops_service_status(status)
+            if not _transition_allowed(prev_status, next_status):
+                next_status = prev_status
+            if next_status == "unknown" and prev_status != "unknown":
+                next_status = prev_status
+
             doc = {
                 "serviceId": str(service_id),
                 "service_id": str(service_id),
                 "env": str(env),
-                "status": str(status),
+                "environment": str(env),
+                "status": str(next_status),
+                "status_raw": str(raw_status),
                 "lastHeartbeatAt": last_heartbeat_at,
                 "last_heartbeat_at": last_heartbeat_at,
                 "version": str(version),
                 "region": str(region),
-                "updatedAt": incoming_updated_at,
-                "updated_at": self._firestore.SERVER_TIMESTAMP,
-                "publishedAt": _as_utc(source.published_at),
-                "published_at": _as_utc(source.published_at),
-                "source": {
-                    "topic": str(source.topic),
-                    "messageId": str(source.message_id),
-                    "message_id": str(source.message_id),
-                    "publishedAt": _as_utc(source.published_at),
-                    "published_at": _as_utc(source.published_at),
-                },
-            }
-
-            txn.set(service_ref, doc, merge=True)
-            txn.set(dedupe_ref, {"outcome": "applied"}, merge=True)
-            return True, "applied"
-
-        txn = self._db.transaction()
-        return self._firestore.transactional(_txn)(txn)
-
-    def dedupe_and_upsert_ingest_pipeline(
-        self,
-        *,
-        message_id: str,
-        pipeline_id: str,
-        fields: dict[str, Any],
-        source: SourceInfo,
-    ) -> Tuple[bool, str]:
-        """
-        Transactionally:
-        - checks/creates `ingest_pipelines_dedupe/{messageId}`
-        - applies last-write-wins write to `ingest_pipelines/{pipelineId}` using `publishedAt`
-        - records outcome metadata on the dedupe doc for visibility
-        """
-        dedupe_ref = self._db.collection("ingest_pipelines_dedupe").document(message_id)
-        pipeline_ref = self._db.collection("ingest_pipelines").document(pipeline_id)
-
-        def _txn(txn: Any) -> Tuple[bool, str]:
-            first_time, _ = ensure_message_once(
-                txn=txn,
-                dedupe_ref=dedupe_ref,
-                message_id=message_id,
-                doc={
-                    "kind": "ingest_pipelines",
-                    "targetDoc": f"ingest_pipelines/{pipeline_id}",
-                    "sourceTopic": str(source.topic),
-                    "sourcePublishedAt": _as_utc(source.published_at),
-                },
-            )
-            if not first_time:
-                return False, "duplicate_message_noop"
-
-            snap = pipeline_ref.get(transaction=txn)
-            existing = snap.to_dict() if snap.exists else {}
-            existing_pub, existing_mid = _existing_pubsub_lww(existing)
-            existing_key = _lww_key(published_at=existing_pub, message_id=existing_mid)
-            incoming_key = _lww_key(published_at=source.published_at, message_id=source.message_id)
-            if existing_pub is not None and incoming_key < existing_key:
-                txn.set(
-                    dedupe_ref,
-                    {
-                        "outcome": "out_of_order_ignored",
-                        "reason": "incoming_publishedAt_older_than_stored",
-                        "storedPublishedAt": existing_pub,
-                        "storedMessageId": existing_mid,
-                    },
-                    merge=True,
-                )
-                return False, "out_of_order_event_ignored"
-
-            doc: dict[str, Any] = {
-                # Deterministic doc id: pipeline_id
-                "pipeline_id": str(pipeline_id),
-                "pipelineId": str(pipeline_id),
-                "publishedAt": _as_utc(source.published_at),
-                "published_at": _as_utc(source.published_at),
-                "updated_at": self._firestore.SERVER_TIMESTAMP,
+                "updatedAt": incoming_eff,
+                "updated_at": incoming_eff,
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
