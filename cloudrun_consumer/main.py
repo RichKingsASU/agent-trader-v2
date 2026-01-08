@@ -436,45 +436,18 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         )
         raise HTTPException(status_code=400, detail="missing_messageId")
 
-    publish_time_raw = str(message.get("publishTime") or "").strip()
-    if not publish_time_raw:
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            reason="invalid_envelope",
-            error="missing_publishTime",
-            messageId=message_id,
-            publishTime=None,
-            subscription=subscription_str,
-        )
-        raise HTTPException(status_code=400, detail="missing_publishTime")
+    delivery_attempt_raw = message.get("deliveryAttempt")
+    delivery_attempt: Optional[int] = None
+    if isinstance(delivery_attempt_raw, int):
+        delivery_attempt = delivery_attempt_raw
+    else:
+        try:
+            if delivery_attempt_raw is not None and str(delivery_attempt_raw).strip():
+                delivery_attempt = int(str(delivery_attempt_raw).strip())
+        except Exception:
+            delivery_attempt = None
 
-    publish_time = _parse_rfc3339(publish_time_raw)
-    if publish_time is None:
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            reason="invalid_envelope",
-            error="invalid_publishTime",
-            messageId=message_id,
-            publishTime=publish_time_raw,
-            subscription=subscription_str,
-        )
-        raise HTTPException(status_code=400, detail="invalid_publishTime")
-
-    try:
-        hdr = _validate_pubsub_headers(req=req, subscription_from_body=subscription_str)
-    except HTTPException as e:
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            reason="invalid_headers",
-            error=str(getattr(e, "detail", "")),
-            messageId=message_id,
-            publishTime=publish_time_raw,
-            subscription=subscription_str,
-        )
-        raise
+    publish_time = _parse_rfc3339(message.get("publishTime")) or _utc_now()
     attributes_raw = message.get("attributes") or {}
     attributes: dict[str, str] = {}
     if isinstance(attributes_raw, dict):
@@ -617,6 +590,27 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         source_topic = inferred_topic or ""
 
     try:
+        # Visibility-only: detect duplicate deliveries (never gate processing).
+        is_dup = writer.observe_pubsub_delivery(
+            message_id=message_id,
+            topic=source_topic,
+            subscription=subscription_str,
+            handler=handler.name,
+            published_at=publish_time,
+            delivery_attempt=delivery_attempt,
+        )
+        if is_dup is True:
+            log(
+                "pubsub.duplicate_delivery_detected",
+                severity="WARNING",
+                handler=handler.name,
+                messageId=message_id,
+                topic=source_topic,
+                subscription=subscription_str,
+                deliveryAttempt=delivery_attempt,
+                publishTime=publish_time.isoformat(),
+            )
+
         result = handler.handler(
             payload=payload,
             env=env,
@@ -634,12 +628,26 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             **{"source.messageId": message_id},
             topic=source_topic,
             subscription=subscription_str,
+            deliveryAttempt=delivery_attempt,
             serviceId=result.get("serviceId"),
             applied=result.get("applied"),
             reason=result.get("reason"),
             header_subscription=hdr.get("header_subscription"),
             header_topic=hdr.get("header_topic"),
         )
+        if result.get("applied") is False and str(result.get("reason") or "") == "duplicate_message_noop":
+            log(
+                "pubsub.duplicate_ignored",
+                severity="WARNING",
+                handler=handler.name,
+                messageId=message_id,
+                topic=source_topic,
+                subscription=subscription_str,
+                deliveryAttempt=delivery_attempt,
+                kind=result.get("kind"),
+                entityId=result.get("serviceId") or result.get("docId"),
+                reason=result.get("reason"),
+            )
         return {"ok": True, **result}
     except ValueError as e:
         # Treat as poison for this consumer; allow DLQ routing.
