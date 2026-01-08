@@ -12,6 +12,8 @@ from backend.tenancy.context import TenantContext
 from backend.persistence.firebase_client import get_firestore_client
 from backend.persistence.firestore_retry import with_firestore_retry
 from backend.common.kill_switch import get_kill_switch_state
+from backend.common.logging import log_event
+from backend.observability.risk_signals import risk_correlation_id
 from google.cloud import firestore
 from google.api_core.exceptions import AlreadyExists
 
@@ -27,6 +29,11 @@ logger = logging.getLogger(__name__)
 RISK_SERVICE_URL = os.getenv("RISK_SERVICE_URL", "http://127.0.0.1:8002")
 
 class TradeRequest(BaseModel):
+    # Correlation across signal -> allocation -> execution
+    correlation_id: str | None = None
+    signal_id: str | None = None
+    allocation_id: str | None = None
+    execution_id: str | None = None
     broker_account_id: UUID
     strategy_id: UUID
     symbol: str
@@ -138,6 +145,10 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, shad
         # Create shadow trade record
         shadow_trade = {
             "shadow_id": shadow_id,
+            "correlation_id": trade_request.correlation_id,
+            "signal_id": trade_request.signal_id,
+            "allocation_id": trade_request.allocation_id,
+            "execution_id": getattr(trade_request, "execution_id", None),
             "uid": ctx.uid,
             "tenant_id": ctx.tenant_id,
             "broker_account_id": str(trade_request.broker_account_id),
@@ -205,11 +216,39 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     Fail-safe: On any error reading the shadow mode flag, defaults to shadow mode = True
     """
     ctx: TenantContext = get_tenant_context(request)
-    idem = (trade_request.idempotency_key or request.headers.get("Idempotency-Key") or "").strip() or None
+    execution_id = str(uuid4())
+    corr = risk_correlation_id(correlation_id=trade_request.correlation_id, headers=dict(request.headers))
+    # Ensure downstream writes get the same chain correlation.
+    trade_request.correlation_id = corr
+    trade_request.execution_id = execution_id
     
     # Check shadow mode flag (fail-safe: defaults to True)
     is_shadow_mode = get_shadow_mode_flag()
     logger.info(f"Executing trade in {'SHADOW' if is_shadow_mode else 'LIVE'} mode")
+
+    try:
+        log_event(
+            logger,
+            "execution.attempt",
+            severity="INFO",
+            correlation_id=corr,
+            tenant_id=ctx.tenant_id,
+            uid=ctx.uid,
+            broker_account_id=str(trade_request.broker_account_id),
+            strategy_id=str(trade_request.strategy_id),
+            symbol=trade_request.symbol,
+            side=trade_request.side,
+            notional=float(trade_request.notional),
+            instrument_type=trade_request.instrument_type,
+            order_type=trade_request.order_type,
+            time_in_force=trade_request.time_in_force,
+            mode="shadow" if is_shadow_mode else "live",
+            signal_id=trade_request.signal_id,
+            allocation_id=trade_request.allocation_id,
+            execution_id=execution_id,
+        )
+    except Exception:
+        pass
 
     # Global kill switch: block any non-shadow ("live") execution path.
     enabled, source = get_kill_switch_state()
@@ -222,6 +261,10 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     
     # Risk check (always performed regardless of mode)
     risk_check_payload = {
+        "correlation_id": corr,
+        "signal_id": trade_request.signal_id,
+        "allocation_id": trade_request.allocation_id,
+        "execution_id": execution_id,
         "broker_account_id": str(trade_request.broker_account_id),
         "strategy_id": str(trade_request.strategy_id),
         "symbol": trade_request.symbol,
@@ -245,7 +288,38 @@ def execute_trade(trade_request: TradeRequest, request: Request):
         raise HTTPException(status_code=500, detail=f"Risk service request failed: {e}")
 
     if not risk_result.get("allowed"):
+        try:
+            log_event(
+                logger,
+                "execution.risk_check.denied",
+                severity="WARNING",
+                correlation_id=corr,
+                tenant_id=ctx.tenant_id,
+                uid=ctx.uid,
+                signal_id=trade_request.signal_id,
+                allocation_id=trade_request.allocation_id,
+                execution_id=execution_id,
+                scope=risk_result.get("scope"),
+                reason=risk_result.get("reason"),
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=400, detail=f"Trade not allowed by risk service: {risk_result.get('reason')}")
+    else:
+        try:
+            log_event(
+                logger,
+                "execution.risk_check.allowed",
+                severity="INFO",
+                correlation_id=corr,
+                tenant_id=ctx.tenant_id,
+                uid=ctx.uid,
+                signal_id=trade_request.signal_id,
+                allocation_id=trade_request.allocation_id,
+                execution_id=execution_id,
+            )
+        except Exception:
+            pass
 
     # SHADOW MODE: Create synthetic order without contacting broker
     if is_shadow_mode:
@@ -257,6 +331,26 @@ def execute_trade(trade_request: TradeRequest, request: Request):
                 shadow_id = str(stable_uuid_from_key(key=f"{ctx.tenant_id}:{ctx.uid}:shadow_trade:{idem}"))
             shadow_trade = create_shadow_trade(trade_request, ctx, shadow_id=shadow_id)
             logger.info(f"Shadow trade executed successfully: {shadow_trade['shadow_id']}")
+            try:
+                log_event(
+                    logger,
+                    "execution.completed",
+                    severity="INFO",
+                    correlation_id=corr,
+                    tenant_id=ctx.tenant_id,
+                    uid=ctx.uid,
+                    mode="shadow",
+                    signal_id=trade_request.signal_id,
+                    allocation_id=trade_request.allocation_id,
+                    execution_id=execution_id,
+                    shadow_id=shadow_trade.get("shadow_id"),
+                    symbol=trade_request.symbol,
+                    side=trade_request.side,
+                    quantity=shadow_trade.get("quantity"),
+                    entry_price=shadow_trade.get("entry_price"),
+                )
+            except Exception:
+                pass
             
             # Return shadow trade in a format similar to paper order
             return {
@@ -281,6 +375,10 @@ def execute_trade(trade_request: TradeRequest, request: Request):
         try:
             logical_order = {
                 "uid": ctx.uid,
+                "correlation_id": corr,
+                "signal_id": trade_request.signal_id,
+                "allocation_id": trade_request.allocation_id,
+                "execution_id": execution_id,
                 "broker_account_id": str(trade_request.broker_account_id),
                 "strategy_id": str(trade_request.strategy_id),
                 "symbol": trade_request.symbol,
@@ -292,6 +390,10 @@ def execute_trade(trade_request: TradeRequest, request: Request):
                 "quantity": trade_request.quantity,
             }
             payload = PaperOrderCreate(
+                correlation_id=corr,
+                signal_id=trade_request.signal_id,
+                allocation_id=trade_request.allocation_id,
+                execution_id=execution_id,
                 uid=ctx.uid,
                 broker_account_id=trade_request.broker_account_id,
                 strategy_id=trade_request.strategy_id,
@@ -316,6 +418,25 @@ def execute_trade(trade_request: TradeRequest, request: Request):
             else:
                 result = insert_paper_order(tenant_id=ctx.tenant_id, payload=payload)
             logger.info(f"Live/Paper trade executed successfully: {result.id}")
+            try:
+                log_event(
+                    logger,
+                    "execution.completed",
+                    severity="INFO",
+                    correlation_id=corr,
+                    tenant_id=ctx.tenant_id,
+                    uid=ctx.uid,
+                    mode="paper",
+                    signal_id=trade_request.signal_id,
+                    allocation_id=trade_request.allocation_id,
+                    execution_id=execution_id,
+                    paper_order_id=str(result.id),
+                    symbol=trade_request.symbol,
+                    side=trade_request.side,
+                    notional=float(trade_request.notional),
+                )
+            except Exception:
+                pass
             return result
             
         except Exception as e:

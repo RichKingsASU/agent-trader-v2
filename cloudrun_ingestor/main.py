@@ -19,6 +19,44 @@ import threading
 from typing import Any
 from typing import NoReturn
 
+# --- Runtime detection helpers ---
+def _running_under_gunicorn() -> bool:
+    """
+    Best-effort detection for "real" service runtime vs local import checks.
+
+    We intentionally avoid relying on sys.path hacks or environment-specific flags.
+    """
+    try:
+        if (os.getenv("GUNICORN_CMD_ARGS") or "").strip():
+            return True
+        argv0 = os.path.basename(sys.argv[0] or "")
+        if "gunicorn" in argv0.lower():
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _fail_fast_import(exc: BaseException, *, context: str, failed_import: str) -> None:
+    """
+    Crash the process in real runtime if a required import fails.
+
+    During local/CI import smoke checks (not under gunicorn), we only log CRITICAL
+    and allow import to succeed.
+    """
+    logger.critical(
+        "Import failed (%s): %s: %s",
+        str(context),
+        str(failed_import),
+        str(exc),
+        extra={**LOG_EXTRA, "context": str(context), "failed_import": str(failed_import)},
+        exc_info=True,
+    )
+    if _running_under_gunicorn():
+        raise SystemExit(1)
+
+
+# --- Env normalization + validation (log presence, fail fast) ---
 def _normalize_env_alias(target: str, aliases: list[str]) -> None:
     """
     Ensure `target` is present by copying from first present alias.
@@ -118,6 +156,57 @@ except Exception:
     pass
 
 
+def override_config():
+    """Overrides hardcoded config from vm_ingest with environment variables."""
+    try:
+        import backend.ingestion.config as config_module
+        config_module.PROJECT_ID = os.environ["GCP_PROJECT"]
+        config_module.SYSTEM_EVENTS_TOPIC = os.environ["SYSTEM_EVENTS_TOPIC"]
+        config_module.MARKET_TICKS_TOPIC = os.environ["MARKET_TICKS_TOPIC"]
+        config_module.MARKET_BARS_1M_TOPIC = os.environ["MARKET_BARS_1M_TOPIC"]
+        config_module.TRADE_SIGNALS_TOPIC = os.environ["TRADE_SIGNALS_TOPIC"]
+        config_module.INGEST_FLAG_SECRET_ID = os.environ["INGEST_FLAG_SECRET_ID"]
+        logger.info("Configuration overridden from environment.", extra={**LOG_EXTRA, "config_overridden": True})
+    except KeyError as e:
+        logger.critical("Missing required environment variable: %s", e, extra=LOG_EXTRA)
+        if _running_under_gunicorn():
+            raise SystemExit(1)
+        return
+    except ImportError as e:
+        _fail_fast_import(e, context="override_config", failed_import="backend.ingestion.config")
+
+def _assert_required_imports() -> None:
+    """
+    Validate that backend imports used by the worker resolve at process startup.
+
+    This keeps failures crisp (CRITICAL + exit) rather than leaving a "running"
+    HTTP process with a dead worker thread.
+    """
+    try:
+        from backend.ingestion.vm_ingest import IngestionService  # noqa: F401
+    except Exception as e:
+        _fail_fast_import(e, context="startup", failed_import="backend.ingestion.vm_ingest.IngestionService")
+    try:
+        from backend.ingestion.config import (  # noqa: F401
+            HEARTBEAT_INTERVAL_SECONDS,
+            FLAG_CHECK_INTERVAL_SECONDS,
+        )
+    except Exception as e:
+        _fail_fast_import(e, context="startup", failed_import="backend.ingestion.config.(HEARTBEAT_INTERVAL_SECONDS, FLAG_CHECK_INTERVAL_SECONDS)")
+
+
+def _startup_checks() -> None:
+    # In production (gunicorn), do these checks at import time so the container crashes fast.
+    # In local/CI import smoke checks, we skip to allow `import cloudrun_ingestor.main`.
+    if not _running_under_gunicorn():
+        return
+    override_config()
+    _assert_required_imports()
+
+
+_startup_checks()
+
+
 # --- Graceful Shutdown Handling ---
 SHUTDOWN_FLAG = threading.Event()
 
@@ -184,6 +273,6 @@ def index():
     return "Ingestion service is running.", 200
 
 # Start the background worker thread when the Flask app initializes.
-if (os.getenv("CLOUDRUN_INGESTOR_START_WORKER") or "1").strip().lower() not in {"0", "false", "no"}:
-    worker_thread = threading.Thread(target=ingestion_worker, daemon=True)
+if _running_under_gunicorn():
+    worker_thread = threading.Thread(target=ingestion_worker)
     worker_thread.start()
