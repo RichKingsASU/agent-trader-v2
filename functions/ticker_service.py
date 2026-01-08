@@ -17,6 +17,8 @@ from firebase_admin import firestore
 
 logger = logging.getLogger(__name__)
 
+from functions.utils.apca_env import get_apca_env
+
 
 def _get_firestore() -> firestore.Client:
     """Initialize and return Firestore client."""
@@ -35,25 +37,11 @@ def _get_alpaca_credentials() -> Dict[str, str]:
     Raises:
         ValueError: If required credentials are missing.
     """
-    key_id = os.environ.get("ALPACA_KEY_ID") or os.environ.get("APCA_API_KEY_ID")
-    secret_key = os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("APCA_API_SECRET_KEY")
-    
-    if not key_id or not secret_key:
-        raise ValueError(
-            "Missing Alpaca credentials. Set ALPACA_KEY_ID/ALPACA_SECRET_KEY "
-            "or APCA_API_KEY_ID/APCA_API_SECRET_KEY."
-        )
-    
-    base_url = (
-        os.environ.get("APCA_API_BASE_URL")
-        or os.environ.get("ALPACA_API_BASE_URL")
-        or "https://api.alpaca.markets"
-    )
-    
+    apca = get_apca_env()
     return {
-        "key_id": key_id,
-        "secret_key": secret_key,
-        "base_url": base_url,
+        "key_id": apca.api_key_id,
+        "secret_key": apca.api_secret_key,
+        "base_url": apca.api_base_url,
     }
 
 
@@ -248,8 +236,9 @@ if __name__ == "__main__":
     Run the service standalone for testing.
     
     Usage:
-        export ALPACA_KEY_ID=your_key_id
-        export ALPACA_SECRET_KEY=your_secret_key
+        export APCA_API_KEY_ID=your_key_id
+        export APCA_API_SECRET_KEY=your_secret_key
+        export APCA_API_BASE_URL=https://paper-api.alpaca.markets
         export TICKER_SYMBOLS=AAPL,NVDA,TSLA  # Optional
         python ticker_service.py
     """

@@ -119,8 +119,8 @@ print(f"Sharpe Ratio: {results['metrics']['sharpe_ratio']:.2f}")
 ### Quick Start Script
 
 ```bash
-export ALPACA_API_KEY="your_key"
-export ALPACA_SECRET_KEY="your_secret"
+export APCA_API_KEY_ID="your_key"
+export APCA_API_SECRET_KEY="your_secret"
 python scripts/run_backtest_example.py
 ```
 
@@ -256,8 +256,8 @@ Automatically available at `/backtesting` route.
 
 ### Environment Variables
 ```bash
-ALPACA_API_KEY=your_api_key
-ALPACA_SECRET_KEY=your_secret_key
+APCA_API_KEY_ID=your_api_key
+APCA_API_SECRET_KEY=your_secret_key
 ```
 
 ### Strategy Config

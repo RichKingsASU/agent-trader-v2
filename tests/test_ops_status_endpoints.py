@@ -41,8 +41,9 @@ def _assert_minimal_contract(payload: dict):
 
 def test_marketdata_mcp_server_ops_status(monkeypatch):
     # Satisfy import-time streamer env contract.
-    monkeypatch.setenv("ALPACA_API_KEY", "test")
-    monkeypatch.setenv("ALPACA_SECRET_KEY", "test")
+    monkeypatch.setenv("APCA_API_KEY_ID", "test")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "test")
+    monkeypatch.setenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/testdb")
     monkeypatch.setenv("AGENT_MODE", "OBSERVE")
     monkeypatch.setenv("GIT_SHA", "deadbeef")

@@ -43,14 +43,13 @@ Each ticker document in Firestore contains:
 
 ### Required Environment Variables
 
-- `ALPACA_KEY_ID`: Your Alpaca API key ID
-- `ALPACA_SECRET_KEY`: Your Alpaca API secret key
+- `APCA_API_KEY_ID`: Your Alpaca API key ID
+- `APCA_API_SECRET_KEY`: Your Alpaca API secret key
+- `APCA_API_BASE_URL`: Alpaca API base URL (set explicitly; use paper URL for paper trading)
 
 ### Optional Environment Variables
 
 - `TICKER_SYMBOLS`: Comma-separated list of symbols to stream (default: `AAPL,NVDA,TSLA`)
-- `APCA_API_BASE_URL`: Alpaca API base URL (default: `https://api.alpaca.markets`)
-- `ALPACA_API_BASE_URL`: Alternative env var for API base URL
 
 ## Usage
 
@@ -59,8 +58,9 @@ Each ticker document in Firestore contains:
 Run the service directly for testing:
 
 ```bash
-export ALPACA_KEY_ID=your_key_id
-export ALPACA_SECRET_KEY=your_secret_key
+export APCA_API_KEY_ID=your_key_id
+export APCA_API_SECRET_KEY=your_secret_key
+export APCA_API_BASE_URL=https://paper-api.alpaca.markets
 export TICKER_SYMBOLS=AAPL,NVDA,TSLA
 python -m functions.ticker_service
 ```

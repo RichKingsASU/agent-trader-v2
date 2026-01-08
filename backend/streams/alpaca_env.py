@@ -2,9 +2,12 @@
 Shared Alpaca environment helpers for backend/streams scripts.
 
 Goals:
-- Standardize on ALPACA_TRADING_HOST and ALPACA_DATA_HOST for base URLs.
-- Standardize on ALPACA_API_KEY and ALPACA_SECRET_KEY for API keys.
-- Keep defaults safe: paper trading defaults to paper host, market data defaults to data host.
+- Standardize Alpaca credentials on the official Alpaca SDK env vars:
+  - APCA_API_KEY_ID
+  - APCA_API_SECRET_KEY
+  - APCA_API_BASE_URL
+
+Non-credential stream configuration (symbols/feed/data host) remains separate.
 """
 
 from __future__ import annotations
@@ -13,7 +16,11 @@ import os
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from backend.common.env import get_alpaca_key_id, get_alpaca_secret_key
+from backend.common.env import (
+    get_alpaca_api_base_url,
+    get_alpaca_key_id,
+    get_alpaca_secret_key,
+)
 
 
 def _first_env(*names: str) -> str | None:
@@ -65,31 +72,16 @@ def load_alpaca_env(*, require_keys: bool = True) -> AlpacaEnv:
     """
     Loads Alpaca env vars.
 
-    Keys are read from ALPACA_API_KEY and ALPACA_SECRET_KEY
-    (with back-compat support for ALPACA_KEY_ID).
+    Credentials are read from official Alpaca SDK env vars:
+    - APCA_API_KEY_ID
+    - APCA_API_SECRET_KEY
+    - APCA_API_BASE_URL
     """
     key_id = get_alpaca_key_id(required=require_keys)
     secret_key = get_alpaca_secret_key(required=require_keys)
 
-    trading_host = _norm_host(
-        os.getenv("ALPACA_TRADING_HOST", "https://paper-api.alpaca.markets")
-    )
+    trading_host = _norm_host(get_alpaca_api_base_url(required=require_keys) or "https://paper-api.alpaca.markets")
     data_host = _norm_host(os.getenv("ALPACA_DATA_HOST", "https://data.alpaca.markets"))
-
-    # Back-compat with alpaca-trade-api env var names.
-    #
-    # Requirement: ensure APCA_API_BASE_URL is explicitly set to the paper endpoint
-    # by default. We do this *without* overriding a caller-provided value.
-    #
-    # alpaca-trade-api expects:
-    # - APCA_API_KEY_ID
-    # - APCA_API_SECRET_KEY
-    # - APCA_API_BASE_URL
-    os.environ.setdefault("APCA_API_BASE_URL", trading_host)
-    if key_id:
-        os.environ.setdefault("APCA_API_KEY_ID", key_id)
-    if secret_key:
-        os.environ.setdefault("APCA_API_SECRET_KEY", secret_key)
 
     # If keys are optional, return empty strings to simplify callers.
     return AlpacaEnv(

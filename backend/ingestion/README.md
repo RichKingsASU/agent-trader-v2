@@ -18,8 +18,9 @@ This job:
   - `TENANT_ID` (writes to `tenants/{TENANT_ID}/...`)
 
 - **Alpaca**
-  - `ALPACA_KEY_ID` (or `ALPACA_API_KEY`)
-  - `ALPACA_SECRET_KEY`
+  - `APCA_API_KEY_ID`
+  - `APCA_API_SECRET_KEY`
+  - `APCA_API_BASE_URL`
   - `MONITORED_SYMBOLS` (comma-separated; default: `SPY` if unset)
   - `ALPACA_DATA_FEED` (`iex` or `sip`, default `iex`)
   - Back-compat: `ALPACA_SYMBOLS` is still accepted if `MONITORED_SYMBOLS` is unset.

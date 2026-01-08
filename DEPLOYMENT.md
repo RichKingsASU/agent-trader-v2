@@ -58,13 +58,14 @@ gcloud run jobs deploy "${JOB_NAME}" \
   --image "${IMAGE}" \
   --region "${REGION}" \
   --env-vars-file "PATH_TO_ENV_VARS_FILE" \
-  --set-secrets "ALPACA_KEY_ID=SECRET_NAME:latest,ALPACA_SECRET_KEY=SECRET_NAME:latest"
+  --set-secrets "APCA_API_KEY_ID=SECRET_NAME:latest,APCA_API_SECRET_KEY=SECRET_NAME:latest,APCA_API_BASE_URL=SECRET_NAME:latest"
 ```
 
 Required env vars (names only):
 
-- `ALPACA_KEY_ID`
-- `ALPACA_SECRET_KEY`
+- `APCA_API_KEY_ID`
+- `APCA_API_SECRET_KEY`
+- `APCA_API_BASE_URL`
 - `ALPACA_SYMBOLS`
 - `ALPACA_DATA_FEED`
 - `FIRESTORE_PROJECT_ID`

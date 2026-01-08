@@ -102,8 +102,9 @@ Set the following environment variables in your Cloud Function configuration:
 
 ```bash
 # Alpaca API Credentials
-ALPACA_API_KEY=<your-alpaca-api-key>
-ALPACA_SECRET_KEY=<your-alpaca-secret-key>
+APCA_API_KEY_ID=<your-alpaca-api-key>
+APCA_API_SECRET_KEY=<your-alpaca-secret-key>
+APCA_API_BASE_URL=https://paper-api.alpaca.markets
 
 # Firebase Project
 FIREBASE_PROJECT_ID=<your-firebase-project-id>
@@ -365,11 +366,12 @@ This is well within Alpaca's free tier limits (unlimited market data for live/pa
 
 ### "Missing Alpaca credentials" Error
 
-**Solution**: Set `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` in Cloud Function secrets.
+**Solution**: Set `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`, and `APCA_API_BASE_URL` in Cloud Function secrets.
 
 ```bash
-firebase functions:secrets:set ALPACA_API_KEY
-firebase functions:secrets:set ALPACA_SECRET_KEY
+firebase functions:secrets:set APCA_API_KEY_ID
+firebase functions:secrets:set APCA_API_SECRET_KEY
+firebase functions:secrets:set APCA_API_BASE_URL
 ```
 
 ### "No option snapshots found" Warning

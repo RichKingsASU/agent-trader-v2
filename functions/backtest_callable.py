@@ -62,7 +62,7 @@ def _get_user_alpaca_keys(db: firestore.Client, user_id: str) -> Dict[str, str]:
 
 @https_fn.on_call(
     cors=options.CorsOptions(cors_origins="*", cors_methods=["POST"]),
-    secrets=["ALPACA_KEY_ID", "ALPACA_SECRET_KEY"]
+    secrets=["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"]
 )
 def run_backtest(req: https_fn.CallableRequest) -> Dict[str, Any]:
     """
@@ -155,8 +155,8 @@ def run_backtest(req: https_fn.CallableRequest) -> Dict[str, Any]:
         )
         
         # Get Alpaca credentials
-        alpaca_key = os.environ.get("ALPACA_KEY_ID")
-        alpaca_secret = os.environ.get("ALPACA_SECRET_KEY")
+        alpaca_key = os.environ.get("APCA_API_KEY_ID")
+        alpaca_secret = os.environ.get("APCA_API_SECRET_KEY")
         
         if not alpaca_key or not alpaca_secret:
             # Try to get user-specific keys from Firestore

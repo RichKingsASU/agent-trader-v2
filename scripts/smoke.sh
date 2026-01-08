@@ -5,15 +5,13 @@ set -euo pipefail
 #
 # Required env vars:
 # - DATABASE_URL
-# - ALPACA_KEY_ID + ALPACA_SECRET_KEY
+# - APCA_API_KEY_ID + APCA_API_SECRET_KEY + APCA_API_BASE_URL
 #
 # Optional env vars:
 # - UNDERLYING (default: SPY)
-# - ALPACA_TRADING_HOST (default: https://paper-api.alpaca.markets)
 # - ALPACA_DATA_HOST (default: https://data.alpaca.markets)
 
 UNDERLYING="${UNDERLYING:-SPY}"
-ALPACA_TRADING_HOST="${ALPACA_TRADING_HOST:-https://paper-api.alpaca.markets}"
 ALPACA_DATA_HOST="${ALPACA_DATA_HOST:-https://data.alpaca.markets}"
 
 if [[ -z "${DATABASE_URL:-}" ]]; then
@@ -21,13 +19,12 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
   exit 1
 fi
 
-if [[ -z "${ALPACA_KEY_ID:-}" || -z "${ALPACA_SECRET_KEY:-}" ]]; then
-  echo "ERROR: missing Alpaca credentials. Set ALPACA_KEY_ID and ALPACA_SECRET_KEY." >&2
+if [[ -z "${APCA_API_KEY_ID:-}" || -z "${APCA_API_SECRET_KEY:-}" || -z "${APCA_API_BASE_URL:-}" ]]; then
+  echo "ERROR: missing Alpaca credentials. Set APCA_API_KEY_ID, APCA_API_SECRET_KEY, and APCA_API_BASE_URL." >&2
   exit 1
 fi
 
 export UNDERLYING
-export ALPACA_TRADING_HOST
 export ALPACA_DATA_HOST
 
 # Ensure python deps exist; install if missing.
