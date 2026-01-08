@@ -178,7 +178,17 @@ class JsonLogFormatter(logging.Formatter):
         severity = _normalize_severity(getattr(record, "severity", None) or record.levelname)
         event_type = _clean_text(getattr(record, "event_type", None) or "", max_len=128) or "log"
         rid = _clean_text(getattr(record, "request_id", None) or get_request_id() or "", max_len=128) or None
-        cid = _clean_text(getattr(record, "correlation_id", None) or rid or "", max_len=128) or None
+        cid = _clean_text(getattr(record, "correlation_id", None) or "", max_len=128) or None
+        if not cid:
+            # Ensure a stable correlation_id is always present for queryability.
+            try:
+                from backend.observability.correlation import get_or_create_correlation_id as _get_or_create_correlation_id  # noqa: WPS433
+
+                cid = _get_or_create_correlation_id()
+            except Exception:
+                cid = uuid.uuid4().hex
+        if not rid:
+            rid = cid
 
         payload: dict[str, Any] = {
             "timestamp": _utc_ts(),
@@ -273,6 +283,45 @@ def log_event(
     )
 
 
+def log_standard_event(
+    logger: logging.Logger,
+    event_type: str,
+    *,
+    severity: str = "INFO",
+    message: str | None = None,
+    correlation_id: str | None = None,
+    event_id: str | None = None,
+    topic: str | None = None,
+    outcome: str | None = None,
+    latency_ms: int | float | None = None,
+    **fields: Any,
+) -> None:
+    """
+    Emit a structured log line using stable, queryable keys across services.
+
+    Required stable keys (when applicable):
+    - service, env, version (handled by formatter defaults)
+    - correlation_id, event_id, topic, outcome, latency_ms
+    """
+    extra: dict[str, Any] = dict(fields)
+    if correlation_id is not None:
+        extra["correlation_id"] = _clean_text(correlation_id, max_len=128)
+    if event_id is not None:
+        extra["event_id"] = _clean_text(event_id, max_len=256)
+    if topic is not None:
+        extra["topic"] = _clean_text(topic, max_len=512)
+    if outcome is not None:
+        extra["outcome"] = _clean_text(outcome, max_len=64)
+    if latency_ms is not None:
+        try:
+            extra["latency_ms"] = int(max(0.0, float(latency_ms)))
+        except Exception:
+            # Keep the key stable, but avoid breaking logs on bad types.
+            extra["latency_ms"] = None
+
+    log_event(logger, event_type, severity=severity, message=message, **extra)
+
+
 def install_fastapi_request_id_middleware(app: Any, *, service: str | None = None) -> None:
     """
     Best-effort FastAPI middleware:
@@ -324,7 +373,8 @@ def install_fastapi_request_id_middleware(app: Any, *, service: str | None = Non
                         method=request.method,
                         path=str(getattr(request.url, "path", "")),
                         status_code=status_code,
-                        duration_ms=dur_ms,
+                        latency_ms=dur_ms,
+                        duration_ms=dur_ms,  # back-compat
                         cold_start=bool(getattr(req_class, "cold_start", False)) if req_class is not None else None,
                         request_ordinal=int(getattr(req_class, "request_ordinal", 0)) if req_class is not None else None,
                         instance_uptime_ms=int(getattr(req_class, "instance_uptime_ms", 0)) if req_class is not None else None,

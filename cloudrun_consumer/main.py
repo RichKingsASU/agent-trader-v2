@@ -13,34 +13,39 @@ from __future__ import annotations
 
 import base64
 import json
-import traceback
 import os
+import logging
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-def _startup_diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
-    """
-    Print a structured JSON diagnostic log.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from fastapi import FastAPI, HTTPException, Request, Response
+
+from backend.common.logging import init_structured_logging
+from backend.common.logging import install_fastapi_request_id_middleware
+from backend.common.logging import log_standard_event
+from backend.observability.correlation import bind_correlation_id, get_or_create_correlation_id
 
 from event_utils import infer_topic
 from firestore_writer import FirestoreWriter
 from replay_support import ReplayContext, write_replay_marker
 from schema_router import route_payload
+from time_audit import ensure_utc
 
 
 SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"
 DLQ_SAMPLE_RATE_DEFAULT = "0.01"  # 1% (deterministic per messageId)
 DLQ_SAMPLE_TTL_HOURS_DEFAULT = "72"
 
+# Emit structured JSON to stdout (Cloud Run will ingest as jsonPayload).
+init_structured_logging(service=SERVICE_NAME, env=os.getenv("ENV") or "unknown", level=os.getenv("LOG_LEVEL") or "INFO")
 _logger = logging.getLogger("cloudrun_consumer")
-if not _logger.handlers:
-    _handler = logging.StreamHandler(stream=sys.stdout)
-    _handler.setFormatter(logging.Formatter("%(message)s"))
-    _logger.addHandler(_handler)
-_logger.setLevel(str(os.getenv("LOG_LEVEL") or "INFO").upper())
-_logger.propagate = False
 
 
 def _utc_now() -> datetime:
@@ -109,24 +114,24 @@ def _maybe_unwrap_event_envelope(payload: dict[str, Any]) -> tuple[dict[str, Any
 
 
 def log(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
-    payload: dict[str, Any] = {
-        "timestamp": _utc_now().isoformat(),
-        "severity": str(severity).upper(),
-        "service": SERVICE_NAME,
-        "env": os.getenv("ENV") or "unknown",
-        "event_type": str(event_type),
-    }
-    payload.update(fields)
     try:
-        sev = str(severity).upper()
-        if sev in {"ERROR", "CRITICAL", "ALERT", "EMERGENCY"}:
-            _logger.error(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
-        elif sev in {"WARNING"}:
-            _logger.warning(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
-        elif sev in {"DEBUG"}:
-            _logger.debug(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
-        else:
-            _logger.info(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+        correlation_id = fields.pop("correlation_id", None)
+        event_id = fields.pop("event_id", None)
+        topic = fields.pop("topic", None)
+        outcome = fields.pop("outcome", None)
+        latency_ms = fields.pop("latency_ms", None)
+
+        log_standard_event(
+            _logger,
+            str(event_type),
+            severity=str(severity).upper(),
+            correlation_id=str(correlation_id) if correlation_id is not None else None,
+            event_id=str(event_id) if event_id is not None else None,
+            topic=str(topic) if topic is not None else None,
+            outcome=str(outcome) if outcome is not None else None,
+            latency_ms=latency_ms,
+            **fields,
+        )
     except Exception:
         # Preserve stack traces even if stdout/serialization is broken.
         try:
@@ -226,14 +231,15 @@ def _normalize_env_alias(target: str, aliases: list[str]) -> None:
 
 def _validate_required_env(required: list[str]) -> None:
     presence = {name: bool((os.getenv(name) or "").strip()) for name in required}
-    log("config.env_validation", severity="INFO", required_env=presence)
+    log("config.env_validation", severity="INFO", outcome="success", required_env=presence)
     missing = [name for name, ok in presence.items() if not ok]
     if missing:
-        log("config.env_missing", severity="CRITICAL", missing_env=missing)
+        log("config.env_missing", severity="CRITICAL", outcome="failure", missing_env=missing)
         raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
 
 
 app = FastAPI(title="Cloud Run Pub/Sub → Firestore Materializer", version="0.1.0")
+install_fastapi_request_id_middleware(app, service=SERVICE_NAME)
 
 
 @app.on_event("startup")
@@ -251,6 +257,7 @@ async def _startup() -> None:
     log(
         "startup",
         severity="INFO",
+        outcome="success",
         has_gcp_project=True,
         has_system_events_topic=True,
         has_ingest_flag_secret_id=True,
@@ -298,6 +305,13 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
     - structured JSON logs
     """
     app.state.loop_heartbeat_monotonic = time.monotonic()
+    start_perf = time.perf_counter()
+
+    def _latency_ms() -> int:
+        return int(max(0.0, (time.perf_counter() - start_perf) * 1000.0))
+
+    # Ensure the request has a correlation_id even before decoding the message.
+    req_correlation_id = get_or_create_correlation_id(headers=dict(req.headers))
 
     try:
         _require_json_content_type(req)
@@ -305,6 +319,9 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log(
             "pubsub.rejected",
             severity="ERROR",
+            outcome="failure",
+            correlation_id=req_correlation_id,
+            latency_ms=_latency_ms(),
             reason="invalid_headers",
             error=str(getattr(e, "detail", "")),
             messageId=None,
@@ -319,6 +336,9 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log(
             "pubsub.rejected",
             severity="ERROR",
+            outcome="failure",
+            correlation_id=req_correlation_id,
+            latency_ms=_latency_ms(),
             reason="invalid_json",
             error=str(e),
             messageId=None,
@@ -332,6 +352,9 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log(
             "pubsub.rejected",
             severity="ERROR",
+            outcome="failure",
+            correlation_id=req_correlation_id,
+            latency_ms=_latency_ms(),
             reason="invalid_envelope",
             error="body_not_object",
             messageId=None,
@@ -346,6 +369,9 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log(
             "pubsub.rejected",
             severity="ERROR",
+            outcome="failure",
+            correlation_id=req_correlation_id,
+            latency_ms=_latency_ms(),
             reason="invalid_envelope",
             error="missing_subscription",
             messageId=None,
@@ -354,11 +380,30 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         )
         raise HTTPException(status_code=400, detail="missing_subscription")
 
+    # Validate X-Goog-* headers if present (best-effort).
+    try:
+        hdr = _validate_pubsub_headers(req=req, subscription_from_body=subscription_str)
+    except HTTPException as e:
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            outcome="failure",
+            correlation_id=req_correlation_id,
+            latency_ms=_latency_ms(),
+            reason="invalid_headers",
+            error=str(getattr(e, "detail", "")),
+            subscription=subscription_str,
+        )
+        raise
+
     message = body.get("message")
     if not isinstance(message, dict):
         log(
             "pubsub.rejected",
             severity="ERROR",
+            outcome="failure",
+            correlation_id=req_correlation_id,
+            latency_ms=_latency_ms(),
             reason="invalid_envelope",
             error="missing_message",
             messageId=None,
@@ -372,6 +417,9 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log(
             "pubsub.rejected",
             severity="ERROR",
+            outcome="failure",
+            correlation_id=req_correlation_id,
+            latency_ms=_latency_ms(),
             reason="invalid_envelope",
             error="missing_messageId",
             messageId=None,
@@ -379,6 +427,10 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             subscription=subscription_str,
         )
         raise HTTPException(status_code=400, detail="missing_messageId")
+
+    publish_time_raw = str(message.get("publishTime") or "").strip() or None
+    event_id = message_id
+    correlation_id = req_correlation_id
 
     delivery_attempt_raw = message.get("deliveryAttempt")
     delivery_attempt: Optional[int] = None
@@ -409,6 +461,10 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log(
             "pubsub.dlq_candidate",
             severity="ERROR",
+            outcome="failure",
+            correlation_id=correlation_id,
+            event_id=event_id,
+            latency_ms=_latency_ms(),
             messageId=message_id,
             subscription=subscription_str,
             topic=topic or "",
@@ -437,6 +493,10 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             log(
                 "pubsub.dlq_sample_written",
                 severity="NOTICE",
+                outcome="success",
+                correlation_id=correlation_id,
+                event_id=event_id,
+                latency_ms=_latency_ms(),
                 messageId=message_id,
                 subscription=subscription_str,
                 handler=handler_name,
@@ -448,6 +508,10 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log(
             "pubsub.rejected",
             severity="ERROR",
+            outcome="failure",
+            correlation_id=correlation_id,
+            event_id=event_id,
+            latency_ms=_latency_ms(),
             reason="invalid_envelope",
             error="missing_data",
             messageId=message_id,
@@ -462,6 +526,10 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log(
             "pubsub.rejected",
             severity="ERROR",
+            outcome="failure",
+            correlation_id=correlation_id,
+            event_id=event_id,
+            latency_ms=_latency_ms(),
             reason="invalid_envelope",
             error=f"invalid_base64:{str(e)}",
             messageId=message_id,
@@ -476,6 +544,10 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log(
             "pubsub.rejected",
             severity="ERROR",
+            outcome="failure",
+            correlation_id=correlation_id,
+            event_id=event_id,
+            latency_ms=_latency_ms(),
             reason="invalid_payload_json",
             error=str(e),
             messageId=message_id,
@@ -488,6 +560,10 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log(
             "pubsub.rejected",
             severity="ERROR",
+            outcome="failure",
+            correlation_id=correlation_id,
+            event_id=event_id,
+            latency_ms=_latency_ms(),
             reason="payload_not_object",
             payloadType=str(type(payload).__name__),
             messageId=message_id,
@@ -499,8 +575,45 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
     try:
         payload, envelope = _maybe_unwrap_event_envelope(payload)
     except ValueError as e:
-        log("pubsub.invalid_event_envelope", severity="ERROR", error=str(e), messageId=message_id)
+        log(
+            "pubsub.invalid_event_envelope",
+            severity="ERROR",
+            outcome="failure",
+            correlation_id=correlation_id,
+            event_id=event_id,
+            latency_ms=_latency_ms(),
+            error=str(e),
+            messageId=message_id,
+        )
         raise HTTPException(status_code=400, detail="invalid_event_envelope") from e
+
+    # Promote stable identifiers from the decoded payload (when present).
+    try:
+        payload_event_id = payload.get("eventId")
+        if payload_event_id is not None and str(payload_event_id).strip():
+            event_id = str(payload_event_id).strip()
+    except Exception:
+        pass
+    try:
+        for k in ("correlation_id", "correlationId", "request_id", "requestId"):
+            v = payload.get(k)
+            if v is not None and str(v).strip():
+                correlation_id = str(v).strip()
+                break
+        if not correlation_id:
+            for k in ("correlation_id", "correlationId", "request_id", "requestId"):
+                v = attributes.get(k)
+                if v is not None and str(v).strip():
+                    correlation_id = str(v).strip()
+                    break
+        if envelope is not None and isinstance(envelope, dict):
+            for k in ("correlation_id", "correlationId", "request_id", "requestId"):
+                v = envelope.get(k)
+                if v is not None and str(v).strip():
+                    correlation_id = str(v).strip()
+                    break
+    except Exception:
+        pass
 
     inferred_topic = infer_topic(attributes=attributes, payload=payload, subscription=subscription_str)
     handler = route_payload(payload=payload, attributes=attributes, topic=inferred_topic)
@@ -508,6 +621,10 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log(
             "pubsub.rejected",
             severity="ERROR",
+            outcome="failure",
+            correlation_id=correlation_id,
+            event_id=event_id,
+            latency_ms=_latency_ms(),
             reason="unroutable_payload",
             messageId=message_id,
             publishTime=publish_time_raw,
@@ -528,7 +645,14 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             or ""
         )
         if not source_topic:
-            log("config.missing_system_events_topic", severity="WARNING")
+            log(
+                "config.missing_system_events_topic",
+                severity="WARNING",
+                outcome="degraded",
+                correlation_id=correlation_id,
+                event_id=event_id,
+                latency_ms=_latency_ms(),
+            )
     else:
         # For non-system streams, prefer the inferred topic (from attributes/payload/subscription mapping).
         source_topic = inferred_topic or ""
@@ -539,103 +663,124 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
     if replay_run_id and source_topic:
         replay = ReplayContext(run_id=replay_run_id, consumer=SERVICE_NAME, topic=str(source_topic))
 
-    try:
-        # Visibility-only: detect duplicate deliveries (never gate processing).
-        is_dup = writer.observe_pubsub_delivery(
-            message_id=message_id,
-            topic=source_topic,
-            subscription=subscription_str,
-            handler=handler.name,
-            published_at=publish_time,
-            delivery_attempt=delivery_attempt,
-        )
-        if is_dup is True:
-            log(
-                "pubsub.duplicate_delivery_detected",
-                severity="WARNING",
-                handler=handler.name,
-                messageId=message_id,
+    with bind_correlation_id(correlation_id=correlation_id):
+        try:
+            # Visibility-only: detect duplicate deliveries (never gate processing).
+            is_dup = writer.observe_pubsub_delivery(
+                message_id=message_id,
                 topic=source_topic,
                 subscription=subscription_str,
-                deliveryAttempt=delivery_attempt,
-                publishTime=publish_time.isoformat(),
+                handler=handler.name,
+                published_at=publish_time,
+                delivery_attempt=delivery_attempt,
             )
-
-        result = handler.handler(
-            payload=payload,
-            env=env,
-            default_region=default_region,
-            source_topic=source_topic,
-            message_id=message_id,
-            pubsub_published_at=publish_time,
-            firestore_writer=writer,
-            replay=replay,
-        )
-        if replay is not None:
-            try:
-                # Best-effort markers; never fail the message due to marker writes.
-                write_replay_marker(
-                    db=writer._db,  # intentionally internal; minimal hook
-                    replay=replay,
-                    message_id=message_id,
-                    pubsub_published_at=publish_time,
-                    event_time=_parse_rfc3339(result.get("eventTime") or result.get("updatedAt")) or publish_time,
+            if is_dup is True:
+                log(
+                    "pubsub.duplicate_delivery_detected",
+                    severity="WARNING",
+                    outcome="duplicate",
+                    correlation_id=correlation_id,
+                    event_id=event_id,
+                    latency_ms=_latency_ms(),
                     handler=handler.name,
-                    applied=bool(result.get("applied")),
-                    reason=str(result.get("reason") or ""),
+                    messageId=message_id,
+                    topic=source_topic,
+                    subscription=subscription_str,
+                    deliveryAttempt=delivery_attempt,
+                    publishTime=publish_time.isoformat(),
                 )
-            except Exception:
-                pass
-        log(
-            "materialize.ok",
-            severity="INFO",
-            handler=handler.name,
-            messageId=message_id,
-            **{"source.messageId": message_id},
-            topic=source_topic,
-            subscription=subscription_str,
-            deliveryAttempt=delivery_attempt,
-            serviceId=result.get("serviceId"),
-            applied=result.get("applied"),
-            reason=result.get("reason"),
-            header_subscription=hdr.get("header_subscription"),
-            header_topic=hdr.get("header_topic"),
-        )
-        if result.get("applied") is False and str(result.get("reason") or "") == "duplicate_message_noop":
+
+            result = handler.handler(
+                payload=payload,
+                env=env,
+                default_region=default_region,
+                source_topic=source_topic,
+                message_id=message_id,
+                pubsub_published_at=publish_time,
+                firestore_writer=writer,
+                replay=replay,
+            )
+            if replay is not None:
+                try:
+                    # Best-effort markers; never fail the message due to marker writes.
+                    write_replay_marker(
+                        db=writer._db,  # intentionally internal; minimal hook
+                        replay=replay,
+                        message_id=message_id,
+                        pubsub_published_at=publish_time,
+                        event_time=_parse_rfc3339(result.get("eventTime") or result.get("updatedAt")) or publish_time,
+                        handler=handler.name,
+                        applied=bool(result.get("applied")),
+                        reason=str(result.get("reason") or ""),
+                    )
+                except Exception:
+                    pass
             log(
-                "pubsub.duplicate_ignored",
-                severity="WARNING",
+                "materialize.ok",
+                severity="INFO",
+                outcome="success",
+                correlation_id=correlation_id,
+                event_id=event_id,
+                latency_ms=_latency_ms(),
                 handler=handler.name,
                 messageId=message_id,
+                **{"source.messageId": message_id},
                 topic=source_topic,
                 subscription=subscription_str,
                 deliveryAttempt=delivery_attempt,
-                kind=result.get("kind"),
-                entityId=result.get("serviceId") or result.get("docId"),
+                serviceId=result.get("serviceId"),
+                applied=result.get("applied"),
                 reason=result.get("reason"),
+                header_subscription=hdr.get("header_subscription"),
+                header_topic=hdr.get("header_topic"),
             )
-        return {"ok": True, **result}
-    except ValueError as e:
-        # Treat as poison for this consumer; allow DLQ routing.
-        log(
-            "materialize.bad_event",
-            severity="ERROR",
-            error=str(e),
-            handler=handler.name,
-            messageId=message_id,
-            **{"source.messageId": message_id},
-        )
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        log(
-            "materialize.exception",
-            severity="ERROR",
-            error=str(e),
-            handler=handler.name,
-            messageId=message_id,
-            **{"source.messageId": message_id},
-        )
-        raise HTTPException(status_code=500, detail="materialize_exception") from e
+            if result.get("applied") is False and str(result.get("reason") or "") == "duplicate_message_noop":
+                log(
+                    "pubsub.duplicate_ignored",
+                    severity="WARNING",
+                    outcome="noop",
+                    correlation_id=correlation_id,
+                    event_id=event_id,
+                    latency_ms=_latency_ms(),
+                    handler=handler.name,
+                    messageId=message_id,
+                    topic=source_topic,
+                    subscription=subscription_str,
+                    deliveryAttempt=delivery_attempt,
+                    kind=result.get("kind"),
+                    entityId=result.get("serviceId") or result.get("docId"),
+                    reason=result.get("reason"),
+                )
+            return {"ok": True, **result}
+        except ValueError as e:
+            # Treat as poison for this consumer; allow DLQ routing.
+            log(
+                "materialize.bad_event",
+                severity="ERROR",
+                outcome="failure",
+                correlation_id=correlation_id,
+                event_id=event_id,
+                latency_ms=_latency_ms(),
+                error=str(e),
+                handler=handler.name,
+                messageId=message_id,
+                **{"source.messageId": message_id},
+            )
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            log(
+                "materialize.exception",
+                severity="ERROR",
+                outcome="failure",
+                correlation_id=correlation_id,
+                event_id=event_id,
+                latency_ms=_latency_ms(),
+                error=str(e),
+                handler=handler.name,
+                messageId=message_id,
+                **{"source.messageId": message_id},
+            )
+            raise HTTPException(status_code=500, detail="materialize_exception") from e
 
 
 if __name__ == "__main__":
