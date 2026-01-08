@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
 from backend.ingestion.pubsub_event_store import IngestedEvent
+from backend.time.utc_audit import ensure_utc
 
 
 def _utc_now() -> datetime:
@@ -15,18 +16,13 @@ def _parse_dt_best_effort(value: Any) -> Optional[datetime]:
     if value is None:
         return None
     if isinstance(value, datetime):
-        dt = value
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+        return ensure_utc(value, source="backend.ingestion.ingest_heartbeat_handler._parse_dt_best_effort", field="datetime")
     try:
         # Keep dependency-local: this repo already has a tolerant time parser.
         from backend.time.nyse_time import parse_ts
 
         dt = parse_ts(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+        return ensure_utc(dt, source="backend.ingestion.ingest_heartbeat_handler._parse_dt_best_effort", field="parsed")
     except Exception:
         return None
 
@@ -127,9 +123,7 @@ def parse_ingest_heartbeat(ev: IngestedEvent) -> Optional[IngestHeartbeat]:
     # - receive time
     env_ts = envelope.get("ts") if isinstance(envelope, dict) else None
     event_ts = _parse_dt_best_effort(env_ts) or _parse_dt_best_effort(inner_ts) or ev.publish_time_utc or ev.received_at_utc
-    if event_ts.tzinfo is None:
-        event_ts = event_ts.replace(tzinfo=timezone.utc)
-    event_ts = event_ts.astimezone(timezone.utc)
+    event_ts = ensure_utc(event_ts, source="backend.ingestion.ingest_heartbeat_handler.parse_ingest_heartbeat", field="event_ts")
 
     tenant_id_s = str(tenant_id).strip() if tenant_id is not None else None
     tenant_id_s = tenant_id_s or None

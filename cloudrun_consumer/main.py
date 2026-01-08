@@ -110,10 +110,7 @@ def _parse_rfc3339(value: Any) -> Optional[datetime]:
     if value is None:
         return None
     if isinstance(value, datetime):
-        dt = value
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+        return ensure_utc(value, source="cloudrun_consumer.main._parse_rfc3339", field="datetime")
     s = str(value).strip()
     if not s:
         return None
@@ -121,9 +118,7 @@ def _parse_rfc3339(value: Any) -> Optional[datetime]:
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+        return ensure_utc(dt, source="cloudrun_consumer.main._parse_rfc3339", field="iso_string")
     except Exception:
         log("time.parse_failed", severity="ERROR", value=s, exception=traceback.format_exc()[-8000:])
         return None
