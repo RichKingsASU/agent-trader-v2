@@ -115,6 +115,25 @@ async def _startup() -> None:
         pass
 
     cfg = load_config_from_env()
+
+    # Deterministic Alpaca auth smoke tests (startup gate).
+    # If these fail, crash the container so Cloud Run/K8s restarts it.
+    if (
+        (not cfg.dry_run)
+        and os.getenv("SKIP_ALPACA_AUTH_SMOKE_TESTS", "").strip().lower() not in ("1", "true", "yes", "y")
+    ):
+        try:
+            from backend.streams.alpaca_auth_smoke import run_alpaca_auth_smoke_tests_async  # noqa: WPS433
+
+            feed = getattr(cfg.feed, "value", None) or "iex"
+            timeout_s = float(os.getenv("ALPACA_AUTH_SMOKE_TIMEOUT_S", "5"))
+            log_json("alpaca_auth_smoke", status="starting", feed=str(feed), timeout_s=timeout_s)
+            await run_alpaca_auth_smoke_tests_async(feed=str(feed), timeout_s=timeout_s)
+            log_json("alpaca_auth_smoke", status="ok", feed=str(feed))
+        except Exception as e:
+            log_json("alpaca_auth_smoke", status="error", error=str(e), severity="ERROR")
+            raise
+
     ingestor = MarketDataIngestor(cfg)
     app.state.ingestor = ingestor
     app.state.shutting_down = False
