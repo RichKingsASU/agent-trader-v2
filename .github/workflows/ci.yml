@@ -266,3 +266,9 @@ jobs:
           set -euo pipefail
           python3 -m unittest -q tests.test_pubsub_envelope_contract_gate
 
+      - name: Data plane smoke test (emulators: Pub/Sub + Firestore)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/data_plane_smoke_test.sh
+

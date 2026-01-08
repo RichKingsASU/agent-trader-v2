@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import traceback
 import os
 import sys
@@ -20,14 +21,33 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-def _startup_diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
-    """
-    Print a structured JSON diagnostic log.
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
 
 from event_utils import infer_topic
 from firestore_writer import FirestoreWriter
 from replay_support import ReplayContext, write_replay_marker
 from schema_router import route_payload
+from time_audit import ensure_utc
+
+def _startup_diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
+    """
+    Print a structured JSON diagnostic log.
+
+    Intended for early import/startup failures where the main logger may not be configured.
+    """
+    payload: dict[str, Any] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "severity": str(severity).upper(),
+        "service": "cloudrun-pubsub-firestore-materializer",
+        "event_type": str(event_type),
+    }
+    payload.update(fields)
+    try:
+        sys.stdout.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except Exception:
+        return
 
 
 SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"
