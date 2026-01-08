@@ -68,4 +68,25 @@ def sync_alpaca_account(event: scheduler_fn.ScheduledEvent) -> None:
 
     db = _get_firestore()
     db.collection("alpacaAccounts").document("snapshot").set(payload, merge=True)
+
+    # Persist an equity time-series point for rolling risk metrics (drawdown velocity).
+    # Store at: alpacaAccounts/snapshot/equity_history/{YYYYMMDDHHMM}
+    try:
+        equity = payload.get("equity")
+        if equity is not None and str(equity).strip() != "":
+            from datetime import datetime, timezone
+
+            now = datetime.now(timezone.utc)
+            doc_id = now.strftime("%Y%m%d%H%M")  # one point per minute
+            db.collection("alpacaAccounts").document("snapshot").collection("equity_history").document(doc_id).set(
+                {
+                    "ts": firestore.SERVER_TIMESTAMP,
+                    "equity": str(equity),
+                },
+                merge=True,
+            )
+    except Exception as e:
+        # Best-effort only; never block snapshot sync.
+        logger.warning("sync_alpaca_account: failed to write equity_history point: %s", e)
+
     logger.info("sync_alpaca_account: done")
