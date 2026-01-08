@@ -16,6 +16,7 @@ from typing import Any, Dict
 from alpaca.data.enums import DataFeed
 from alpaca.data.live.stock import StockDataStream
 
+from backend.common.ingest_switch import get_ingest_enabled_state
 from backend.ingestion.firebase_writer import FirebaseWriter, FirestorePaths
 from backend.ingestion.rate_limit import Backoff, TokenBucket
 from backend.streams.alpaca_env import load_alpaca_env
@@ -119,6 +120,8 @@ class MarketDataIngestor:
         self._stats = IngestStats()
 
         self._last_symbol: str | None = None
+        self._ingest_enabled: bool | None = None
+        self._ingest_enabled_source: str | None = None
 
         self._latest_by_symbol: Dict[str, QuoteSnapshot] = {}
         self._dirty_symbols: set[str] = set()
@@ -342,21 +345,38 @@ class MarketDataIngestor:
         interval = max(1.0, float(self.cfg.heartbeat_interval_s))
 
         while not self._stop.is_set():
+            enabled, source = get_ingest_enabled_state()
             payload = {
                 "ts": _ts(),
-                "status": "running",
+                "status": "running" if enabled else "paused",
                 "last_symbol": self._last_symbol,
+                "ingest_enabled": bool(enabled),
+                "ingest_enabled_source": source,
             }
 
             if self.cfg.dry_run:
                 self._stats.heartbeat_writes_ok += 1
-                log_json("heartbeat", last_symbol=self._last_symbol, status="dry_run", ts=payload["ts"])
+                log_json(
+                    "heartbeat",
+                    last_symbol=self._last_symbol,
+                    status="dry_run",
+                    ingest_enabled=bool(enabled),
+                    ingest_enabled_source=source,
+                    ts=payload["ts"],
+                )
             else:
                 try:
                     assert self._writer is not None
                     self._writer.write_ops_market_ingest(payload)
                     self._stats.heartbeat_writes_ok += 1
-                    log_json("heartbeat", last_symbol=self._last_symbol, status="ok", ts=payload["ts"])
+                    log_json(
+                        "heartbeat",
+                        last_symbol=self._last_symbol,
+                        status="ok" if enabled else "paused",
+                        ingest_enabled=bool(enabled),
+                        ingest_enabled_source=source,
+                        ts=payload["ts"],
+                    )
                 except Exception as e:
                     self._stats.heartbeat_writes_err += 1
                     log_json(
@@ -364,6 +384,8 @@ class MarketDataIngestor:
                         last_symbol=self._last_symbol,
                         status="error",
                         ts=payload["ts"],
+                        ingest_enabled=bool(enabled),
+                        ingest_enabled_source=source,
                         error=str(e),
                         severity="ERROR",
                     )
@@ -391,6 +413,7 @@ class MarketDataIngestor:
         self._backoff = backoff
         max_attempts = int(os.getenv("RECONNECT_MAX_ATTEMPTS", "5"))
         min_sleep_s = float(os.getenv("RECONNECT_MIN_SLEEP_S", "0.5"))
+        ingest_poll_s = float(os.getenv("INGEST_ENABLED_POLL_S", "5"))
 
         # DRY_RUN can simulate quotes even without Alpaca credentials.
         if self.cfg.dry_run and (not alpaca.key_id or not alpaca.secret_key):
@@ -415,6 +438,40 @@ class MarketDataIngestor:
             tg.create_task(self._stop_after_loop())
 
             while not self._stop.is_set():
+                enabled, source = get_ingest_enabled_state()
+                if self._ingest_enabled is None:
+                    self._ingest_enabled = bool(enabled)
+                    self._ingest_enabled_source = source
+                    log_json(
+                        "ingest_switch",
+                        status="initial",
+                        ingest_enabled=bool(enabled),
+                        ingest_enabled_source=source,
+                    )
+                elif bool(enabled) != bool(self._ingest_enabled):
+                    self._ingest_enabled = bool(enabled)
+                    self._ingest_enabled_source = source
+                    log_json(
+                        "ingest_switch",
+                        status="resumed" if enabled else "halted",
+                        ingest_enabled=bool(enabled),
+                        ingest_enabled_source=source,
+                        severity="WARNING" if not enabled else "INFO",
+                    )
+
+                if not enabled:
+                    # Ensure we are not holding an open websocket while paused.
+                    try:
+                        if self._wss is not None:
+                            self._wss.stop()
+                    except Exception:
+                        pass
+                    try:
+                        await asyncio.wait_for(self._stop.wait(), timeout=max(1.0, ingest_poll_s))
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+
                 wss = None
                 try:
                     wss = StockDataStream(alpaca.key_id, alpaca.secret_key, feed=self.cfg.feed)
