@@ -35,6 +35,9 @@ class EventEnvelope:
       - ts: ISO-8601 timestamp (UTC recommended)
       - payload: JSON-serializable object
       - trace_id: correlation id for distributed tracing/log stitching
+
+    Cross-language reference:
+      - TypeScript: packages/shared-types/src/envelope.ts
     """
 
     event_type: str
