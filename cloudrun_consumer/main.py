@@ -576,7 +576,7 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             severity="INFO",
             handler=handler.name,
             messageId=message_id,
-            publishTime=publish_time_raw,
+            **{"source.messageId": message_id},
             topic=source_topic,
             subscription=subscription_str,
             serviceId=result.get("serviceId"),
@@ -594,8 +594,7 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             error=str(e),
             handler=handler.name,
             messageId=message_id,
-            publishTime=publish_time_raw,
-            subscription=subscription_str,
+            **{"source.messageId": message_id},
         )
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -605,8 +604,7 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             error=str(e),
             handler=handler.name,
             messageId=message_id,
-            publishTime=publish_time_raw,
-            subscription=subscription_str,
+            **{"source.messageId": message_id},
         )
         raise HTTPException(status_code=500, detail="materialize_exception") from e
 
