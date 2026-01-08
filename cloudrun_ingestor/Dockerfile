@@ -8,12 +8,14 @@ ENV PORT=8080
 WORKDIR /app
 
 # Copy and install dependencies
-COPY cloudrun_ingestor/requirements.txt /app/requirements.txt
+# Paths are relative to the build context (repository root when using 'gcloud builds submit .')
+COPY cloudrun_ingestor/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY backend/ /app/backend/
-COPY cloudrun_ingestor/main.py /app/main.py
+COPY backend/ ./backend/
+# Copy the entrypoint
+COPY cloudrun_ingestor/main.py ./main.py
 
 # Start the Gunicorn server
 # - 1 worker, 1 thread for predictable, single-threaded background work
