@@ -381,5 +381,7 @@ def log_write_outcome(
         reason=str(reason),
         subscription=subscription,
         message_id=message_id,
+        # Explicit correlation field for Firestore auditability.
+        **{"source.messageId": message_id},
     )
 

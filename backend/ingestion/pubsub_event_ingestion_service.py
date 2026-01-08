@@ -12,7 +12,9 @@ from typing import Any
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import Response
 
-from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware
+import logging
+
+from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware, log_event
 from backend.common.ops_metrics import REGISTRY
 from backend.ingestion.pubsub_event_store import build_event_store, parse_pubsub_push
 from backend.ingestion.ingest_heartbeat_handler import (
@@ -20,6 +22,8 @@ from backend.ingestion.ingest_heartbeat_handler import (
     extract_subscription_id,
     parse_ingest_heartbeat,
 )
+
+logger = logging.getLogger("pubsub-event-ingestion")
 
 
 def _utcnow_iso() -> str:
@@ -128,6 +132,17 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             pubsub_publish_time_utc=ev.publish_time_utc,
             project_id=os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or None,
         )
+        log_event(
+            logger,
+            "ingest_heartbeat.write",
+            severity="INFO",
+            pipeline_id=hb.pipeline_id,
+            outcome=res.outcome,
+            reason=res.reason,
+            subscription=ev.subscription,
+            message_id=ev.message_id,
+            **{"source.messageId": ev.message_id},
+        )
         return {
             "ok": True,
             "event_id": ev.event_id,
@@ -141,6 +156,16 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             },
         }
     except Exception as e:
+        log_event(
+            logger,
+            "ingest_heartbeat.write_exception",
+            severity="ERROR",
+            pipeline_id=hb.pipeline_id,
+            error=str(e),
+            subscription=ev.subscription,
+            message_id=ev.message_id,
+            **{"source.messageId": ev.message_id},
+        )
         # Correctness: return non-2xx so Pub/Sub retries.
         # Idempotency is guaranteed by the dedupe document keyed by message_id.
         raise HTTPException(

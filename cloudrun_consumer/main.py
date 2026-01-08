@@ -216,6 +216,7 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             severity="INFO",
             handler=handler.name,
             messageId=message_id,
+            **{"source.messageId": message_id},
             topic=source_topic,
             subscription=subscription_str,
             serviceId=result.get("serviceId"),
@@ -225,10 +226,24 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         return {"ok": True, **result}
     except ValueError as e:
         # Treat as poison for this consumer; allow DLQ routing.
-        log("materialize.bad_event", severity="ERROR", error=str(e), handler=handler.name, messageId=message_id)
+        log(
+            "materialize.bad_event",
+            severity="ERROR",
+            error=str(e),
+            handler=handler.name,
+            messageId=message_id,
+            **{"source.messageId": message_id},
+        )
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        log("materialize.exception", severity="ERROR", error=str(e), handler=handler.name, messageId=message_id)
+        log(
+            "materialize.exception",
+            severity="ERROR",
+            error=str(e),
+            handler=handler.name,
+            messageId=message_id,
+            **{"source.messageId": message_id},
+        )
         raise HTTPException(status_code=500, detail="materialize_exception") from e
 
 

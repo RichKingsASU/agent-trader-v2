@@ -51,6 +51,41 @@ class FirestoreWriter:
         self._firestore = firestore_mod
         self._db = firestore_mod.Client(project=project_id, database=database)
 
+    def _protect_published_at(self, *, existing: dict[str, Any], incoming_doc: dict[str, Any]) -> dict[str, Any]:
+        """
+        Best-effort monotonic protection for fields that may be used for ordering.
+
+        Invariants:
+        - If a document already has `publishedAt`, we never move it backwards.
+        - If a document already has `source.publishedAt`, we never move it backwards.
+
+        Note: This does NOT add new fields; it only prevents regressions.
+        """
+        out = dict(incoming_doc)
+        if not isinstance(existing, dict):
+            return out
+
+        existing_published_at = _parse_rfc3339(existing.get("publishedAt"))
+        incoming_published_at = _parse_rfc3339(out.get("publishedAt"))
+        if existing_published_at is not None and incoming_published_at is not None and incoming_published_at < existing_published_at:
+            out["publishedAt"] = existing_published_at
+
+        existing_src = existing.get("source")
+        incoming_src = out.get("source")
+        existing_source_pub = _parse_rfc3339(existing_src.get("publishedAt")) if isinstance(existing_src, dict) else None
+        incoming_source_pub = _parse_rfc3339(incoming_src.get("publishedAt")) if isinstance(incoming_src, dict) else None
+        if (
+            isinstance(incoming_src, dict)
+            and existing_source_pub is not None
+            and incoming_source_pub is not None
+            and incoming_source_pub < existing_source_pub
+        ):
+            fixed_src = dict(incoming_src)
+            fixed_src["publishedAt"] = existing_source_pub
+            out["source"] = fixed_src
+
+        return out
+
     def _upsert_event_doc(
         self,
         *,
@@ -88,7 +123,8 @@ class FirestoreWriter:
             if existing_max is not None and incoming < existing_max:
                 return False, "stale_event_ignored"
 
-            txn.set(ref, doc)
+            protected = self._protect_published_at(existing=existing or {}, incoming_doc=doc)
+            txn.set(ref, protected)
             return True, "applied"
 
         txn = self._db.transaction()
@@ -211,7 +247,8 @@ class FirestoreWriter:
         Writes `ops_services/{serviceId}` with stale protection.
 
         Stale protection rule (per mission):
-        - only overwrite if incoming `updated_at` >= max(stored.lastHeartbeatAt, stored.updatedAt)
+        - only overwrite if incoming `updated_at` >= max(stored.lastHeartbeatAt, stored.source.publishedAt)
+        - `updatedAt` stored in Firestore is always a server timestamp (write time)
         """
         ref = self._db.collection("ops_services").document(service_id)
 
@@ -220,8 +257,12 @@ class FirestoreWriter:
             existing = snap.to_dict() if snap.exists else {}
 
             existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
-            existing_u = _parse_rfc3339(existing.get("updatedAt")) if isinstance(existing, dict) else None
-            existing_max = _max_dt(existing_lh, existing_u)
+            existing_source_pub = None
+            if isinstance(existing, dict):
+                src = existing.get("source")
+                if isinstance(src, dict):
+                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
+            existing_max = _max_dt(existing_lh, existing_source_pub)
 
             incoming = _as_utc(updated_at)
             if existing_max is not None and incoming < existing_max:
@@ -234,7 +275,8 @@ class FirestoreWriter:
                 "lastHeartbeatAt": last_heartbeat_at,
                 "version": str(version),
                 "region": str(region),
-                "updatedAt": incoming,
+                # Correctness: always server timestamp (never client/event-provided time).
+                "updatedAt": self._firestore.SERVER_TIMESTAMP,
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
@@ -278,8 +320,12 @@ class FirestoreWriter:
             existing = snap.to_dict() if snap.exists else {}
 
             existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
-            existing_u = _parse_rfc3339(existing.get("updatedAt")) if isinstance(existing, dict) else None
-            existing_max = _max_dt(existing_lh, existing_u)
+            existing_source_pub = None
+            if isinstance(existing, dict):
+                src = existing.get("source")
+                if isinstance(src, dict):
+                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
+            existing_max = _max_dt(existing_lh, existing_source_pub)
 
             incoming = _as_utc(updated_at)
             if existing_max is not None and incoming < existing_max:
@@ -293,7 +339,8 @@ class FirestoreWriter:
                 "lastHeartbeatAt": last_heartbeat_at,
                 "version": str(version),
                 "region": str(region),
-                "updatedAt": incoming,
+                # Correctness: always server timestamp (never client/event-provided time).
+                "updatedAt": self._firestore.SERVER_TIMESTAMP,
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
