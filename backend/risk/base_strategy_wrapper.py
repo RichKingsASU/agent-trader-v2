@@ -21,8 +21,17 @@ Usage in functions/main.py:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+from backend.common.logging import log_event
+from backend.observability.risk_signals import (
+    compute_capital_utilization,
+    compute_drawdown_velocity,
+    compute_risk_per_strategy,
+    risk_correlation_id,
+)
 
 from .circuit_breakers import CircuitBreakerManager
 from .notifications import NotificationService
