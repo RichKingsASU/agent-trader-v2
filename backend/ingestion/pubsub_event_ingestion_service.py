@@ -9,12 +9,17 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import Response
 
 from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware
 from backend.common.ops_metrics import REGISTRY
 from backend.ingestion.pubsub_event_store import build_event_store, parse_pubsub_push
+from backend.ingestion.ingest_heartbeat_handler import (
+    apply_ingest_heartbeat_to_firestore,
+    extract_subscription_id,
+    parse_ingest_heartbeat,
+)
 
 
 def _utcnow_iso() -> str:
@@ -97,7 +102,56 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
 
     store = app.state.store
     store.write_event(ev)
-    return {"ok": True, "event_id": ev.event_id, "event_type": ev.event_type}
+
+    # Single-topic end-to-end proof slice:
+    # Only apply Firestore business updates when this push comes from the
+    # ingest-heartbeat subscription/topic.
+    expected_sub_id = (os.getenv("INGEST_HEARTBEAT_SUBSCRIPTION_ID") or "ingest-heartbeat").strip()
+    sub_id = extract_subscription_id(ev.subscription)
+    if sub_id != expected_sub_id:
+        return {"ok": True, "event_id": ev.event_id, "event_type": ev.event_type, "ignored": True}
+
+    hb = parse_ingest_heartbeat(ev)
+    if hb is None:
+        # Ack malformed/unexpected payloads to avoid infinite redelivery loops.
+        return {
+            "ok": True,
+            "event_id": ev.event_id,
+            "event_type": ev.event_type,
+            "ingest_heartbeat": {"accepted": False, "reason": "unable_to_parse"},
+        }
+
+    try:
+        res = apply_ingest_heartbeat_to_firestore(
+            hb=hb,
+            pubsub_message_id=str(ev.event_id),
+            pubsub_publish_time_utc=ev.publish_time_utc,
+            project_id=os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or None,
+        )
+        return {
+            "ok": True,
+            "event_id": ev.event_id,
+            "event_type": ev.event_type,
+            "ingest_heartbeat": {
+                "accepted": True,
+                "outcome": res.outcome,
+                "pipeline_doc": res.pipeline_doc_path,
+                "dedupe_doc": res.dedupe_doc_path,
+                "reason": res.reason,
+            },
+        }
+    except Exception as e:
+        # Correctness: return non-2xx so Pub/Sub retries.
+        # Idempotency is guaranteed by the dedupe document keyed by message_id.
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "ok": False,
+                "event_id": ev.event_id,
+                "event_type": ev.event_type,
+                "ingest_heartbeat": {"accepted": True, "outcome": "error", "error": str(e)},
+            },
+        )
 
 
 @app.get("/api/v1/pubsub/summary")
