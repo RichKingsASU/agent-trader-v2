@@ -1,18 +1,91 @@
+"""
+cloudrun_consumer entrypoint diagnostics
+
+Runtime assumptions (documented for deploy/debug):
+- This module is typically imported by `uvicorn` (e.g. `uvicorn main:app`) from the
+  service working directory (or an image that places this file on `sys.path`).
+- If you see import failures for sibling modules (e.g. `event_utils`), ensure the
+  service directory is on `sys.path` (often via `PYTHONPATH`) and log `sys.path`
+  to confirm.
+"""
+
 from __future__ import annotations
 
 import base64
 import json
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
+def _startup_diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
+    """
+    Print a structured JSON diagnostic log.
 
-from event_utils import infer_topic
-from firestore_writer import FirestoreWriter
-from schema_router import route_payload
+    This file uses print-based structured logging, so this helper is safe to call
+    even before framework logging is configured.
+    """
+    payload: dict[str, Any] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "severity": str(severity).upper(),
+        "service": SERVICE_NAME if "SERVICE_NAME" in globals() else "cloudrun_consumer",
+        "env": os.getenv("ENV") or "unknown",
+        "event_type": str(event_type),
+    }
+    payload.update(fields)
+    try:
+        print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+    except Exception:
+        return
+
+
+# Log Python import/resolve context as early as possible.
+_startup_diag(
+    "python.startup",
+    severity="INFO",
+    python_executable=sys.executable,
+    python_version=sys.version,
+    cwd=os.getcwd(),
+    pythonpath_env=os.getenv("PYTHONPATH") or "",
+    sys_path=list(sys.path),
+    pythonpath_assumption="Service dir must be on sys.path for sibling imports (often via PYTHONPATH).",
+)
+
+try:
+    from fastapi import FastAPI, HTTPException, Request
+    from fastapi.responses import Response
+except Exception as e:
+    _startup_diag(
+        "python.import_failed",
+        severity="CRITICAL",
+        errorType=e.__class__.__name__,
+        error=str(e),
+        module="cloudrun_consumer.main",
+        failed_imports=["fastapi"],
+        cwd=os.getcwd(),
+        pythonpath_env=os.getenv("PYTHONPATH") or "",
+        sys_path=list(sys.path),
+    )
+    raise
+
+try:
+    from event_utils import infer_topic
+    from firestore_writer import FirestoreWriter
+    from schema_router import route_payload
+except Exception as e:
+    _startup_diag(
+        "python.import_failed",
+        severity="CRITICAL",
+        errorType=e.__class__.__name__,
+        error=str(e),
+        module="cloudrun_consumer.main",
+        failed_imports=["event_utils", "firestore_writer", "schema_router"],
+        cwd=os.getcwd(),
+        pythonpath_env=os.getenv("PYTHONPATH") or "",
+        sys_path=list(sys.path),
+    )
+    raise
 
 
 SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"

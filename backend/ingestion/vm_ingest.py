@@ -6,6 +6,11 @@ This module is intentionally container-first:
 - No sys.path hacks
 - Uses Application Default Credentials (Cloud Run service account) or an explicitly
   provided service account JSON in Docker.
+
+Runtime assumptions (documented for deploy/debug):
+- The repository root (containing the `backend/` package) should be on `sys.path`
+  when invoking this as a module (e.g. `python -m backend.ingestion.vm_ingest`).
+- This file logs `sys.path` at startup to make PYTHONPATH issues explicit.
 """
 
 from __future__ import annotations
@@ -21,14 +26,84 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-# Per task requirement: keep these imports exactly (no lazy import indirection).
-from google.cloud import pubsub_v1, secretmanager
-from google.cloud import firestore
-from google.api_core.exceptions import AlreadyExists
+# Log Python import/resolve context as early as possible (before third-party imports).
+# This is intentionally print-based so it's visible even if dependencies are missing.
+try:
+    print(
+        json.dumps(
+            {
+                "event_type": "python.startup",
+                "severity": "INFO",
+                "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "service": "vm-ingest",
+                "python_executable": sys.executable,
+                "python_version": sys.version,
+                "cwd": os.getcwd(),
+                "pythonpath_env": os.getenv("PYTHONPATH") or "",
+                "sys_path": list(sys.path),
+                "pythonpath_assumption": "Repo root (containing `backend/`) should be on sys.path for package imports.",
+            },
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ),
+        flush=True,
+    )
+except Exception:
+    pass
+
+# Third-party imports: fail fast with CRITICAL diagnostics if missing.
+try:
+    # Per task requirement: keep these imports exactly (no lazy import indirection).
+    from google.cloud import pubsub_v1, secretmanager
+    from google.cloud import firestore
+    from google.api_core.exceptions import AlreadyExists
+except Exception as e:
+    try:
+        print(
+            json.dumps(
+                {
+                    "event_type": "python.import_failed",
+                    "severity": "CRITICAL",
+                    "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "service": "vm-ingest",
+                    "failed_import": "google.cloud / google.api_core",
+                    "errorType": e.__class__.__name__,
+                    "error": str(e),
+                    "cwd": os.getcwd(),
+                    "pythonpath_env": os.getenv("PYTHONPATH") or "",
+                    "sys_path": list(sys.path),
+                },
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
+    raise
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
+    """
+    Print a structured JSON diagnostic log.
+
+    This entrypoint intentionally uses print-based JSON logs.
+    """
+    payload: dict[str, Any] = {
+        "event_type": str(event_type),
+        "severity": str(severity).upper(),
+        "ts": _utcnow_iso(),
+        "service": "vm-ingest",
+    }
+    payload.update(fields)
+    try:
+        print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+    except Exception:
+        return
 
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -191,6 +266,22 @@ def _doc_for_message(message: Any) -> dict[str, Any]:
 
 
 def run() -> int:
+    # Per audit requirement: explicitly validate backend imports with clear CRITICAL logs.
+    try:
+        import backend  # noqa: F401
+    except Exception as e:
+        _diag(
+            "python.import_failed",
+            severity="CRITICAL",
+            failed_import="backend",
+            errorType=e.__class__.__name__,
+            error=str(e),
+            cwd=os.getcwd(),
+            pythonpath_env=os.getenv("PYTHONPATH") or "",
+            sys_path=list(sys.path),
+        )
+        raise
+
     cfg = _maybe_apply_secret_config(_load_config_from_env())
     if not cfg.pubsub_project_id:
         raise RuntimeError("Missing PUBSUB_PROJECT_ID (or GOOGLE_CLOUD_PROJECT).")
