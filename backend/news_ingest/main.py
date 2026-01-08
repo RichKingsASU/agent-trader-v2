@@ -39,7 +39,15 @@ def main() -> None:
     log_runtime_fingerprint(service="news-ingest")
     try:
         fp = get_build_fingerprint()
-        print(json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False), flush=True)
+        logger.info(
+            "build_fingerprint",
+            extra={
+                "event_type": "build_fingerprint",
+                "intent_type": "build_fingerprint",
+                "service": "news-ingest",
+                **fp,
+            },
+        )
     except Exception:
         logger.exception("news_ingest.build_fingerprint_log_failed")
         pass

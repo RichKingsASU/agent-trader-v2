@@ -4,6 +4,7 @@ import base64
 import json
 import traceback
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -17,6 +18,16 @@ from schema_router import route_payload
 
 
 SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"
+DLQ_SAMPLE_RATE_DEFAULT = "0.01"  # 1% (deterministic per messageId)
+DLQ_SAMPLE_TTL_HOURS_DEFAULT = "72"
+
+_logger = logging.getLogger("cloudrun_consumer")
+if not _logger.handlers:
+    _handler = logging.StreamHandler(stream=sys.stdout)
+    _handler.setFormatter(logging.Formatter("%(message)s"))
+    _logger.addHandler(_handler)
+_logger.setLevel(str(os.getenv("LOG_LEVEL") or "INFO").upper())
+_logger.propagate = False
 
 
 def _utc_now() -> datetime:
@@ -56,7 +67,15 @@ def log(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
     }
     payload.update(fields)
     try:
-        print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+        sev = str(severity).upper()
+        if sev in {"ERROR", "CRITICAL", "ALERT", "EMERGENCY"}:
+            _logger.error(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+        elif sev in {"WARNING"}:
+            _logger.warning(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+        elif sev in {"DEBUG"}:
+            _logger.debug(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+        else:
+            _logger.info(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
     except Exception:
         # Preserve stack traces even if stdout/serialization is broken.
         try:
@@ -86,6 +105,18 @@ def _require_env(name: str, *, default: Optional[str] = None) -> str:
             return default
         raise RuntimeError(f"Missing required env var: {name}")
     return str(v).strip()
+
+def _float_env(name: str, *, default: str) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        raw = default
+    try:
+        return float(raw)
+    except Exception:
+        try:
+            return float(default)
+        except Exception:
+            return 0.0
 
 
 app = FastAPI(title="Cloud Run Pub/Sub → Firestore Materializer", version="0.1.0")
@@ -172,6 +203,14 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log("pubsub.invalid_envelope", severity="ERROR", reason="missing_messageId")
         raise HTTPException(status_code=400, detail="missing_messageId")
 
+    delivery_attempt = None
+    da = message.get("deliveryAttempt")
+    if da is not None:
+        try:
+            delivery_attempt = int(da)
+        except Exception:
+            delivery_attempt = None
+
     publish_time = _parse_rfc3339(message.get("publishTime")) or _utc_now()
     attributes_raw = message.get("attributes") or {}
     attributes: dict[str, str] = {}
@@ -181,31 +220,86 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
                 continue
             attributes[str(k)] = "" if v is None else str(v)
 
+    writer: FirestoreWriter = app.state.firestore_writer
+    dlq_sample_rate = _float_env("DLQ_SAMPLE_RATE", default=DLQ_SAMPLE_RATE_DEFAULT)
+    dlq_sample_ttl_hours = _float_env("DLQ_SAMPLE_TTL_HOURS", default=DLQ_SAMPLE_TTL_HOURS_DEFAULT)
+
+    def _record_dlq_candidate(*, reason: str, error: str, handler_name: str, topic: str, payload: Optional[dict[str, Any]]) -> None:
+        # "DLQ" is enforced by Pub/Sub dead-letter policy; we log + sample so we can debug without relying on DLQ retention.
+        log(
+            "pubsub.dlq_candidate",
+            severity="ERROR",
+            messageId=message_id,
+            subscription=subscription_str,
+            topic=topic or "",
+            handler=handler_name,
+            reason=reason,
+            error=error,
+            http_status=400,
+            deliveryAttempt=delivery_attempt,
+            dlq_sample_rate=dlq_sample_rate,
+        )
+        wrote = writer.maybe_write_sampled_dlq_event(
+            message_id=message_id,
+            subscription=subscription_str,
+            topic=topic or "",
+            handler=handler_name,
+            http_status=400,
+            reason=reason,
+            error=error,
+            delivery_attempt=delivery_attempt,
+            attributes=attributes,
+            payload=payload,
+            sample_rate=dlq_sample_rate,
+            ttl_hours=dlq_sample_ttl_hours,
+        )
+        if wrote:
+            log(
+                "pubsub.dlq_sample_written",
+                severity="NOTICE",
+                messageId=message_id,
+                subscription=subscription_str,
+                handler=handler_name,
+                deliveryAttempt=delivery_attempt,
+            )
+
     data_b64 = message.get("data")
     if not isinstance(data_b64, str) or not data_b64.strip():
-        log("pubsub.invalid_envelope", severity="ERROR", reason="missing_data", messageId=message_id)
+        _record_dlq_candidate(reason="missing_data", error="missing_data", handler_name="unknown", topic="", payload=None)
         raise HTTPException(status_code=400, detail="missing_data")
 
     try:
         raw = base64.b64decode(data_b64, validate=True)
     except Exception as e:
-        log("pubsub.invalid_base64", severity="ERROR", error=str(e), messageId=message_id)
+        _record_dlq_candidate(reason="invalid_base64", error=str(e), handler_name="unknown", topic="", payload=None)
         raise HTTPException(status_code=400, detail="invalid_base64") from e
 
     try:
         payload = json.loads(raw.decode("utf-8"))
     except Exception as e:
-        log("pubsub.invalid_payload_json", severity="ERROR", error=str(e), messageId=message_id)
+        _record_dlq_candidate(reason="invalid_payload_json", error=str(e), handler_name="unknown", topic="", payload=None)
         raise HTTPException(status_code=400, detail="invalid_payload_json") from e
 
     if not isinstance(payload, dict):
-        log("pubsub.payload_not_object", severity="ERROR", messageId=message_id, payloadType=str(type(payload).__name__))
+        _record_dlq_candidate(
+            reason="payload_not_object",
+            error=f"payloadType={type(payload).__name__}",
+            handler_name="unknown",
+            topic="",
+            payload=None,
+        )
         raise HTTPException(status_code=400, detail="payload_not_object")
 
     inferred_topic = infer_topic(attributes=attributes, payload=payload, subscription=subscription_str)
     handler = route_payload(payload=payload, attributes=attributes, topic=inferred_topic)
     if handler is None:
-        log("pubsub.unroutable_payload", severity="ERROR", messageId=message_id, topic=inferred_topic or "", subscription=subscription_str)
+        _record_dlq_candidate(
+            reason="unroutable_payload",
+            error="no_route_match",
+            handler_name="unknown",
+            topic=inferred_topic or "",
+            payload=payload,
+        )
         raise HTTPException(status_code=400, detail="unroutable_payload")
 
     env = os.getenv("ENV") or "unknown"
@@ -218,8 +312,6 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
     else:
         # For non-system streams, prefer the inferred topic (from attributes/payload/subscription mapping).
         source_topic = inferred_topic or ""
-
-    writer: FirestoreWriter = app.state.firestore_writer
 
     try:
         result = handler.handler(
@@ -245,10 +337,19 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         return {"ok": True, **result}
     except ValueError as e:
         # Treat as poison for this consumer; allow DLQ routing.
-        log("materialize.bad_event", severity="ERROR", error=str(e), handler=handler.name, messageId=message_id)
+        _record_dlq_candidate(reason="materialize.bad_event", error=str(e), handler_name=handler.name, topic=source_topic, payload=payload)
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        log("materialize.exception", severity="ERROR", error=str(e), handler=handler.name, messageId=message_id)
+        log(
+            "materialize.exception",
+            severity="ERROR",
+            error=str(e),
+            handler=handler.name,
+            messageId=message_id,
+            subscription=subscription_str,
+            topic=source_topic,
+            deliveryAttempt=delivery_attempt,
+        )
         raise HTTPException(status_code=500, detail="materialize_exception") from e
 
 

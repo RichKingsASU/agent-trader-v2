@@ -102,15 +102,27 @@ def validate_or_exit(service: str, *, env: Mapping[str, str] | None = None) -> N
     if not missing:
         return
 
+    env_name = (
+        (os.getenv("ENVIRONMENT") or "").strip()
+        or (os.getenv("ENV") or "").strip()
+        or (os.getenv("APP_ENV") or "").strip()
+        or (os.getenv("DEPLOY_ENV") or "").strip()
+        or "unknown"
+    )
     payload = {
         "ts": _utc_now_iso(),
         "service": key,
+        "env": env_name,
         "missing": missing,
         "required": [_format_requirement(r) for r in required],
     }
     try:
         # Single-line log for container collectors.
-        print("CONTRACT_FAIL " + json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+        sys.stdout.write("CONTRACT_FAIL " + json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
     except Exception:
         # Preserve traceback if stdout logging fails.
         try:

@@ -39,9 +39,14 @@ async def main():
     ops = OpsLogger("stream-bridge")
     try:
         fp = get_build_fingerprint()
-        print(
-            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
-            flush=True,
+        logger.info(
+            "build_fingerprint",
+            extra={
+                "event_type": "build_fingerprint",
+                "intent_type": "build_fingerprint",
+                "service": "stream-bridge",
+                **fp,
+            },
         )
     except Exception:
         logger.exception("stream_bridge.build_fingerprint_log_failed")
