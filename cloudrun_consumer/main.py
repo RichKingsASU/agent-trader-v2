@@ -2,30 +2,35 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 import os
+import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
-from flask import Flask, Response, request
-from google.cloud import firestore
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
 
-from idempotency import IdempotencyStore
-from schema_router import EventContext, SchemaRouter
+from firestore_writer import FirestoreWriter
+from schema_router import route_payload
+
+
+SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _iso_utc(dt: datetime) -> str:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _parse_rfc3339(s: str) -> Optional[datetime]:
-    if not s or not isinstance(s, str):
+def _parse_rfc3339(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    s = str(value).strip()
+    if not s:
         return None
     try:
         if s.endswith("Z"):
@@ -38,214 +43,186 @@ def _parse_rfc3339(s: str) -> Optional[datetime]:
         return None
 
 
-class _JsonLogFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        # record.msg is expected to already be JSON; fall back to wrapping.
-        msg = record.getMessage()
-        try:
-            json.loads(msg)
-            return msg
-        except Exception:
-            payload = {
-                "severity": record.levelname,
-                "message": msg,
-            }
-            return json.dumps(payload, separators=(",", ":"), sort_keys=True)
-
-
-def _setup_logging() -> logging.Logger:
-    logger = logging.getLogger("cloudrun_consumer")
-    if logger.handlers:
-        return logger
-
-    logger.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
-    handler = logging.StreamHandler()
-    handler.setFormatter(_JsonLogFormatter())
-    logger.addHandler(handler)
-    logger.propagate = False
-    return logger
-
-
-logger = _setup_logging()
-app = Flask(__name__)
-
-
-def _log(severity: str, message: str, **fields: Any) -> None:
-    payload = {
-        "severity": severity,
-        "message": message,
-        **fields,
+def log(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
+    payload: dict[str, Any] = {
+        "timestamp": _utc_now().isoformat(),
+        "severity": str(severity).upper(),
+        "service": SERVICE_NAME,
+        "env": os.getenv("ENV") or "unknown",
+        "event_type": str(event_type),
     }
-    line = json.dumps(payload, separators=(",", ":"), sort_keys=True, default=str)
-    getattr(logger, severity.lower(), logger.info)(line)
-
-
-def _decode_pubsub_data(message: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    data_b64 = message.get("data")
-    if not data_b64:
-        return {}, None
+    payload.update(fields)
     try:
-        raw = base64.b64decode(data_b64).decode("utf-8")
-    except Exception as e:
-        return None, f"base64_decode_failed: {e}"
-    raw = raw.strip()
-    if not raw:
-        return {}, None
-    try:
-        return json.loads(raw), None
-    except Exception as e:
-        return None, f"json_decode_failed: {e}"
+        print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+    except Exception:
+        return
 
 
-def _extract_pubsub_envelope(body: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    if not isinstance(body, dict):
-        return None, "invalid_body"
-    message = body.get("message")
-    if not isinstance(message, dict):
-        return None, "missing_message"
-    return message, None
+def _require_env(name: str, *, default: Optional[str] = None) -> str:
+    v = os.getenv(name)
+    if v is None or not str(v).strip():
+        if default is not None:
+            return default
+        raise RuntimeError(f"Missing required env var: {name}")
+    return str(v).strip()
+
+
+app = FastAPI(title="Cloud Run Pub/Sub → Firestore Materializer", version="0.1.0")
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    project_id = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCLOUD_PROJECT")
+    if not project_id:
+        raise RuntimeError("Missing GCP_PROJECT (or GOOGLE_CLOUD_PROJECT).")
+
+    database = os.getenv("FIRESTORE_DATABASE") or "(default)"
+    app.state.firestore_writer = FirestoreWriter(project_id=project_id, database=database)
+    app.state.loop_heartbeat_monotonic = time.monotonic()
+
+    log(
+        "startup",
+        severity="INFO",
+        gcp_project=project_id,
+        firestore_database=database,
+        env=os.getenv("ENV") or "unknown",
+        default_region=os.getenv("DEFAULT_REGION") or "unknown",
+        system_events_topic=os.getenv("SYSTEM_EVENTS_TOPIC") or "",
+    )
 
 
 @app.get("/healthz")
-def healthz() -> Response:
-    return Response("ok", status=200, mimetype="text/plain")
+async def healthz() -> dict[str, Any]:
+    return {"status": "ok", "service": SERVICE_NAME, "ts": _utc_now().isoformat()}
 
 
-@app.post("/pubsub")
-def pubsub_push() -> Response:
-    received_at = _utc_now()
+@app.get("/readyz")
+async def readyz(response: Response) -> dict[str, Any]:
+    ok = bool(getattr(app.state, "firestore_writer", None))
+    response.status_code = 200 if ok else 503
+    return {"status": "ok" if ok else "not_ready", "service": SERVICE_NAME}
+
+
+@app.get("/livez")
+async def livez(response: Response) -> dict[str, Any]:
+    now = time.monotonic()
+    last = float(getattr(app.state, "loop_heartbeat_monotonic", 0.0) or 0.0)
+    max_age_s = float(os.getenv("LIVEZ_MAX_AGE_S") or "60")
+    age_s = max(0.0, now - last)
+    ok = age_s <= max_age_s
+    response.status_code = 200 if ok else 503
+    return {"status": "ok" if ok else "wedged", "age_seconds": age_s, "max_age_seconds": max_age_s}
+
+
+@app.post("/pubsub/push")
+async def pubsub_push(req: Request) -> dict[str, Any]:
+    """
+    Pub/Sub push handler for Cloud Run.
+
+    Required behavior:
+    - validate + decode base64 JSON payload
+    - idempotency via messageId -> ops_dedupe/{messageId}
+    - stale protection for ops_services/{serviceId}
+    - structured JSON logs
+    """
+    app.state.loop_heartbeat_monotonic = time.monotonic()
+
     try:
-        body = request.get_json(force=True, silent=False)
+        body = await req.json()
     except Exception as e:
-        _log("ERROR", "request_json_parse_failed", error=str(e))
-        # Non-2xx will retry; malformed requests should be acknowledged.
-        return Response(status=204)
+        log("pubsub.invalid_json", severity="ERROR", error=str(e))
+        raise HTTPException(status_code=400, detail="invalid_json") from e
 
-    message, err = _extract_pubsub_envelope(body)
-    if err:
-        _log("ERROR", "invalid_pubsub_envelope", error=err, bodyType=str(type(body)))
-        return Response(status=204)
+    if not isinstance(body, dict):
+        log("pubsub.invalid_envelope", severity="ERROR", reason="body_not_object")
+        raise HTTPException(status_code=400, detail="invalid_envelope")
 
-    attributes = message.get("attributes") or {}
-    if not isinstance(attributes, dict):
-        attributes = {}
-    # Pub/Sub attributes are string:string
-    attributes = {str(k): str(v) for k, v in attributes.items()}
+    message = body.get("message")
+    if not isinstance(message, dict):
+        log("pubsub.invalid_envelope", severity="ERROR", reason="missing_message")
+        raise HTTPException(status_code=400, detail="invalid_envelope")
 
-    message_id = str(message.get("messageId") or message.get("message_id") or "").strip()
-    publish_time = str(message.get("publishTime") or "").strip()
-    subscription = str((body.get("subscription") or "")).strip()
-
-    payload, payload_err = _decode_pubsub_data(message)
-    if payload_err:
-        _log(
-            "ERROR",
-            "pubsub_message_decode_failed",
-            error=payload_err,
-            messageId=message_id,
-            subscription=subscription,
-        )
-        return Response(status=204)
-    if payload is None:
-        return Response(status=204)
-
-    router = SchemaRouter()
-    topic = router.resolve_topic(subscription=subscription, attributes=attributes, payload=payload)
-    event_type = router.resolve_event_type(attributes=attributes, payload=payload)
-
-    schema_version = str(attributes.get("schemaVersion") or payload.get("schemaVersion") or "unknown")
-    if schema_version not in router.supported_versions:
-        _log(
-            "WARNING",
-            "unsupported_schema_version",
-            messageId=message_id,
-            schemaVersion=schema_version,
-            supported=list(sorted(router.supported_versions)),
-            topic=topic,
-            eventType=event_type,
-        )
-        # Ack: unsupported schemas are not recoverable by retry.
-        return Response(status=204)
-
-    published_at = (
-        _parse_rfc3339(str(payload.get("publishedAt") or "")) or _parse_rfc3339(attributes.get("publishedAt", ""))
-    )
-    if published_at is None:
-        published_at = _parse_rfc3339(publish_time) or received_at
-    published_at_iso = _iso_utc(published_at)
-
+    message_id = str(message.get("messageId") or "").strip()
     if not message_id:
-        # messageId missing shouldn't happen; still handle safely by using a deterministic fallback.
-        message_id = f"missing:{subscription}:{published_at_iso}:{event_type}"
+        log("pubsub.invalid_envelope", severity="ERROR", reason="missing_messageId")
+        raise HTTPException(status_code=400, detail="missing_messageId")
 
-    # Enforce idempotency using messageId.
-    db = firestore.Client()
-    idempotency = IdempotencyStore(client=db)
-    claim = idempotency.begin(
-        message_id=message_id,
-        published_at=published_at,
-        extra={"topic": topic, "eventType": event_type, "subscription": subscription},
-    )
-    if claim.already_done:
-        _log(
-            "INFO",
-            "duplicate_message_skipped",
-            messageId=message_id,
-            topic=topic,
-            eventType=event_type,
-            subscription=subscription,
-        )
-        return Response(status=204)
+    publish_time = _parse_rfc3339(message.get("publishTime")) or _utc_now()
+    attributes_raw = message.get("attributes") or {}
+    attributes: dict[str, str] = {}
+    if isinstance(attributes_raw, dict):
+        for k, v in attributes_raw.items():
+            if k is None:
+                continue
+            attributes[str(k)] = "" if v is None else str(v)
 
-    handler = router.handler_for(topic=topic, event_type=event_type, payload=payload)
-    if handler is None:
-        _log(
-            "WARNING",
-            "no_handler_for_event",
-            messageId=message_id,
-            topic=topic,
-            eventType=event_type,
-            schemaVersion=schema_version,
-        )
-        return Response(status=204)
-
-    ctx = EventContext(
-        message_id=message_id,
-        topic=topic,
-        schema_version=schema_version,
-        published_at_iso=published_at_iso,
-        event_type=event_type,
-        subscription=subscription,
-        attributes=attributes,
-    )
+    data_b64 = message.get("data")
+    if not isinstance(data_b64, str) or not data_b64.strip():
+        log("pubsub.invalid_envelope", severity="ERROR", reason="missing_data", messageId=message_id)
+        raise HTTPException(status_code=400, detail="missing_data")
 
     try:
-        handler(payload, ctx)
+        raw = base64.b64decode(data_b64, validate=True)
     except Exception as e:
-        _log(
-            "ERROR",
-            "handler_failed",
-            error=str(e),
-            messageId=message_id,
-            topic=topic,
-            eventType=event_type,
-        )
-        # Non-2xx triggers Pub/Sub retry (safe because we only dedupe after status=done).
-        return Response(status=500)
+        log("pubsub.invalid_base64", severity="ERROR", error=str(e), messageId=message_id)
+        raise HTTPException(status_code=400, detail="invalid_base64") from e
 
-    idempotency.mark_done(message_id=message_id, extra={"topic": topic, "eventType": event_type})
-    _log(
-        "INFO",
-        "event_processed",
-        messageId=message_id,
-        topic=topic,
-        eventType=event_type,
-        schemaVersion=schema_version,
-        publishedAt=published_at_iso,
-    )
-    return Response(status=204)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        log("pubsub.invalid_payload_json", severity="ERROR", error=str(e), messageId=message_id)
+        raise HTTPException(status_code=400, detail="invalid_payload_json") from e
+
+    if not isinstance(payload, dict):
+        log("pubsub.payload_not_object", severity="ERROR", messageId=message_id, payloadType=str(type(payload).__name__))
+        raise HTTPException(status_code=400, detail="payload_not_object")
+
+    handler = route_payload(payload=payload, attributes=attributes)
+    if handler is None:
+        log("pubsub.unroutable_payload", severity="ERROR", messageId=message_id)
+        raise HTTPException(status_code=400, detail="unroutable_payload")
+
+    env = os.getenv("ENV") or "unknown"
+    default_region = os.getenv("DEFAULT_REGION") or "unknown"
+    source_topic = os.getenv("SYSTEM_EVENTS_TOPIC") or ""
+    if not source_topic:
+        log("config.missing_system_events_topic", severity="ERROR")
+        raise HTTPException(status_code=500, detail="missing_SYSTEM_EVENTS_TOPIC")
+
+    writer: FirestoreWriter = app.state.firestore_writer
+
+    try:
+        result = handler.handler(
+            payload=payload,
+            env=env,
+            default_region=default_region,
+            source_topic=source_topic,
+            message_id=message_id,
+            pubsub_published_at=publish_time,
+            firestore_writer=writer,
+        )
+        log(
+            "materialize.ok",
+            severity="INFO",
+            handler=handler.name,
+            messageId=message_id,
+            serviceId=result.get("serviceId"),
+            applied=result.get("applied"),
+            reason=result.get("reason"),
+        )
+        return {"ok": True, **result}
+    except ValueError as e:
+        # Treat as poison for this consumer; allow DLQ routing.
+        log("materialize.bad_event", severity="ERROR", error=str(e), handler=handler.name, messageId=message_id)
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        log("materialize.exception", severity="ERROR", error=str(e), handler=handler.name, messageId=message_id)
+        raise HTTPException(status_code=500, detail="materialize_exception") from e
 
 
 if __name__ == "__main__":
-    # Local dev only (Cloud Run uses gunicorn).
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
+    import uvicorn
+
+    port = int(os.getenv("PORT") or "8080")
+    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="warning", access_log=False)
+
