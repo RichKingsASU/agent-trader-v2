@@ -182,3 +182,9 @@ jobs:
         shell: bash
         run: python3 scripts/smoke_check_imports.py
 
+      - name: Pub/Sub contract gate (Python envelope vs TS shared types)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest -q tests.test_pubsub_envelope_contract_gate
+
