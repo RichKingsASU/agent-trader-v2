@@ -3,17 +3,19 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import traceback
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+from time_audit import ensure_utc
 
 
 _DOC_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_\-:.]+")
 
 
 def as_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    return ensure_utc(dt, source="cloudrun_consumer.event_utils.as_utc", field="dt")
 
 
 def parse_ts(value: Any) -> Optional[datetime]:
@@ -27,11 +29,29 @@ def parse_ts(value: Any) -> Optional[datetime]:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return as_utc(value)
+        return ensure_utc(value, source="cloudrun_consumer.event_utils.parse_ts", field="datetime")
     if isinstance(value, (int, float)):
         try:
             return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
         except Exception:
+            try:
+                sys.stderr.write(
+                    json.dumps(
+                        {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "severity": "ERROR",
+                            "event_type": "event_utils.parse_ts_epoch_failed",
+                            "value_type": type(value).__name__,
+                            "exception": traceback.format_exc()[-8000:],
+                        },
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
             return None
     s = str(value).strip()
     if not s:
@@ -40,8 +60,26 @@ def parse_ts(value: Any) -> Optional[datetime]:
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         dt = datetime.fromisoformat(s)
-        return as_utc(dt)
+        return ensure_utc(dt, source="cloudrun_consumer.event_utils.parse_ts", field="iso_string")
     except Exception:
+        try:
+            sys.stderr.write(
+                json.dumps(
+                    {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "severity": "ERROR",
+                        "event_type": "event_utils.parse_ts_iso_failed",
+                        "value": s[:256],
+                        "exception": traceback.format_exc()[-8000:],
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
         return None
 
 
@@ -56,7 +94,7 @@ def ordering_ts(*, payload: dict[str, Any], pubsub_published_at: datetime) -> da
     produced_at = parse_ts(payload.get("producedAt")) if "producedAt" in payload else None
     published_at = parse_ts(payload.get("publishedAt")) if "publishedAt" in payload else None
     ts = parse_ts(payload.get("timestamp")) or parse_ts(payload.get("ts")) or parse_ts(payload.get("time"))
-    return produced_at or published_at or ts or as_utc(pubsub_published_at)
+    return produced_at or published_at or ts or ensure_utc(pubsub_published_at, source="cloudrun_consumer.event_utils.ordering_ts", field="pubsub_published_at")
 
 
 def choose_doc_id(*, payload: dict[str, Any], message_id: str) -> str:
@@ -117,6 +155,23 @@ def infer_topic(
     try:
         mapping = json.loads(raw)
     except Exception:
+        try:
+            sys.stderr.write(
+                json.dumps(
+                    {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "severity": "ERROR",
+                        "event_type": "event_utils.subscription_topic_map_parse_failed",
+                        "exception": traceback.format_exc()[-8000:],
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
         return None
     if not isinstance(mapping, dict):
         return None

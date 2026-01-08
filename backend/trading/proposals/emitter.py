@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,15 +66,26 @@ def _intent_log(intent_type: str, **fields: Any) -> None:
     """
     Cloud-friendly JSON log line to stdout.
     """
+    service = str(os.getenv("SERVICE_NAME") or os.getenv("K_SERVICE") or os.getenv("AGENT_NAME") or "unknown").strip() or "unknown"
+    env = str(os.getenv("ENVIRONMENT") or os.getenv("ENV") or os.getenv("APP_ENV") or os.getenv("DEPLOY_ENV") or "unknown").strip() or "unknown"
     payload = {
         "event_type": "intent",
         "intent_type": intent_type,
-        "severity": fields.pop("severity", "INFO"),
+        "severity": str(fields.pop("severity", "INFO")).upper(),
         "log_ts": _ts(),
+        "service": service,
+        "env": env,
         **fields,
     }
     payload.setdefault("ts", payload["log_ts"])
-    print(_json_line(payload), flush=True)
+    try:
+        sys.stdout.write(_json_line(payload) + "\n")
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+    except Exception:
+        return
 
 
 def _audit_root() -> Path:
@@ -260,7 +272,24 @@ def emit_proposal(proposal: OrderProposal) -> None:
             if isinstance(fb_rationale, dict):
                 fb_rationale["indicators"] = _redact(fb_rationale.get("indicators") or {})
                 fallback["rationale"] = fb_rationale
-            print(_json_line({"event_type": "order_proposal_fallback", **fallback}), flush=True)
+            service = str(os.getenv("SERVICE_NAME") or os.getenv("K_SERVICE") or os.getenv("AGENT_NAME") or "unknown").strip() or "unknown"
+            env = str(os.getenv("ENVIRONMENT") or os.getenv("ENV") or os.getenv("APP_ENV") or os.getenv("DEPLOY_ENV") or "unknown").strip() or "unknown"
+            sys.stdout.write(
+                _json_line(
+                    {
+                        "event_type": "order_proposal_fallback",
+                        "severity": "ERROR",
+                        "service": service,
+                        "env": env,
+                        **fallback,
+                    }
+                )
+                + "\n"
+            )
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
         except Exception:
             return
 

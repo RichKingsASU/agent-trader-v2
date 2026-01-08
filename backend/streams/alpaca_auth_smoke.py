@@ -219,15 +219,22 @@ async def run_alpaca_auth_smoke_tests_async(
     await alpaca_ws_auth_smoke_test(env=env, feed=feed, timeout_s=timeout_s, ws_url=ws_url)
 
     # Emit concise success messages (no secrets).
-    print(
-        "PASS: Alpaca REST auth ok (GET /v2/account) "
-        f"| trading_host={env.trading_host} | account_id={acct_id} | status={acct_status}",
-        flush=True,
-    )
-    print(
-        "PASS: Alpaca WS auth ok (auth only, no subscriptions) " f"| ws_url={ws_url}",
-        flush=True,
-    )
+    try:
+        from backend.common.ops_log import log_json as _log_json  # noqa: WPS433
+
+        _log_json(
+            intent_type="alpaca_auth_smoke",
+            severity="INFO",
+            status="pass",
+            rest_ok=True,
+            ws_ok=True,
+            trading_host=env.trading_host,
+            account_id=acct_id,
+            account_status=acct_status,
+            ws_url=ws_url,
+        )
+    except Exception:
+        pass
 
     return AlpacaAuthSmokeResult(
         rest_ok=True,

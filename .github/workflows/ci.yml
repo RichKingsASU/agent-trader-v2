@@ -96,11 +96,18 @@ jobs:
           cache: pip
           cache-dependency-path: |
             backend/requirements.lock
+            backend/ingestion/requirements.txt
 
       - name: Install backend dependencies (locked)
         run: |
           python3 -m pip install --upgrade "pip==24.3.1"
           python3 -m pip install -r backend/requirements.lock
+
+      - name: Install vm_ingest minimal dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install -r backend/ingestion/requirements.txt
 
       - name: YAML syntax validation (no kubectl)
         shell: bash
@@ -181,6 +188,12 @@ jobs:
       - name: Python import smoke checks
         shell: bash
         run: python3 scripts/smoke_check_imports.py
+
+      - name: Runtime module import check (deployment entrypoints)
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 5s python3 scripts/import_runtime_modules.py
 
       - name: Pub/Sub contract gate (Python envelope vs TS shared types)
         shell: bash

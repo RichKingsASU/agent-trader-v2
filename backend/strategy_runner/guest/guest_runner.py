@@ -16,9 +16,11 @@ import importlib.util
 import io
 import json
 import os
+import signal
 import socket
 import sys
 import tarfile
+import threading
 import traceback
 from pathlib import Path
 from types import ModuleType
@@ -26,6 +28,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 
 PROTOCOL_VERSION = "v1"
+_SHUTDOWN_EVENT = threading.Event()
 
 
 def _utc_now_iso() -> str:
@@ -140,18 +143,45 @@ def run_server(*, bundle_path: Path, port: int, work_dir: Path) -> int:
     # vsock server: CID is ignored for bind in guests; use VMADDR_CID_ANY (0xFFFFFFFF)
     s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)  # type: ignore[attr-defined]
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # Make accept() interruptible so SIGTERM/SIGINT can stop the loop promptly.
+    try:
+        s.settimeout(1.0)
+    except Exception:
+        pass
     VMADDR_CID_ANY = 0xFFFFFFFF
     s.bind((VMADDR_CID_ANY, port))
     s.listen(1)
 
-    while True:
-        conn, _addr = s.accept()
+    def _handle_signal(_signum: int, _frame: Any | None = None) -> None:
+        _SHUTDOWN_EVENT.set()
+
+    if threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(sig, _handle_signal)
+            except Exception:
+                pass
+
+    accept_iter = 0
+    while not _SHUTDOWN_EVENT.is_set():
+        accept_iter += 1
+        sys.stderr.write(f"guest_runner accept_loop_iteration={accept_iter}\n")
+        try:
+            conn, _addr = s.accept()
+        except socket.timeout:
+            continue
+        except Exception as e:
+            sys.stderr.write(f"guest_runner accept_error={type(e).__name__}: {e}\n")
+            continue
         with conn:
             rf = conn.makefile("rb", buffering=0)
             wf = conn.makefile("wb", buffering=0)
             _write_ndjson(wf, [_log("info", f"guest ready (port={port})")])
             try:
                 for msg in _read_ndjson_lines(rf):
+                    if _SHUTDOWN_EVENT.is_set():
+                        _write_ndjson(wf, [_log("info", "shutdown")])
+                        return 0
                     if msg.get("protocol") != PROTOCOL_VERSION:
                         _write_ndjson(wf, [_log("error", "unsupported protocol")])
                         continue
@@ -186,6 +216,8 @@ def run_server(*, bundle_path: Path, port: int, work_dir: Path) -> int:
                     wf.close()
                 except Exception:
                     pass
+
+    return 0
 
 
 def main() -> int:

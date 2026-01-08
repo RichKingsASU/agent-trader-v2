@@ -1,12 +1,18 @@
 import os
 import random
 from datetime import datetime, timezone
+import logging
 
 import psycopg
+
+from backend.common.logging import init_structured_logging
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL env var is not set")
+
+init_structured_logging(service="test-insert-market-candle")
+logger = logging.getLogger(__name__)
 
 symbol = "SPY"
 
@@ -32,5 +38,12 @@ with psycopg.connect(DATABASE_URL) as conn:
         cur.execute(insert_sql, (symbol, ts, open_, high, low, close, volume))
         row = cur.fetchone()
 
-print("Inserted row into public.market_data_1m:")
-print(row)
+logger.info(
+    "inserted_market_candle",
+    extra={
+        "event_type": "db.inserted_market_candle",
+        "symbol": symbol,
+        "ts": ts.isoformat(),
+        "row": row,
+    },
+)

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
+import sys
+import traceback
 from typing import Any, Optional, Tuple
 
 from idempotency import ensure_message_once
@@ -9,16 +14,14 @@ from replay_support import ReplayContext, ensure_event_not_applied
 
 
 def _as_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    return ensure_utc(dt, source="cloudrun_consumer.firestore_writer._as_utc", field="dt")
 
 
 def _parse_rfc3339(value: Any) -> Optional[datetime]:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return _as_utc(value)
+        return ensure_utc(value, source="cloudrun_consumer.firestore_writer._parse_rfc3339", field="datetime")
     s = str(value).strip()
     if not s:
         return None
@@ -26,8 +29,26 @@ def _parse_rfc3339(value: Any) -> Optional[datetime]:
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         dt = datetime.fromisoformat(s)
-        return _as_utc(dt)
+        return ensure_utc(dt, source="cloudrun_consumer.firestore_writer._parse_rfc3339", field="iso_string")
     except Exception:
+        try:
+            sys.stderr.write(
+                json.dumps(
+                    {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "severity": "ERROR",
+                        "event_type": "firestore_writer.parse_rfc3339_failed",
+                        "value": s[:256],
+                        "exception": traceback.format_exc()[-8000:],
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
         return None
 
 
@@ -59,6 +80,137 @@ class FirestoreWriter:
             return str(name)
         # Keep simple; prefix should be Firestore-safe (no '/').
         return f"{p}{name}"
+
+    @staticmethod
+    def _stable_sample(message_id: str, *, rate: float) -> bool:
+        """
+        Deterministic sampling based on message_id (stable across retries).
+        """
+        try:
+            r = float(rate)
+        except Exception:
+            r = 0.0
+        if r <= 0.0:
+            return False
+        if r >= 1.0:
+            return True
+        mid = (message_id or "").strip()
+        if not mid:
+            return False
+        h = hashlib.sha1(mid.encode("utf-8", errors="ignore")).digest()
+        x = int.from_bytes(h[:4], "big") / float(2**32)
+        return x < r
+
+    @staticmethod
+    def _truncate_str(value: Any, *, max_len: int) -> str:
+        s = "" if value is None else str(value)
+        if max_len <= 0:
+            return ""
+        return s if len(s) <= max_len else (s[: max_len - 1] + "…")
+
+    @staticmethod
+    def _sanitize_payload(value: Any) -> Any:
+        """
+        Best-effort scrub for secrets/PII in sampled DLQ docs.
+        """
+        SENSITIVE_KEYS = {
+            "authorization",
+            "api_key",
+            "apikey",
+            "token",
+            "access_token",
+            "refresh_token",
+            "password",
+            "secret",
+            "client_secret",
+        }
+        if isinstance(value, dict):
+            out: dict[str, Any] = {}
+            for k, v in value.items():
+                ks = str(k).lower()
+                if ks in SENSITIVE_KEYS:
+                    out[str(k)] = "[redacted]"
+                else:
+                    out[str(k)] = FirestoreWriter._sanitize_payload(v)
+            return out
+        if isinstance(value, list):
+            return [FirestoreWriter._sanitize_payload(v) for v in value[:50]]
+        return value
+
+    def maybe_write_sampled_dlq_event(
+        self,
+        *,
+        message_id: str,
+        subscription: str,
+        topic: str,
+        handler: str,
+        http_status: int,
+        reason: str,
+        error: str,
+        delivery_attempt: Optional[int],
+        attributes: dict[str, str],
+        payload: Optional[dict[str, Any]],
+        sample_rate: float,
+        ttl_hours: float,
+    ) -> bool:
+        """
+        Best-effort: writes a sampled DLQ-candidate doc into Firestore.
+
+        Retention is bounded via `expiresAt` (TTL field; enable TTL on collection group `sampled_dlq`).
+        Sampling is deterministic on `message_id` to avoid repeated writes on retries.
+        """
+        if not self._stable_sample(message_id, rate=sample_rate):
+            return False
+
+        now = datetime.now(timezone.utc)
+        try:
+            hours = float(ttl_hours)
+        except Exception:
+            hours = 72.0
+        if hours <= 0:
+            return False
+
+        doc_id = (message_id or "").strip() or hashlib.sha1(str(now).encode("utf-8")).hexdigest()[:32]
+        doc_ref = self._db.collection("sampled_dlq").document(doc_id)
+
+        safe_payload = self._sanitize_payload(payload) if isinstance(payload, dict) else None
+        payload_json = ""
+        try:
+            payload_json = json.dumps(safe_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        except Exception:
+            payload_json = ""
+        max_payload_chars = 24_000  # Firestore doc limit guardrail (best-effort)
+        payload_too_large = bool(payload_json) and (len(payload_json) > max_payload_chars)
+
+        doc: dict[str, Any] = {
+            "messageId": (message_id or "").strip(),
+            "subscription": (subscription or "").strip(),
+            "topic": (topic or "").strip(),
+            "handler": (handler or "").strip(),
+            "httpStatus": int(http_status),
+            "reason": self._truncate_str(reason, max_len=256),
+            "error": self._truncate_str(error, max_len=2048),
+            "deliveryAttempt": int(delivery_attempt) if delivery_attempt is not None else None,
+            "attributes": dict(attributes or {}),
+            "receivedAt": now,
+            "expiresAt": now + timedelta(hours=hours),
+        }
+
+        if safe_payload is not None and not payload_too_large:
+            doc["payload"] = safe_payload
+            doc["payloadTruncated"] = False
+        elif payload_json:
+            doc["payloadJsonSnippet"] = self._truncate_str(payload_json, max_len=max_payload_chars)
+            doc["payloadTruncated"] = True
+
+        # Remove nulls for cleaner docs.
+        doc = {k: v for k, v in doc.items() if v is not None}
+        try:
+            doc_ref.set(doc, merge=False)
+            return True
+        except Exception:
+            # Never fail the request path due to DLQ sampling.
+            return False
 
     def _upsert_event_doc(
         self,
@@ -135,8 +287,8 @@ class FirestoreWriter:
             "eventId": event_id,
             "symbol": symbol,
             "eventTime": _as_utc(event_time),
-            "producedAt": produced_at,
-            "publishedAt": published_at,
+            "producedAt": ensure_utc(produced_at, source="cloudrun_consumer.firestore_writer.upsert_market_tick", field="produced_at") if isinstance(produced_at, datetime) else produced_at,
+            "publishedAt": ensure_utc(published_at, source="cloudrun_consumer.firestore_writer.upsert_market_tick", field="published_at") if isinstance(published_at, datetime) else published_at,
             "data": data,
             "source": {
                 "topic": str(source.topic),
@@ -178,11 +330,11 @@ class FirestoreWriter:
             "eventId": event_id,
             "symbol": symbol,
             "timeframe": timeframe or "1m",
-            "start": start,
-            "end": end,
+            "start": ensure_utc(start, source="cloudrun_consumer.firestore_writer.upsert_market_bar_1m", field="start") if isinstance(start, datetime) else start,
+            "end": ensure_utc(end, source="cloudrun_consumer.firestore_writer.upsert_market_bar_1m", field="end") if isinstance(end, datetime) else end,
             "eventTime": _as_utc(event_time),
-            "producedAt": produced_at,
-            "publishedAt": published_at,
+            "producedAt": ensure_utc(produced_at, source="cloudrun_consumer.firestore_writer.upsert_market_bar_1m", field="produced_at") if isinstance(produced_at, datetime) else produced_at,
+            "publishedAt": ensure_utc(published_at, source="cloudrun_consumer.firestore_writer.upsert_market_bar_1m", field="published_at") if isinstance(published_at, datetime) else published_at,
             "data": data,
             "source": {
                 "topic": str(source.topic),
@@ -224,8 +376,8 @@ class FirestoreWriter:
             "strategy": strategy,
             "action": action,
             "eventTime": _as_utc(event_time),
-            "producedAt": produced_at,
-            "publishedAt": published_at,
+            "producedAt": ensure_utc(produced_at, source="cloudrun_consumer.firestore_writer.upsert_trade_signal", field="produced_at") if isinstance(produced_at, datetime) else produced_at,
+            "publishedAt": ensure_utc(published_at, source="cloudrun_consumer.firestore_writer.upsert_trade_signal", field="published_at") if isinstance(published_at, datetime) else published_at,
             "data": data,
             "source": {
                 "topic": str(source.topic),
@@ -281,7 +433,7 @@ class FirestoreWriter:
                 "serviceId": str(service_id),
                 "env": str(env),
                 "status": str(status),
-                "lastHeartbeatAt": last_heartbeat_at,
+                "lastHeartbeatAt": ensure_utc(last_heartbeat_at, source="cloudrun_consumer.firestore_writer.upsert_ops_service", field="last_heartbeat_at") if isinstance(last_heartbeat_at, datetime) else last_heartbeat_at,
                 "version": str(version),
                 "region": str(region),
                 "updatedAt": incoming,
@@ -354,7 +506,7 @@ class FirestoreWriter:
                 "serviceId": str(service_id),
                 "env": str(env),
                 "status": str(status),
-                "lastHeartbeatAt": last_heartbeat_at,
+                "lastHeartbeatAt": ensure_utc(last_heartbeat_at, source="cloudrun_consumer.firestore_writer.dedupe_and_upsert_ops_service", field="last_heartbeat_at") if isinstance(last_heartbeat_at, datetime) else last_heartbeat_at,
                 "version": str(version),
                 "region": str(region),
                 "updatedAt": incoming,
