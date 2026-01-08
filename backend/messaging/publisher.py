@@ -119,6 +119,21 @@ class PubSubPublisher:
             "deadline_s": max(0.1, _env_float("PUBSUB_PUBLISH_DEADLINE_S", 15.0)),
         }
 
+    def _default_environment(self) -> str:
+        # Keep consistent with ops logger conventions, but avoid importing internals.
+        return (
+            (os.getenv("ENVIRONMENT") or "").strip()
+            or (os.getenv("ENV") or "").strip()
+            or (os.getenv("APP_ENV") or "").strip()
+            or (os.getenv("DEPLOY_ENV") or "").strip()
+            or "unknown"
+        )
+
+    def _schema_version(self) -> str:
+        # Publish-time schema identifier for message consumers / filtering.
+        # This does NOT change the JSON payload/envelope shape.
+        return (os.getenv("PUBSUB_SCHEMA_VERSION") or "").strip() or "1"
+
     def _exc_code(self, exc: BaseException) -> str:
         """
         Best-effort extraction of a stable error code string.
@@ -220,6 +235,10 @@ class PubSubPublisher:
                 remaining = max(0.0, deadline_s - (time.monotonic() - started))
                 timeout_s = max(0.1, remaining)
 
+                schema_version = self._schema_version()
+                producer = str(envelope.agent_name)
+                environment = self._default_environment()
+
                 future = self._client.publish(
                     self._topic_path,
                     envelope.to_bytes(),
@@ -232,6 +251,7 @@ class PubSubPublisher:
                     None,
                     "pubsub_publish_success",
                     severity="INFO",
+                    metric="pubsub_publish_success",
                     topic=self._topic_path,
                     message_id=message_id,
                     event_type=std_attrs["event_type"],
@@ -253,6 +273,7 @@ class PubSubPublisher:
                     None,
                     "pubsub_publish_failure",
                     severity="ERROR" if (not retryable or attempt == max_attempts) else "WARNING",
+                    metric="pubsub_publish_failure",
                     topic=self._topic_path,
                     event_type=std_attrs["event_type"],
                     schema_version=std_attrs["schema_version"],
