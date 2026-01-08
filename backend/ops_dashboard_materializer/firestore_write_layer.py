@@ -128,6 +128,79 @@ def _newer(a: Optional[datetime], b: Optional[datetime]) -> bool:
     return a.astimezone(timezone.utc) > b.astimezone(timezone.utc)
 
 
+def _max_dt(*values: Any) -> Optional[datetime]:
+    """
+    Best-effort max() over datetime-ish values (datetime / RFC3339 string / Firestore Timestamp-as-datetime).
+    """
+    ds: list[datetime] = []
+    for v in values:
+        dt = as_dt(v)
+        if isinstance(dt, datetime):
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            ds.append(dt.astimezone(timezone.utc))
+    return max(ds) if ds else None
+
+
+OPS_SERVICE_STATUSES = ("healthy", "degraded", "down", "unknown", "maintenance")
+OpsServiceStatus = str
+
+
+def normalize_ops_service_status(raw: Any) -> tuple[OpsServiceStatus, str]:
+    """
+    Normalize many producer/status variants to the canonical ops_services.status enum.
+
+    Back-compat friendly: unknown values map to "unknown" but raw is preserved for debugging.
+    """
+    raw_s = "" if raw is None else str(raw)
+    s = raw_s.strip().lower()
+    if not s:
+        return "unknown", raw_s
+
+    # Common "healthy" aliases
+    if s in {"ok", "okay", "healthy", "running", "up", "online", "alive", "serving", "ready"}:
+        return "healthy", raw_s
+
+    # Common "degraded" aliases
+    if s in {"degraded", "warn", "warning", "partial", "slow", "lagging"}:
+        return "degraded", raw_s
+
+    # Common "down" aliases
+    if s in {"down", "offline", "error", "failed", "failure", "fatal", "critical", "unhealthy", "crashloop"}:
+        return "down", raw_s
+
+    # Maintenance-ish
+    if s in {"maintenance", "maint", "draining", "paused", "pause"}:
+        return "maintenance", raw_s
+
+    # Unknown-ish
+    if s in {"unknown", "n/a", "na", "none", "null", "undefined", "?"}:
+        return "unknown", raw_s
+
+    # Pass through already-canonical values
+    if s in set(OPS_SERVICE_STATUSES):
+        return s, raw_s
+
+    return "unknown", raw_s
+
+
+def is_ops_service_transition_allowed(prev: OpsServiceStatus, nxt: OpsServiceStatus) -> bool:
+    """
+    Validate status transitions for ops_services.
+
+    Key invariant for ops dashboard UX:
+    - "unknown → degraded → healthy" must be allowed.
+    - prevent known -> unknown clobbering (unknown treated as "no signal").
+    """
+    p, n = (prev or "unknown"), (nxt or "unknown")
+    if n == p:
+        return True
+    if p in {"healthy", "degraded", "down", "maintenance"} and n == "unknown":
+        return False
+    # Otherwise, allow (time ordering/stale protection handles safety).
+    return True
+
+
 @dataclass(frozen=True)
 class SourceInfo:
     topic: str
@@ -241,25 +314,40 @@ class FirestoreWriteLayer:
             existing = snap.to_dict() if snap.exists else {}
 
             existing_source = (existing or {}).get("source") if isinstance(existing, dict) else None
-            existing_published = None
-            if isinstance(existing_source, dict):
-                existing_published = existing_source.get("publishedAt")
-            if isinstance(existing_published, datetime) and existing_published.tzinfo is None:
-                existing_published = existing_published.replace(tzinfo=timezone.utc)
+            existing_source_pub = existing_source.get("publishedAt") if isinstance(existing_source, dict) else None
+            existing_eff = _max_dt(
+                (existing or {}).get("lastHeartbeatAt") if isinstance(existing, dict) else None,
+                (existing or {}).get("last_heartbeat_at") if isinstance(existing, dict) else None,
+                (existing or {}).get("updatedAt") if isinstance(existing, dict) else None,
+                (existing or {}).get("updated_at") if isinstance(existing, dict) else None,
+                existing_source_pub,
+            )
 
-            incoming_published = source.publishedAt
-            if incoming_published.tzinfo is None:
-                incoming_published = incoming_published.replace(tzinfo=timezone.utc)
-
-            if not _newer(incoming_published, existing_published):
+            incoming_eff = _max_dt(last_heartbeat_at, source.publishedAt)
+            if existing_eff is not None and incoming_eff is not None and incoming_eff < existing_eff:
                 return False, "stale_event_ignored"
 
+            prev_status, _ = normalize_ops_service_status((existing or {}).get("status") if isinstance(existing, dict) else None)
+            next_status, raw_status = normalize_ops_service_status(status)
+            if not is_ops_service_transition_allowed(prev_status, next_status):
+                next_status = prev_status
+            # Treat unknown as "no signal": do not clobber a known status.
+            if next_status == "unknown" and prev_status != "unknown":
+                next_status = prev_status
+
             doc = {
-                "status": str(status),
+                "serviceId": str(service_id),
+                "service_id": str(service_id),
+                "status": str(next_status),
+                "status_raw": str(raw_status),
+                # Back-compat: keep both snake_case and camelCase timestamp fields.
                 "lastHeartbeatAt": last_heartbeat_at,
+                "last_heartbeat_at": last_heartbeat_at,
                 "version": str(version),
                 "region": str(region),
                 "instanceCount": int(instance_count) if instance_count is not None else None,
+                "updatedAt": incoming_eff or _utc_now(),
+                "updated_at": incoming_eff or _utc_now(),
                 "source": {
                     "topic": source.topic,
                     "subscription": source.subscription,

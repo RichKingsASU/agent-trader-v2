@@ -13,6 +13,7 @@ from backend.common.logging import log_event
 from backend.observability.risk_signals import risk_correlation_id
 
 from ..db import build_raw_order, insert_paper_order
+from ..db import insert_paper_order_idempotent
 from ..models import PaperOrderCreate
 
 router = APIRouter()
@@ -34,6 +35,7 @@ class PaperOrderRequest(BaseModel):
     time_in_force: str = "day"
     notional: float
     quantity: float | None = None
+    idempotency_key: str | None = None
 
 
 @router.post("/paper_orders", tags=["paper_orders"])
