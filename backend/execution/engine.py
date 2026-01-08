@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import uuid
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional, Protocol, runtime_checkable
@@ -1196,6 +1197,8 @@ class ExecutionEngine:
         """
         try:
             from backend.persistence.firebase_client import get_firestore_client
+            from backend.persistence.firestore_retry import with_firestore_retry
+            from google.api_core.exceptions import AlreadyExists
             
             db = get_firestore_client()
             
@@ -1224,8 +1227,11 @@ class ExecutionEngine:
             if isinstance(filled_at_raw, datetime):
                 ts = filled_at_raw.astimezone(timezone.utc)
             
-            # Create portfolio history entry
-            history_id = f"{broker_order_id}_{int(ts.timestamp() * 1000)}"
+            # Restart-safe idempotency: use a deterministic doc id per (order, fill).
+            # This prevents duplicate portfolio history rows if execution is retried
+            # or restarted after placing an order / receiving a fill.
+            fill_fingerprint = f"{broker_order_id}|{filled_qty}|{filled_avg_price}|{filled_at_raw or ''}"
+            history_id = hashlib.sha1(fill_fingerprint.encode("utf-8")).hexdigest()
             
             history_entry = {
                 # Core trade data
@@ -1268,7 +1274,11 @@ class ExecutionEngine:
                 .collection("trades")
                 .document(history_id)
             )
-            doc_ref.set(history_entry)
+            try:
+                with_firestore_retry(lambda: doc_ref.create(history_entry))
+            except AlreadyExists:
+                # Already written on a previous attempt; treat as success.
+                return
             
             logger.info(
                 "exec.portfolio_history_written uid=%s symbol=%s qty=%s price=%s",
