@@ -34,6 +34,7 @@ from backend.execution.reservations import (
     ReservationManager,
     resolve_tenant_id_from_metadata,
 )
+from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
 
 logger = logging.getLogger(__name__)
 
@@ -1782,7 +1783,10 @@ class ExecutionEngine:
 
         outcome: str = "unknown"
         release_error: str | None = None
-        try:
+        # NOTE: this is intentionally not a try/except. We want exceptions to
+        # propagate (fail-closed), and we rely on explicit critical logging at
+        # the point of failure.
+        if True:
             # Replay marker (best-effort only)
             try:
                 logger.info(
@@ -1861,6 +1865,16 @@ class ExecutionEngine:
                 "exec.risk_decision %s",
                 json.dumps(_to_jsonable({"allowed": risk.allowed, "reason": risk.reason, "checks": risk.checks})),
             )
+            # Best-effort: propagate key risk-state for deterministic pre-trade risk guard inputs.
+            # This avoids extra DB reads later and keeps the risk guard boundary explicit.
+            try:
+                for c in list(risk.checks or []):
+                    if c.get("check") == "max_daily_trades" and c.get("trades_today") is not None:
+                        intent.metadata["_risk_trades_today"] = int(c.get("trades_today"))
+                    if c.get("check") == "max_position_size" and c.get("current_qty") is not None:
+                        intent.metadata["_risk_current_position_qty"] = float(c.get("current_qty"))
+            except Exception:
+                pass
             try:
                 logger.info(
                     "%s",
@@ -2302,18 +2316,71 @@ class ExecutionEngine:
         if available < 0:
             raise PreTradeAssertionError("capital_available_negative")
 
-        # ---- Risk bounds (notional caps) ----
-        max_notional = self._env_float("EXEC_MAX_ORDER_NOTIONAL", None)
-        if max_notional is not None and est_notional > float(max_notional):
+        # ---- Risk Guard (deterministic tool boundary) ----
+        # Enforces: max daily loss, max order notional, max trades/day, max per-symbol exposure.
+        # Inputs are strict/explicit; missing required state fails closed (when limits are enabled).
+        try:
+            max_daily_loss = self._env_float("EXEC_MAX_DAILY_LOSS_USD", None)
+            max_order_notional = self._env_float("EXEC_MAX_ORDER_NOTIONAL", None)
+            max_trades_per_day = _as_int_or_none(os.getenv("EXEC_MAX_DAILY_TRADES"))
+            max_per_symbol_exposure = self._env_float("EXEC_MAX_PER_SYMBOL_EXPOSURE_USD", None)
+
+            # Provided by earlier risk validation when available (see execute_intent()).
+            trades_today = _as_int_or_none(intent.metadata.get("_risk_trades_today"))
+            current_qty = _as_float_or_none(intent.metadata.get("_risk_current_position_qty"))
+
+            # Daily PnL is expected from upstream deterministic workflow/ledger computation.
+            daily_pnl = _as_float_or_none(
+                intent.metadata.get("daily_pnl_usd")
+                if intent.metadata.get("daily_pnl_usd") is not None
+                else (
+                    -abs(_as_float_or_none(intent.metadata.get("daily_loss_usd")) or 0.0)
+                    if intent.metadata.get("daily_loss_usd") is not None
+                    else None
+                )
+            )
+
+            decision = evaluate_risk_guard(
+                trade=RiskGuardTrade(
+                    symbol=intent.symbol,
+                    side=intent.side,
+                    qty=float(intent.qty),
+                    estimated_price_usd=float(est_price),
+                    estimated_notional_usd=float(est_notional),
+                ),
+                state=RiskGuardState(
+                    trading_date=_iso_date_utc(),
+                    daily_pnl_usd=daily_pnl,
+                    trades_today=trades_today,
+                    current_position_qty=current_qty,
+                ),
+                limits=RiskGuardLimits(
+                    max_daily_loss_usd=max_daily_loss,
+                    max_order_notional_usd=max_order_notional,
+                    max_trades_per_day=max_trades_per_day,
+                    max_per_symbol_exposure_usd=max_per_symbol_exposure,
+                ),
+            )
+            if not decision.allowed:
+                payload = {
+                    "reason": "risk_guard_blocked",
+                    "risk_guard": decision.to_dict(),
+                    "intent": _to_jsonable(intent),
+                    "trace_id": trace_id,
+                }
+                self._critical("exec.pretrade_assertion_failed", payload=payload)
+                raise PreTradeAssertionError("risk_guard_blocked")
+        except PreTradeAssertionError:
+            raise
+        except Exception as e:
             payload = {
-                "reason": "risk_max_order_notional_exceeded",
-                "estimated_notional": est_notional,
-                "limit": float(max_notional),
+                "reason": "risk_guard_error",
+                "error_type": type(e).__name__,
                 "intent": _to_jsonable(intent),
                 "trace_id": trace_id,
             }
             self._critical("exec.pretrade_assertion_failed", payload=payload)
-            raise PreTradeAssertionError("risk_max_order_notional_exceeded")
+            raise PreTradeAssertionError("risk_guard_error")
 
         max_notional_pct = self._env_float("EXEC_MAX_ORDER_NOTIONAL_PCT_EQUITY", None)
         if max_notional_pct is not None and float(cap.equity) > 0:

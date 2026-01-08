@@ -16,11 +16,11 @@ def _repo_root() -> Path:
 def _load_ts_event_envelope_required_keys() -> list[str]:
     """
     Extract required keys from the TS shared contract type:
-      packages/shared-types/src/event-bus.ts
+      packages/shared-types/src/envelope.ts
 
     We intentionally keep this lightweight (regex-based) to avoid adding new deps.
     """
-    ts_path = _repo_root() / "packages" / "shared-types" / "src" / "event-bus.ts"
+    ts_path = _repo_root() / "packages" / "shared-types" / "src" / "envelope.ts"
     text = ts_path.read_text(encoding="utf-8")
 
     # Capture the object literal for:
@@ -45,6 +45,10 @@ def _load_ts_event_envelope_required_keys() -> list[str]:
 
     if not keys:
         raise AssertionError(f"Parsed zero keys from TS EventEnvelope in {ts_path}")
+
+    # EventEnvelopeV1 extends EventEnvelope and adds schemaVersion: 1.
+    if "schemaVersion" not in keys:
+        keys.append("schemaVersion")
 
     # Ensure stable order and no dupes (helps debugging on drift).
     deduped = list(dict.fromkeys(keys))
