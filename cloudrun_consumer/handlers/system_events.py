@@ -4,18 +4,17 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from firestore_writer import SourceInfo
+from time_audit import ensure_utc
 
 def _as_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    return ensure_utc(dt, source="cloudrun_consumer.handlers.system_events._as_utc", field="dt")
 
 
 def _parse_ts(value: Any) -> Optional[datetime]:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return _as_utc(value)
+        return ensure_utc(value, source="cloudrun_consumer.handlers.system_events._parse_ts", field="datetime")
     # allow epoch millis for compatibility if encountered
     if isinstance(value, (int, float)):
         try:
@@ -29,7 +28,7 @@ def _parse_ts(value: Any) -> Optional[datetime]:
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         dt = datetime.fromisoformat(s)
-        return _as_utc(dt)
+        return ensure_utc(dt, source="cloudrun_consumer.handlers.system_events._parse_ts", field="iso_string")
     except Exception:
         return None
 
@@ -91,7 +90,7 @@ def handle_system_event(
     source = SourceInfo(
         topic=str(source_topic),
         message_id=str(message_id),
-        published_at=_as_utc(pubsub_published_at),
+        published_at=ensure_utc(pubsub_published_at, source="cloudrun_consumer.handlers.system_events.handle_system_event", field="pubsub_published_at"),
     )
 
     applied, reason = firestore_writer.dedupe_and_upsert_ops_service(

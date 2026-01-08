@@ -13,6 +13,7 @@ from fastapi.responses import Response
 from event_utils import infer_topic
 from firestore_writer import FirestoreWriter
 from schema_router import route_payload
+from time_audit import ensure_utc
 
 
 SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"
@@ -26,10 +27,7 @@ def _parse_rfc3339(value: Any) -> Optional[datetime]:
     if value is None:
         return None
     if isinstance(value, datetime):
-        dt = value
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+        return ensure_utc(value, source="cloudrun_consumer.main._parse_rfc3339", field="datetime")
     s = str(value).strip()
     if not s:
         return None
@@ -37,9 +35,7 @@ def _parse_rfc3339(value: Any) -> Optional[datetime]:
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+        return ensure_utc(dt, source="cloudrun_consumer.main._parse_rfc3339", field="iso_string")
     except Exception:
         return None
 
