@@ -22,6 +22,7 @@ from backend.ingestion.ingest_heartbeat_handler import (
     extract_subscription_id,
     parse_ingest_heartbeat,
 )
+import asyncio
 
 
 def _utcnow_iso() -> str:
@@ -41,12 +42,30 @@ async def _startup() -> None:
     app.state.ready = True
     app.state.shutting_down = False
     app.state.loop_heartbeat_monotonic = time.monotonic()
+    app.state.loop_task = None
+
+    async def _loop_heartbeat() -> None:
+        # Tolerate zero producers: liveness should not depend on Pub/Sub traffic.
+        while not getattr(app.state, "shutting_down", False):
+            app.state.loop_heartbeat_monotonic = time.monotonic()
+            await asyncio.sleep(1.0)
+
+    try:
+        app.state.loop_task = asyncio.create_task(_loop_heartbeat())
+    except Exception:
+        app.state.loop_task = None
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     app.state.shutting_down = True
     app.state.ready = False
+    task = getattr(app.state, "loop_task", None)
+    if task is not None:
+        try:
+            task.cancel()
+        except Exception:
+            pass
 
 
 @app.get("/healthz")

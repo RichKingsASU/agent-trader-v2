@@ -15,6 +15,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
+import asyncio
 from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware, log_event
 from backend.ingestion.pubsub_event_store import parse_pubsub_push
 from backend.ingestion.pubsub_push_validation import validate_pubsub_push_headers
@@ -131,7 +132,19 @@ async def _startup() -> None:
     app.state.ready = True
     app.state.shutting_down = False
     app.state.loop_heartbeat_monotonic = time.monotonic()
+    app.state.loop_task = None
     log_event(logger, "startup", severity="INFO", service=SERVICE_NAME, route_count=len(app.state.routes))
+
+    async def _loop_heartbeat() -> None:
+        # Tolerate zero producers: liveness should not depend on Pub/Sub traffic.
+        while not getattr(app.state, "shutting_down", False):
+            app.state.loop_heartbeat_monotonic = time.monotonic()
+            await asyncio.sleep(1.0)
+
+    try:
+        app.state.loop_task = asyncio.create_task(_loop_heartbeat())
+    except Exception:
+        app.state.loop_task = None
 
 
 @app.on_event("shutdown")
@@ -139,6 +152,12 @@ async def _shutdown() -> None:
     app.state.shutting_down = True
     app.state.ready = False
     log_event(logger, "shutdown", severity="INFO", service=SERVICE_NAME)
+    task = getattr(app.state, "loop_task", None)
+    if task is not None:
+        try:
+            task.cancel()
+        except Exception:
+            pass
 
 
 @app.get("/healthz")
