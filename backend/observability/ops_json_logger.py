@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -112,7 +113,11 @@ def _base_fields(*, service: str | None, severity: str) -> dict[str, Any]:
 
 def _write_json(obj: Mapping[str, Any]) -> None:
     try:
-        print(json.dumps(obj, separators=(",", ":"), ensure_ascii=False), flush=True)
+        sys.stdout.write(json.dumps(obj, separators=(",", ":"), ensure_ascii=False) + "\n")
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
     except Exception:
         # Never break service behavior due to logging.
         return

@@ -9,10 +9,13 @@ Design goals:
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Mapping, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def _now_s() -> float:
@@ -224,6 +227,8 @@ try:
         agent_start_total.inc(0.0, labels={"component": c})
         errors_total.inc(0.0, labels={"component": c})
 except Exception:
+    # Metrics should never block service import/startup, but don't fail silently.
+    logger.exception("ops_metrics.metric_preseed_failed")
     pass
 
 

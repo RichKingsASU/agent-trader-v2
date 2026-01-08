@@ -61,6 +61,8 @@ def install_http_correlation(app: FastAPI, *, service: str) -> None:
                     ),
                 )
             except Exception:
+                # Preserve stack traces, but never break request handling.
+                logger.exception("http.request_log_failed service=%s", service)
                 pass
             _cid.reset(token)
 

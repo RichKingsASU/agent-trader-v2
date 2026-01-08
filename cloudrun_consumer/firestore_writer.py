@@ -1,23 +1,27 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
+import sys
+import traceback
 from typing import Any, Optional, Tuple
 
 from idempotency import ensure_message_once
+from time_audit import ensure_utc
 
 
 def _as_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    return ensure_utc(dt, source="cloudrun_consumer.firestore_writer._as_utc", field="dt")
 
 
 def _parse_rfc3339(value: Any) -> Optional[datetime]:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return _as_utc(value)
+        return ensure_utc(value, source="cloudrun_consumer.firestore_writer._parse_rfc3339", field="datetime")
     s = str(value).strip()
     if not s:
         return None
@@ -25,8 +29,26 @@ def _parse_rfc3339(value: Any) -> Optional[datetime]:
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         dt = datetime.fromisoformat(s)
-        return _as_utc(dt)
+        return ensure_utc(dt, source="cloudrun_consumer.firestore_writer._parse_rfc3339", field="iso_string")
     except Exception:
+        try:
+            sys.stderr.write(
+                json.dumps(
+                    {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "severity": "ERROR",
+                        "event_type": "firestore_writer.parse_rfc3339_failed",
+                        "value": s[:256],
+                        "exception": traceback.format_exc()[-8000:],
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
         return None
 
 
@@ -184,8 +206,8 @@ class FirestoreWriter:
             "eventId": event_id,
             "symbol": symbol,
             "eventTime": _as_utc(event_time),
-            "producedAt": produced_at,
-            "publishedAt": published_at,
+            "producedAt": ensure_utc(produced_at, source="cloudrun_consumer.firestore_writer.upsert_market_tick", field="produced_at") if isinstance(produced_at, datetime) else produced_at,
+            "publishedAt": ensure_utc(published_at, source="cloudrun_consumer.firestore_writer.upsert_market_tick", field="published_at") if isinstance(published_at, datetime) else published_at,
             "data": data,
             "lastAppliedMessageId": str(source.message_id),
             "lastAppliedPublishedAt": _as_utc(source.published_at),
@@ -221,11 +243,11 @@ class FirestoreWriter:
             "eventId": event_id,
             "symbol": symbol,
             "timeframe": timeframe or "1m",
-            "start": start,
-            "end": end,
+            "start": ensure_utc(start, source="cloudrun_consumer.firestore_writer.upsert_market_bar_1m", field="start") if isinstance(start, datetime) else start,
+            "end": ensure_utc(end, source="cloudrun_consumer.firestore_writer.upsert_market_bar_1m", field="end") if isinstance(end, datetime) else end,
             "eventTime": _as_utc(event_time),
-            "producedAt": produced_at,
-            "publishedAt": published_at,
+            "producedAt": ensure_utc(produced_at, source="cloudrun_consumer.firestore_writer.upsert_market_bar_1m", field="produced_at") if isinstance(produced_at, datetime) else produced_at,
+            "publishedAt": ensure_utc(published_at, source="cloudrun_consumer.firestore_writer.upsert_market_bar_1m", field="published_at") if isinstance(published_at, datetime) else published_at,
             "data": data,
             "lastAppliedMessageId": str(source.message_id),
             "lastAppliedPublishedAt": _as_utc(source.published_at),
@@ -261,8 +283,8 @@ class FirestoreWriter:
             "strategy": strategy,
             "action": action,
             "eventTime": _as_utc(event_time),
-            "producedAt": produced_at,
-            "publishedAt": published_at,
+            "producedAt": ensure_utc(produced_at, source="cloudrun_consumer.firestore_writer.upsert_trade_signal", field="produced_at") if isinstance(produced_at, datetime) else produced_at,
+            "publishedAt": ensure_utc(published_at, source="cloudrun_consumer.firestore_writer.upsert_trade_signal", field="published_at") if isinstance(published_at, datetime) else published_at,
             "data": data,
             "lastAppliedMessageId": str(source.message_id),
             "lastAppliedPublishedAt": _as_utc(source.published_at),
@@ -313,7 +335,7 @@ class FirestoreWriter:
                 "serviceId": str(service_id),
                 "env": str(env),
                 "status": str(status),
-                "lastHeartbeatAt": last_heartbeat_at,
+                "lastHeartbeatAt": ensure_utc(last_heartbeat_at, source="cloudrun_consumer.firestore_writer.upsert_ops_service", field="last_heartbeat_at") if isinstance(last_heartbeat_at, datetime) else last_heartbeat_at,
                 "version": str(version),
                 "region": str(region),
                 "updatedAt": incoming,
@@ -375,7 +397,7 @@ class FirestoreWriter:
                 "serviceId": str(service_id),
                 "env": str(env),
                 "status": str(status),
-                "lastHeartbeatAt": last_heartbeat_at,
+                "lastHeartbeatAt": ensure_utc(last_heartbeat_at, source="cloudrun_consumer.firestore_writer.dedupe_and_upsert_ops_service", field="last_heartbeat_at") if isinstance(last_heartbeat_at, datetime) else last_heartbeat_at,
                 "version": str(version),
                 "region": str(region),
                 "updatedAt": incoming,
