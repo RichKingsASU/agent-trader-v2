@@ -25,10 +25,10 @@ The agent refuses to start unless **all** are true (strict, case-sensitive):
 
 Each line should be a JSON object. Minimal supported fields:
 
-- `proposal_id` (string; required for clean dedupe)
-- `valid_until_utc` (ISO-8601; missing/unparseable => REJECT)
-- `requires_human_approval` (missing defaults to `true` => REJECT)
-- `order` (object; optional, used for `recommended_order` summary)
+- **Contract**: `backend.trading.proposals.models.OrderProposal` (shared schema)
+- `proposal_id` (UUID string; required for clean dedupe)
+- `constraints.valid_until_utc` (ISO-8601; missing/unparseable => REJECT)
+- `constraints.requires_human_approval` (missing defaults to `true` => REJECT)
 
 ## Marketdata freshness input (stub)
 

@@ -21,8 +21,17 @@ Usage in functions/main.py:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+from backend.common.logging import log_event
+from backend.observability.risk_signals import (
+    compute_capital_utilization,
+    compute_drawdown_velocity,
+    compute_risk_per_strategy,
+    risk_correlation_id,
+)
 
 from .circuit_breakers import CircuitBreakerManager
 from .notifications import NotificationService
@@ -117,6 +126,48 @@ async def evaluate_strategy_with_circuit_breakers(
             starting_equity = float(equity_str)
         except (ValueError, TypeError):
             starting_equity = 0.0
+
+    # Step 2.5: Emit a real-time risk snapshot (emit-only; no side effects)
+    try:
+        # Prefer chain correlation from signal; otherwise derive from context.
+        corr = risk_correlation_id(correlation_id=signal.get("correlation_id") or signal.get("corr_id"))
+        allocation_id = str(signal.get("allocation_id") or uuid.uuid4())
+        signal["correlation_id"] = corr
+        signal["allocation_id"] = allocation_id
+
+        cap = compute_capital_utilization(account_snapshot)
+        strat_risk = compute_risk_per_strategy(proposed_allocation_usd=signal.get("allocation"), equity_usd=cap.equity_usd)
+        dd = compute_drawdown_velocity(
+            key=f"{tenant_id}:{user_id}:{strategy_id}",
+            starting_equity_usd=float(starting_equity or 0.0) if starting_equity else None,
+            current_equity_usd=cap.equity_usd,
+        )
+
+        log_event(
+            logger,
+            "risk.snapshot",
+            severity="INFO",
+            correlation_id=corr,
+            tenant_id=tenant_id,
+            uid=user_id,
+            strategy_id=str(strategy_id),
+            allocation_id=allocation_id,
+            # Core requested signals
+            capital_utilization_pct=cap.capital_utilization_pct,
+            risk_per_strategy_usd=strat_risk.risk_per_strategy_usd,
+            risk_per_strategy_pct_equity=strat_risk.risk_per_strategy_pct_equity,
+            drawdown_pct=dd.drawdown_pct,
+            drawdown_velocity_pct_per_min=dd.drawdown_velocity_pct_per_min,
+            # Supporting fields (for join/verification)
+            equity_usd=cap.equity_usd,
+            exposure_usd=cap.exposure_usd,
+            starting_equity_usd=float(starting_equity or 0.0) if starting_equity is not None else None,
+            proposed_action=signal.get("action"),
+            proposed_allocation_usd=signal.get("allocation"),
+        )
+    except Exception:
+        # Never break strategy execution due to observability.
+        pass
     
     # Step 3: Apply circuit breakers
     try:
