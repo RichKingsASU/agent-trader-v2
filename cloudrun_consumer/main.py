@@ -68,14 +68,39 @@ def _require_env(name: str, *, default: Optional[str] = None) -> str:
     return str(v).strip()
 
 
+def _normalize_env_alias(target: str, aliases: list[str]) -> None:
+    """
+    Ensures `target` is present by copying from the first present alias.
+    Logs nothing and never exposes values.
+    """
+    v = os.getenv(target)
+    if v is not None and str(v).strip():
+        return
+    for a in aliases:
+        av = os.getenv(a)
+        if av is not None and str(av).strip():
+            os.environ[target] = str(av).strip()
+            return
+
+
+def _validate_required_env(required: list[str]) -> None:
+    presence = {name: bool((os.getenv(name) or "").strip()) for name in required}
+    log("config.env_validation", severity="INFO", required_env=presence)
+    missing = [name for name, ok in presence.items() if not ok]
+    if missing:
+        log("config.env_missing", severity="CRITICAL", missing_env=missing)
+        raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+
+
 app = FastAPI(title="Cloud Run Pub/Sub → Firestore Materializer", version="0.1.0")
 
 
 @app.on_event("startup")
 async def _startup() -> None:
-    project_id = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCLOUD_PROJECT")
-    if not project_id:
-        raise RuntimeError("Missing GCP_PROJECT (or GOOGLE_CLOUD_PROJECT).")
+    _normalize_env_alias("GCP_PROJECT", ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT_ID", "PROJECT_ID"])
+    _validate_required_env(["GCP_PROJECT", "SYSTEM_EVENTS_TOPIC", "INGEST_FLAG_SECRET_ID", "ENV"])
+
+    project_id = _require_env("GCP_PROJECT")
 
     database = os.getenv("FIRESTORE_DATABASE") or "(default)"
     app.state.firestore_writer = FirestoreWriter(project_id=project_id, database=database)
@@ -84,11 +109,12 @@ async def _startup() -> None:
     log(
         "startup",
         severity="INFO",
-        gcp_project=project_id,
+        has_gcp_project=True,
+        has_system_events_topic=True,
+        has_ingest_flag_secret_id=True,
+        has_env=True,
         firestore_database=database,
-        env=os.getenv("ENV") or "unknown",
         default_region=os.getenv("DEFAULT_REGION") or "unknown",
-        system_events_topic=os.getenv("SYSTEM_EVENTS_TOPIC") or "",
         subscription_topic_map=bool((os.getenv("SUBSCRIPTION_TOPIC_MAP") or "").strip()),
     )
 

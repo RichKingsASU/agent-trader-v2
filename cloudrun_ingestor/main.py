@@ -9,6 +9,26 @@ import time
 import uuid
 from typing import Any
 
+# --- Env normalization + validation (log presence, fail fast) ---
+def _normalize_env_alias(target: str, aliases: list[str]) -> None:
+    """
+    Ensures `target` is present by copying from the first present alias.
+    Logs nothing and never exposes values.
+    """
+    v = os.getenv(target)
+    if v is not None and str(v).strip():
+        return
+    for a in aliases:
+        av = os.getenv(a)
+        if av is not None and str(av).strip():
+            os.environ[target] = str(av).strip()
+            return
+
+
+def _validate_required_env(required: list[str]) -> dict[str, bool]:
+    return {name: bool((os.getenv(name) or "").strip()) for name in required}
+
+
 # --- Structured Logging & Pre-run Configuration ---
 # This must run before any other modules are imported to ensure logging is configured correctly.
 
@@ -25,18 +45,27 @@ LOG_EXTRA = {
 }
 logger = logging.getLogger(__name__)
 
+_normalize_env_alias("GCP_PROJECT", ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT_ID", "PROJECT_ID"])
+_required_env = ["GCP_PROJECT", "SYSTEM_EVENTS_TOPIC", "INGEST_FLAG_SECRET_ID", "ENV"]
+_presence = _validate_required_env(_required_env)
+logger.info("Startup config presence validated.", extra={**LOG_EXTRA, "required_env": _presence})
+_missing = [name for name, ok in _presence.items() if not ok]
+if _missing:
+    logger.critical("Missing required environment variables.", extra={**LOG_EXTRA, "missing_env": _missing})
+    sys.exit(1)
+
 
 def override_config():
     """Overrides hardcoded config from vm_ingest with environment variables."""
     try:
         import backend.ingestion.config as config_module
-        config_module.PROJECT_ID = os.environ["GCP_PROJECT_ID"]
+        config_module.PROJECT_ID = os.environ["GCP_PROJECT"]
         config_module.SYSTEM_EVENTS_TOPIC = os.environ["SYSTEM_EVENTS_TOPIC"]
         config_module.MARKET_TICKS_TOPIC = os.environ["MARKET_TICKS_TOPIC"]
         config_module.MARKET_BARS_1M_TOPIC = os.environ["MARKET_BARS_1M_TOPIC"]
         config_module.TRADE_SIGNALS_TOPIC = os.environ["TRADE_SIGNALS_TOPIC"]
         config_module.INGEST_FLAG_SECRET_ID = os.environ["INGEST_FLAG_SECRET_ID"]
-        logger.info("Configuration overridden for project: %s", config_module.PROJECT_ID, extra=LOG_EXTRA)
+        logger.info("Configuration overridden from environment.", extra={**LOG_EXTRA, "config_overridden": True})
     except KeyError as e:
         logger.critical("Missing required environment variable: %s", e, extra=LOG_EXTRA)
         sys.exit(1)
