@@ -26,14 +26,9 @@ Usage:
 
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Union
-import pytz
-
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
 
 from strategies.base_strategy import BaseStrategy, SignalType, TradingSignal
 
@@ -225,7 +220,7 @@ class Backtester:
         
         # Date range
         if end_date is None:
-            self.end_date = datetime.now(pytz.UTC).date()
+            self.end_date = datetime.now(timezone.utc).date()
         else:
             self.end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
         
@@ -243,7 +238,10 @@ class Backtester:
                 "Alpaca API credentials required. Set APCA_API_KEY_ID and "
                 "APCA_API_SECRET_KEY environment variables or pass as parameters."
             )
-        
+
+        # Lazy import: keep pure account/position models usable without Alpaca SDK installed.
+        from alpaca.data.historical import StockHistoricalDataClient  # type: ignore
+
         self.data_client = StockHistoricalDataClient(api_key, secret_key)
         
         # Results storage
@@ -263,12 +261,16 @@ class Backtester:
             List of bar dictionaries with timestamp, open, high, low, close, volume
         """
         logger.info(f"Fetching historical data for {self.symbol}...")
-        
+
+        # Lazy import: keep module importable in minimal CI environments.
+        from alpaca.data.requests import StockBarsRequest  # type: ignore
+        from alpaca.data.timeframe import TimeFrame  # type: ignore
+
         request = StockBarsRequest(
             symbol_or_symbols=self.symbol,
             timeframe=TimeFrame.Minute,
-            start=datetime.combine(self.start_date, datetime.min.time()).replace(tzinfo=pytz.UTC),
-            end=datetime.combine(self.end_date, datetime.max.time()).replace(tzinfo=pytz.UTC)
+            start=datetime.combine(self.start_date, datetime.min.time()).replace(tzinfo=timezone.utc),
+            end=datetime.combine(self.end_date, datetime.max.time()).replace(tzinfo=timezone.utc),
         )
         
         bars = self.data_client.get_stock_bars(request)
