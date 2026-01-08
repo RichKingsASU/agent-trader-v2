@@ -5,6 +5,7 @@ from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce
 _enforce_agent_mode_guard()
 
 import json
+import hashlib
 import logging
 import os
 import time
@@ -16,6 +17,7 @@ from fastapi.responses import Response
 
 from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware, log_event
 from backend.ingestion.pubsub_event_store import parse_pubsub_push
+from backend.ingestion.pubsub_push_validation import validate_pubsub_push_headers
 from backend.ops_dashboard_materializer.firestore_write_layer import (
     FirestoreWriteLayer,
     SourceInfo,
@@ -27,10 +29,41 @@ logger = logging.getLogger("ops_dashboard_materializer")
 
 
 SERVICE_NAME = "ops-dashboard-materializer"
+DLQ_SAMPLE_RATE_DEFAULT = "0.01"
+DLQ_SAMPLE_TTL_HOURS_DEFAULT = "72"
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+def _float_env(name: str, *, default: str) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        raw = default
+    try:
+        return float(raw)
+    except Exception:
+        try:
+            return float(default)
+        except Exception:
+            return 0.0
+
+
+def _stable_sample(message_id: str, *, rate: float) -> bool:
+    try:
+        r = float(rate)
+    except Exception:
+        r = 0.0
+    if r <= 0.0:
+        return False
+    if r >= 1.0:
+        return True
+    mid = (message_id or "").strip()
+    if not mid:
+        return False
+    h = hashlib.sha1(mid.encode("utf-8", errors="ignore")).digest()
+    x = int.from_bytes(h[:4], "big") / float(2**32)
+    return x < r
 
 
 def _load_routes_from_env() -> list[RouteConfig]:
@@ -151,16 +184,81 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
     - server-only writes (this service is the only writer)
     """
     try:
+        hdr = validate_pubsub_push_headers(req, subscription_from_body=None)
+    except HTTPException as e:
+        log_event(
+            logger,
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_headers",
+            error=str(getattr(e, "detail", "")),
+            subscription=None,
+            messageId=None,
+            publishTime=None,
+        )
+        raise
+
+    try:
         body = await req.json()
     except Exception as e:
-        log_event(logger, "pubsub.invalid_json", severity="ERROR", error=str(e))
+        log_event(
+            logger,
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_json",
+            error=str(e),
+            subscription=hdr.get("header_subscription"),
+            messageId=None,
+            publishTime=None,
+        )
         raise HTTPException(status_code=400, detail="invalid_json") from e
+
+    subscription_raw = body.get("subscription") if isinstance(body, dict) else None
+    subscription_s = subscription_raw.strip() if isinstance(subscription_raw, str) else None
+    msg = body.get("message") if isinstance(body, dict) else None
+    message_id_raw = msg.get("messageId") if isinstance(msg, dict) else None
+    publish_time_raw = msg.get("publishTime") if isinstance(msg, dict) else None
+
+    try:
+        hdr = validate_pubsub_push_headers(req, subscription_from_body=subscription_s)
+    except HTTPException as e:
+        log_event(
+            logger,
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_headers",
+            error=str(getattr(e, "detail", "")),
+            subscription=subscription_s,
+            messageId=str(message_id_raw).strip() if isinstance(message_id_raw, str) and message_id_raw.strip() else None,
+            publishTime=str(publish_time_raw).strip() if isinstance(publish_time_raw, str) and publish_time_raw.strip() else None,
+        )
+        raise
 
     try:
         ev = parse_pubsub_push(body)
     except Exception as e:
-        log_event(logger, "pubsub.invalid_envelope", severity="ERROR", error=str(e))
+        log_event(
+            logger,
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_envelope",
+            error=str(e),
+            subscription=subscription_s or hdr.get("header_subscription"),
+            messageId=str(message_id_raw).strip() if isinstance(message_id_raw, str) and message_id_raw.strip() else None,
+            publishTime=str(publish_time_raw).strip() if isinstance(publish_time_raw, str) and publish_time_raw.strip() else None,
+        )
         raise HTTPException(status_code=400, detail="invalid_envelope") from e
+
+    log_event(
+        logger,
+        "pubsub.accepted",
+        severity="INFO",
+        subscription=ev.subscription,
+        messageId=ev.message_id,
+        publishTime=(str(publish_time_raw).strip() if isinstance(publish_time_raw, str) else None),
+        header_subscription=hdr.get("header_subscription"),
+        header_topic=hdr.get("header_topic"),
+    )
 
     # Mark loop heartbeat so /livez shows recent request handling.
     app.state.loop_heartbeat_monotonic = time.monotonic()
@@ -314,8 +412,51 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
         log_event(logger, "route.unknown_kind", severity="ERROR", kind=str(route.kind), subscription=subscription)
         raise HTTPException(status_code=500, detail="unknown_kind")
 
-    except HTTPException:
+    except HTTPException as he:
         # Non-2xx -> Pub/Sub retry + DLQ compatibility.
+        # For poison/permanent errors (4xx), emit an explicit DLQ-candidate log line
+        # and write a small sampled Firestore record (bounded by TTL) for debugging.
+        status_code = int(getattr(he, "status_code", 0) or 0)
+        if 400 <= status_code < 500:
+            detail = he.detail
+            log_event(
+                logger,
+                "pubsub.dlq_candidate",
+                severity="ERROR",
+                http_status=status_code,
+                subscription=subscription,
+                message_id=ev.message_id,
+                deliveryAttempt=delivery_attempt,
+                kind=(route.kind if route is not None else None),
+                schemaVersion=schema_version,
+                detail=str(detail),
+            )
+            sample_rate = _float_env("DLQ_SAMPLE_RATE", default=DLQ_SAMPLE_RATE_DEFAULT)
+            ttl_hours = _float_env("DLQ_SAMPLE_TTL_HOURS", default=DLQ_SAMPLE_TTL_HOURS_DEFAULT)
+            if _stable_sample(str(ev.message_id or ""), rate=sample_rate):
+                doc_id = writer.write_sampled_dlq_event(
+                    message_id=ev.message_id,
+                    subscription=subscription,
+                    delivery_attempt=delivery_attempt,
+                    http_status=status_code,
+                    reason=str(detail),
+                    error=str(detail),
+                    kind=(route.kind if route is not None else None),
+                    attributes=ev.attributes,
+                    payload=payload,
+                    ttl_hours=ttl_hours,
+                )
+                if doc_id:
+                    log_event(
+                        logger,
+                        "pubsub.dlq_sample_written",
+                        severity="NOTICE",
+                        sampled_doc_id=doc_id,
+                        message_id=ev.message_id,
+                        subscription=subscription,
+                        kind=(route.kind if route is not None else None),
+                        deliveryAttempt=delivery_attempt,
+                    )
         raise
     except Exception as e:
         log_event(

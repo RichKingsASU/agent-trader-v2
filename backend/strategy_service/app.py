@@ -142,4 +142,12 @@ try:
     from backend.analytics.institutional_api import router as institutional_router
     app.include_router(institutional_router)
 except Exception as e:
-    print(f"Warning: Could not load institutional analytics router: {e}")
+    logger.warning(
+        "Could not load institutional analytics router.",
+        extra={
+            "event_type": "startup.optional_router_load_failed",
+            "service": _service_name(),
+            "errorType": type(e).__name__,
+            "error": str(e),
+        },
+    )

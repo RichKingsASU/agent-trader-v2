@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import importlib
 
+from backend.common.ops_log import log_json
+
 
 MODULES_TO_IMPORT = [
     # Core backend packages
@@ -24,17 +26,24 @@ def main() -> int:
     for mod in MODULES_TO_IMPORT:
         try:
             importlib.import_module(mod)
-            print(f"OK import {mod}")
+            try:
+                log_json(intent_type="smoke_imports", severity="INFO", status="ok", module=mod)
+            except Exception:
+                pass
         except Exception as e:
             failures.append(f"{mod}: {e!r}")
 
     if failures:
-        print("FAILED imports:")
-        for f in failures:
-            print(f"  - {f}")
+        try:
+            log_json(intent_type="smoke_imports", severity="ERROR", status="failed", failures=failures)
+        except Exception:
+            pass
         return 1
 
-    print("Smoke imports OK")
+    try:
+        log_json(intent_type="smoke_imports", severity="INFO", status="ok_all", modules=MODULES_TO_IMPORT)
+    except Exception:
+        pass
     return 0
 
 

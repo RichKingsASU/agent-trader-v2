@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -48,7 +49,7 @@ def main() -> int:
 
     runner = StrategySandboxRunner(assets=assets, guest_cid=args.guest_cid, vsock_port=args.vsock_port)
     intents = runner.run(strategy_source=strategy_path, events=events, strategy_id="hello")
-    print(json.dumps(intents, indent=2, sort_keys=True))
+    sys.stdout.write(json.dumps(intents, indent=2, sort_keys=True) + "\n")
     return 0
 
 
