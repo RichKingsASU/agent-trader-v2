@@ -1,3 +1,14 @@
+"""
+cloudrun_ingestor entrypoint diagnostics
+
+Runtime assumptions (documented for deploy/debug):
+- The repository root (or the directory containing the `backend/` package) must
+  be on `sys.path` so imports like `import backend...` resolve (commonly via
+  `PYTHONPATH` in the container image or Cloud Run configuration).
+- If `backend` imports fail, this process should fail fast with CRITICAL logs,
+  because continuing would leave the service "up" but non-functional.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -9,14 +20,28 @@ import time
 import uuid
 from typing import Any
 
+# --- Env normalization + validation (log presence, fail fast) ---
+def _normalize_env_alias(target: str, aliases: list[str]) -> None:
+    """
+    Ensures `target` is present by copying from the first present alias.
+    Logs nothing and never exposes values.
+    """
+    v = os.getenv(target)
+    if v is not None and str(v).strip():
+        return
+    for a in aliases:
+        av = os.getenv(a)
+        if av is not None and str(av).strip():
+            os.environ[target] = str(av).strip()
+            return
+
+
+def _validate_required_env(required: list[str]) -> dict[str, bool]:
+    return {name: bool((os.getenv(name) or "").strip()) for name in required}
+
+
 # --- Structured Logging & Pre-run Configuration ---
 # This must run before any other modules are imported to ensure logging is configured correctly.
-
-# Set up structured logging with the google-cloud-logging library
-# This will automatically format logs as JSON and include standard Cloud Run fields.
-import google.cloud.logging
-logging_client = google.cloud.logging.Client()
-logging_client.setup_logging()
 
 # Set up a logger adapter to inject custom static fields into all log messages.
 LOG_EXTRA = {
@@ -41,25 +66,42 @@ def override_config():
     """Overrides hardcoded config from vm_ingest with environment variables."""
     try:
         import backend.ingestion.config as config_module
-        logger.info(
-            "Imported backend.ingestion.config successfully.",
-            extra={**LOG_EXTRA, "module": "backend.ingestion.config", "module_file": getattr(config_module, "__file__", None)},
-        )
-        config_module.PROJECT_ID = os.environ["GCP_PROJECT_ID"]
+        config_module.PROJECT_ID = os.environ["GCP_PROJECT"]
         config_module.SYSTEM_EVENTS_TOPIC = os.environ["SYSTEM_EVENTS_TOPIC"]
         config_module.MARKET_TICKS_TOPIC = os.environ["MARKET_TICKS_TOPIC"]
         config_module.MARKET_BARS_1M_TOPIC = os.environ["MARKET_BARS_1M_TOPIC"]
         config_module.TRADE_SIGNALS_TOPIC = os.environ["TRADE_SIGNALS_TOPIC"]
         config_module.INGEST_FLAG_SECRET_ID = os.environ["INGEST_FLAG_SECRET_ID"]
-        logger.info("Configuration overridden for project: %s", config_module.PROJECT_ID, extra=LOG_EXTRA)
+        logger.info("Configuration overridden from environment.", extra={**LOG_EXTRA, "config_overridden": True})
     except KeyError as e:
         logger.critical("Missing required environment variable: %s", e, extra=LOG_EXTRA)
         sys.exit(1)
-    except ImportError:
-        logger.critical("Could not import backend.ingestion.config.", extra=LOG_EXTRA)
-        sys.exit(1)
+    except ImportError as e:
+        _fail_fast_import(e, context="override_config", failed_import="backend.ingestion.config")
 
 override_config()
+
+def _assert_required_imports() -> None:
+    """
+    Validate that backend imports used by the worker resolve at process startup.
+
+    This keeps failures crisp (CRITICAL + exit) rather than leaving a "running"
+    HTTP process with a dead worker thread.
+    """
+    try:
+        from backend.ingestion.vm_ingest import IngestionService  # noqa: F401
+    except Exception as e:
+        _fail_fast_import(e, context="startup", failed_import="backend.ingestion.vm_ingest.IngestionService")
+    try:
+        from backend.ingestion.config import (  # noqa: F401
+            HEARTBEAT_INTERVAL_SECONDS,
+            FLAG_CHECK_INTERVAL_SECONDS,
+        )
+    except Exception as e:
+        _fail_fast_import(e, context="startup", failed_import="backend.ingestion.config.(HEARTBEAT_INTERVAL_SECONDS, FLAG_CHECK_INTERVAL_SECONDS)")
+
+
+_assert_required_imports()
 
 
 # --- Graceful Shutdown Handling ---
@@ -80,10 +122,32 @@ signal.signal(signal.SIGINT, shutdown_handler)
 # --- Background Worker for Ingestion Loop ---
 def ingestion_worker():
     """The main application logic, designed to be run in a background thread."""
-    logger.info(
-        "Ingestion worker thread starting.",
-        extra={**LOG_EXTRA, "sys_path": list(sys.path), "pythonpath_env": os.getenv("PYTHONPATH")},
-    )
+    try:
+        from backend.ingestion.vm_ingest import IngestionService
+        from backend.ingestion.config import (
+            HEARTBEAT_INTERVAL_SECONDS,
+            FLAG_CHECK_INTERVAL_SECONDS,
+        )
+    except ImportError as e:
+        # This is unrecoverable: fail fast so Cloud Run restarts with a clear signal.
+        logger.critical(
+            "Failed to import ingestion dependencies: %s",
+            e,
+            extra={
+                **LOG_EXTRA,
+                "event_type": "python.import_failed",
+                "context": "ingestion_worker",
+                "cwd": os.getcwd(),
+                "pythonpath_env": os.getenv("PYTHONPATH") or "",
+                "sys_path": list(sys.path),
+            },
+            exc_info=True,
+        )
+        os._exit(1)
+
+    logger.info("Ingestion worker thread started.", extra=LOG_EXTRA)
+    service = IngestionService()
+    service.health_checker.sanity_checks()
 
     # Supervisor loop: the worker must not exit unless shutdown is requested.
     while not SHUTDOWN_FLAG.is_set():
@@ -174,7 +238,10 @@ def ingestion_worker():
 # --- Flask App for Gunicorn ---
 # A minimal Flask app is required for Gunicorn to have a process to manage.
 # The actual work is done in the background thread.
-from flask import Flask
+try:
+    from flask import Flask
+except Exception as e:
+    _fail_fast_import(e, context="startup", failed_import="flask.Flask")
 app = Flask(__name__)
 
 try:

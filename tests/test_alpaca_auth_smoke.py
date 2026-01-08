@@ -5,6 +5,7 @@ import pytest
 
 from backend.streams.alpaca_auth_smoke import alpaca_rest_account_smoke_test, alpaca_ws_auth_smoke_test
 from backend.streams.alpaca_env import load_alpaca_env
+from backend.common.ops_log import log_json
 
 
 def _truthy(v: str | None) -> bool:
@@ -40,10 +41,14 @@ def test_alpaca_rest_auth_smoke_v2_account() -> None:
     assert acct.get("id"), "Expected Alpaca /v2/account response to include an account id."
     assert acct.get("status"), "Expected Alpaca /v2/account response to include an account status."
 
-    print(
-        "PASS: Alpaca REST auth ok (GET /v2/account) "
-        f"| trading_host={env.trading_host} | account_id={acct.get('id')} | status={acct.get('status')}",
-        flush=True,
+    log_json(
+        intent_type="alpaca_auth_smoke_test",
+        severity="INFO",
+        status="pass",
+        check="rest_account",
+        trading_host=env.trading_host,
+        account_id=acct.get("id"),
+        account_status=acct.get("status"),
     )
 
 
@@ -64,9 +69,12 @@ def test_alpaca_ws_auth_smoke_auth_only_no_subscriptions() -> None:
     asyncio.run(alpaca_ws_auth_smoke_test(feed=feed, timeout_s=timeout_s))
 
     ws_url = os.getenv("ALPACA_DATA_STREAM_WS_URL", "").strip() or f"wss://stream.data.alpaca.markets/v2/{feed}"
-    print(
-        "PASS: Alpaca WS auth ok (auth only, no subscriptions) "
-        f"| feed={feed} | ws_url={ws_url}",
-        flush=True,
+    log_json(
+        intent_type="alpaca_auth_smoke_test",
+        severity="INFO",
+        status="pass",
+        check="ws_auth_only",
+        feed=feed,
+        ws_url=ws_url,
     )
 

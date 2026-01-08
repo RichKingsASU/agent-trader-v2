@@ -29,6 +29,7 @@ from typing import Any, Mapping, Optional
 
 
 _REQUEST_ID: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
+logger = logging.getLogger(__name__)
 
 _RESERVED_ATTRS: frozenset[str] = frozenset(
     {
@@ -147,6 +148,7 @@ def bind_request_id(*, request_id: str | None = None) -> str:
 
             _set_audit_correlation_id(rid)
         except Exception:
+            logger.exception("logging.bind_request_id.audit_logging_sync_failed")
             pass
 
         # Keep observability correlation context in sync when present.
@@ -157,6 +159,7 @@ def bind_request_id(*, request_id: str | None = None) -> str:
                 yield rid
                 return
         except Exception:
+            logger.exception("logging.bind_request_id.observability_correlation_sync_failed")
             yield rid
             return
     finally:
@@ -281,6 +284,8 @@ def install_fastapi_request_id_middleware(app: Any, *, service: str | None = Non
         from starlette.requests import Request  # noqa: WPS433
         from starlette.responses import Response  # noqa: WPS433
     except Exception:
+        # Best-effort; some runtimes may not include Starlette (or import may fail).
+        logger.exception("logging.fastapi_request_id_middleware_import_failed")
         return
 
     http_logger = logging.getLogger("http")
@@ -325,6 +330,7 @@ def install_fastapi_request_id_middleware(app: Any, *, service: str | None = Non
                         instance_uptime_ms=int(getattr(req_class, "instance_uptime_ms", 0)) if req_class is not None else None,
                     )
                 except Exception:
+                    # Avoid recursion: if logging is broken, don't try to log about it.
                     pass
 
         # Ensure callers can propagate across hops.
@@ -333,6 +339,7 @@ def install_fastapi_request_id_middleware(app: Any, *, service: str | None = Non
             # Back-compat for existing callers.
             resp.headers["X-Correlation-Id"] = bound  # type: ignore[name-defined]
         except Exception:
+            # Avoid recursion: header mutation failures are non-fatal.
             pass
         return resp
 

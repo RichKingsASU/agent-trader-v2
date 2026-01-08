@@ -5,6 +5,7 @@ from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce
 _enforce_agent_mode_guard()
 
 import asyncio
+import logging
 import os
 import time
 from collections import deque
@@ -23,6 +24,8 @@ from pydantic import BaseModel, Field
 from backend.common.app_heartbeat_writer import start_heartbeat_background, stop_heartbeat_background
 from backend.common.ops_metrics import REGISTRY
 from backend.ops.status_contract import OpsStatus as OpsStatusModel
+
+logger = logging.getLogger(__name__)
 
 AGENT_KIND = Literal["marketdata", "strategy", "execution", "ingest"]
 CRITICALITY = Literal["critical", "important", "optional"]
@@ -195,6 +198,7 @@ async def _get_json_best_effort(res: httpx.Response) -> Optional[dict[str, Any]]
     try:
         data = res.json()
     except Exception:
+        logger.exception("mission_control.response_json_parse_failed status_code=%s", getattr(res, "status_code", None))
         return None
     return data if isinstance(data, dict) else {"_value": data}
 
@@ -398,6 +402,7 @@ async def lifespan(app: FastAPI):
                 await state.poll_once(client=client, per_agent_timeout_s=per_agent_timeout_s)
             except Exception:
                 # Observer must stay up regardless.
+                logger.exception("mission_control.poll_cycle_failed")
                 pass
             try:
                 await asyncio.wait_for(stop.wait(), timeout=poll_interval_s)
@@ -413,6 +418,7 @@ async def lifespan(app: FastAPI):
         try:
             await task
         except Exception:
+            logger.exception("mission_control.poll_loop_task_failed")
             pass
         await client.aclose()
         stop_heartbeat_background(hb_handle)
@@ -459,6 +465,7 @@ def _safe_ops_from_raw(*, raw_ops_status_redacted: Optional[dict[str, Any]], onl
             "validated_ops_status": d,
         }
     except Exception:
+        logger.exception("mission_control.ops_status_contract_validation_failed online=%s", online)
         pass
 
     # Loose extraction (older/partial payloads).

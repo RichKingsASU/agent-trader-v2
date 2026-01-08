@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from backend.messaging.subscriber import PubSubSubscriber
+from backend.common.ops_log import log_json
 
 
 HEARTBEAT_EVENT_TYPE = "marketdata.heartbeat"
@@ -22,7 +23,13 @@ class StrategyEngineState:
         self.last_marketdata_heartbeat_ts = envelope.ts
         self.last_marketdata_heartbeat_payload = dict(envelope.payload or {})
         self.last_trace_id = envelope.trace_id
-        print("updated state:", self)
+        log_json(
+            intent_type="pubsub.heartbeat_received",
+            severity="INFO",
+            iteration_id=envelope.trace_id,
+            ts=envelope.ts,
+            payload=self.last_marketdata_heartbeat_payload,
+        )
 
 
 def main() -> None:
@@ -42,7 +49,13 @@ def main() -> None:
     sub = PubSubSubscriber(project_id=project_id, subscription_id=sub_id)
     future = sub.subscribe(state.on_envelope)
 
-    print("subscribed; waiting for messages (Ctrl+C to stop)")
+    log_json(
+        intent_type="pubsub.subscribed",
+        severity="INFO",
+        subscription_id=sub_id,
+        project_id=project_id,
+        event_type=HEARTBEAT_EVENT_TYPE,
+    )
     try:
         future.result()
     except KeyboardInterrupt:

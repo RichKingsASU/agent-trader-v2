@@ -6,29 +6,110 @@ This module is intentionally container-first:
 - No sys.path hacks
 - Uses Application Default Credentials (Cloud Run service account) or an explicitly
   provided service account JSON in Docker.
+
+Runtime assumptions (documented for deploy/debug):
+- The repository root (containing the `backend/` package) should be on `sys.path`
+  when invoking this as a module (e.g. `python -m backend.ingestion.vm_ingest`).
+- This file logs `sys.path` at startup to make PYTHONPATH issues explicit.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import signal
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-# Per task requirement: keep these imports exactly (no lazy import indirection).
-from google.cloud import pubsub_v1, secretmanager
-from google.cloud import firestore
-from google.api_core.exceptions import AlreadyExists
+# Log Python import/resolve context as early as possible (before third-party imports).
+# This is intentionally print-based so it's visible even if dependencies are missing.
+try:
+    print(
+        json.dumps(
+            {
+                "event_type": "python.startup",
+                "severity": "INFO",
+                "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "service": "vm-ingest",
+                "python_executable": sys.executable,
+                "python_version": sys.version,
+                "cwd": os.getcwd(),
+                "pythonpath_env": os.getenv("PYTHONPATH") or "",
+                "sys_path": list(sys.path),
+                "pythonpath_assumption": "Repo root (containing `backend/`) should be on sys.path for package imports.",
+            },
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ),
+        flush=True,
+    )
+except Exception:
+    pass
+
+# Third-party imports: fail fast with CRITICAL diagnostics if missing.
+try:
+    # Per task requirement: keep these imports exactly (no lazy import indirection).
+    from google.cloud import pubsub_v1, secretmanager
+    from google.cloud import firestore
+    from google.api_core.exceptions import AlreadyExists
+except Exception as e:
+    try:
+        print(
+            json.dumps(
+                {
+                    "event_type": "python.import_failed",
+                    "severity": "CRITICAL",
+                    "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "service": "vm-ingest",
+                    "failed_import": "google.cloud / google.api_core",
+                    "errorType": e.__class__.__name__,
+                    "error": str(e),
+                    "cwd": os.getcwd(),
+                    "pythonpath_env": os.getenv("PYTHONPATH") or "",
+                    "sys_path": list(sys.path),
+                },
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
+    raise
+
+from backend.common.logging import init_structured_logging, log_event
+
+logger = logging.getLogger("vm_ingest")
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
+    """
+    Print a structured JSON diagnostic log.
+
+    This entrypoint intentionally uses print-based JSON logs.
+    """
+    payload: dict[str, Any] = {
+        "event_type": str(event_type),
+        "severity": str(severity).upper(),
+        "ts": _utcnow_iso(),
+        "service": "vm-ingest",
+    }
+    payload.update(fields)
+    try:
+        print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+    except Exception:
+        return
 
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -191,6 +272,22 @@ def _doc_for_message(message: Any) -> dict[str, Any]:
 
 
 def run() -> int:
+    # Per audit requirement: explicitly validate backend imports with clear CRITICAL logs.
+    try:
+        import backend  # noqa: F401
+    except Exception as e:
+        _diag(
+            "python.import_failed",
+            severity="CRITICAL",
+            failed_import="backend",
+            errorType=e.__class__.__name__,
+            error=str(e),
+            cwd=os.getcwd(),
+            pythonpath_env=os.getenv("PYTHONPATH") or "",
+            sys_path=list(sys.path),
+        )
+        raise
+
     cfg = _maybe_apply_secret_config(_load_config_from_env())
     if not cfg.pubsub_project_id:
         raise RuntimeError("Missing PUBSUB_PROJECT_ID (or GOOGLE_CLOUD_PROJECT).")
@@ -209,21 +306,16 @@ def run() -> int:
     for s in (signal.SIGINT, signal.SIGTERM):
         signal.signal(s, _handle_signal)
 
-    print(
-        json.dumps(
-            {
-                "event_type": "startup",
-                "ts": _utcnow_iso(),
-                "service": "vm-ingest",
-                "subscription": subscription_path,
-                "firestore_project_id": cfg.firestore_project_id,
-                "firestore_collection": cfg.firestore_collection,
-                "max_in_flight": cfg.max_messages,
-            },
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ),
-        flush=True,
+    log_event(
+        logger,
+        "startup",
+        severity="INFO",
+        service="vm-ingest",
+        ts=_utcnow_iso(),
+        subscription=subscription_path,
+        firestore_project_id=cfg.firestore_project_id,
+        firestore_collection=cfg.firestore_collection,
+        max_in_flight=cfg.max_messages,
     )
 
     collection = db.collection(cfg.firestore_collection)
@@ -241,27 +333,50 @@ def run() -> int:
             doc_ref.create(doc)
             message.ack()
         except AlreadyExists:
+            log_event(
+                logger,
+                "message.duplicate",
+                severity="DEBUG",
+                service="vm-ingest",
+                messageId=message_id,
+            )
             message.ack()
         except Exception as e:
             # Retry on transient failures by nacking.
             try:
-                print(
-                    json.dumps(
-                        {
-                            "event_type": "message_error",
-                            "ts": _utcnow_iso(),
-                            "service": "vm-ingest",
-                            "messageId": message_id,
-                            "errorType": e.__class__.__name__,
-                            "error": str(e),
-                        },
-                        separators=(",", ":"),
-                        ensure_ascii=False,
-                    ),
-                    flush=True,
+                logger.error(
+                    "message_error",
+                    exc_info=True,
+                    extra={
+                        "event_type": "message_error",
+                        "service": "vm-ingest",
+                        "ts": _utcnow_iso(),
+                        "messageId": message_id,
+                        "errorType": e.__class__.__name__,
+                        "error": str(e),
+                    },
                 )
             except Exception:
-                pass
+                # Preserve stack traces when structured stdout logging fails.
+                try:
+                    sys.stderr.write(
+                        json.dumps(
+                            {
+                                "event_type": "vm_ingest.error_log_failed",
+                                "ts": _utcnow_iso(),
+                                "service": "vm-ingest",
+                                "severity": "ERROR",
+                                "messageId": message_id,
+                                "exception": traceback.format_exc()[-8000:],
+                            },
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
             message.nack()
 
     flow = pubsub_v1.types.FlowControl(max_messages=cfg.max_messages)
@@ -274,20 +389,52 @@ def run() -> int:
         try:
             future.result(timeout=10)
         except Exception:
-            pass
+            try:
+                print(
+                    json.dumps(
+                        {
+                            "event_type": "vm_ingest.subscription_future_failed",
+                            "ts": _utcnow_iso(),
+                            "service": "vm-ingest",
+                            "severity": "ERROR",
+                            "exception": traceback.format_exc()[-8000:],
+                        },
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
     finally:
         try:
             sub.close()
         except Exception:
-            pass
+            try:
+                print(
+                    json.dumps(
+                        {
+                            "event_type": "vm_ingest.subscriber_close_failed",
+                            "ts": _utcnow_iso(),
+                            "service": "vm-ingest",
+                            "severity": "ERROR",
+                            "exception": traceback.format_exc()[-8000:],
+                        },
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
 
-    print(
-        json.dumps(
-            {"event_type": "shutdown", "ts": _utcnow_iso(), "service": "vm-ingest", "status": "ok"},
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ),
-        flush=True,
+    log_event(
+        logger,
+        "shutdown",
+        severity="INFO",
+        service="vm-ingest",
+        ts=_utcnow_iso(),
+        status="ok",
     )
     return 0
 
