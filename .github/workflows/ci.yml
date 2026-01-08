@@ -206,6 +206,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install -r cloudrun_ingestor/requirements.txt
+          python3 -m pip install -q --upgrade pytest
+          python3 -m pytest -q tests/test_imports.py
 
           # Import the actual Cloud Run entrypoint with dummy env to ensure we catch:
           # - missing dependencies
