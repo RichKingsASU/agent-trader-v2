@@ -28,8 +28,9 @@ Create a `.env.local` file in the project root:
 
 ```bash
 # Required: Alpaca API credentials
-export ALPACA_KEY_ID="YOUR_ALPACA_KEY_ID_HERE"
-export ALPACA_SECRET_KEY="YOUR_ALPACA_SECRET_KEY_HERE"
+export APCA_API_KEY_ID="YOUR_ALPACA_KEY_ID_HERE"
+export APCA_API_SECRET_KEY="YOUR_ALPACA_SECRET_KEY_HERE"
+export APCA_API_BASE_URL="https://paper-api.alpaca.markets"
 
 # Optional: Customize symbols (default: AAPL,NVDA,TSLA)
 export TICKER_SYMBOLS="AAPL,NVDA,TSLA,SPY,QQQ"
@@ -130,8 +131,9 @@ Health check:
 **Solution**:
 ```bash
 # Verify variables are set
-echo $ALPACA_KEY_ID
-echo $ALPACA_SECRET_KEY
+echo $APCA_API_KEY_ID
+echo $APCA_API_SECRET_KEY
+echo $APCA_API_BASE_URL
 
 # If empty, source .env.local
 source .env.local

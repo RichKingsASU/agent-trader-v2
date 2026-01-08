@@ -18,8 +18,8 @@ The backtesting module provides a comprehensive framework for testing trading st
 ### 1. Set Environment Variables
 
 ```bash
-export ALPACA_API_KEY="your_api_key"
-export ALPACA_SECRET_KEY="your_secret_key"
+export APCA_API_KEY_ID="your_api_key"
+export APCA_API_SECRET_KEY="your_secret_key"
 ```
 
 ### 2. Run Example Backtest

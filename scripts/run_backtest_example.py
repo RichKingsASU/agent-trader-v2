@@ -8,8 +8,8 @@ Usage:
     python scripts/run_backtest_example.py
 
 Requirements:
-    - ALPACA_API_KEY environment variable
-    - ALPACA_SECRET_KEY environment variable
+    - APCA_API_KEY_ID environment variable
+    - APCA_API_SECRET_KEY environment variable
 """
 
 import os
@@ -37,12 +37,12 @@ def main():
     """Run a backtest example."""
     
     # Check for API credentials
-    if not os.getenv("ALPACA_API_KEY") or not os.getenv("ALPACA_SECRET_KEY"):
+    if not os.getenv("APCA_API_KEY_ID") or not os.getenv("APCA_API_SECRET_KEY"):
         logger.error(
-            "Please set ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables.\n"
+            "Please set APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables.\n"
             "Example:\n"
-            "  export ALPACA_API_KEY='your_key'\n"
-            "  export ALPACA_SECRET_KEY='your_secret'"
+            "  export APCA_API_KEY_ID='your_key'\n"
+            "  export APCA_API_SECRET_KEY='your_secret'"
         )
         sys.exit(1)
     

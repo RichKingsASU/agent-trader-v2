@@ -231,7 +231,7 @@ firebase deploy --only functions:update_gex_market_regime
 |-------|-------|-----|
 | No data in Firestore | Function not deployed | `firebase deploy --only functions:update_gex_market_regime` |
 | Stale data (> 10 min) | Scheduler not running | Check `gcloud scheduler jobs list` |
-| "Missing credentials" | Alpaca keys not set | Set `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` secrets |
+| "Missing credentials" | Alpaca keys not set | Set `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`, and `APCA_API_BASE_URL` secrets |
 | Empty option chain | Market closed | Expected outside 9:30 AM - 4:00 PM ET |
 
 ---

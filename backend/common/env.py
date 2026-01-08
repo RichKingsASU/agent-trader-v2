@@ -84,22 +84,17 @@ def get_vertex_ai_location(*, default: str = "us-central1") -> str:
 
 def get_alpaca_key_id(*, required: bool = True) -> str:
     """
-    Returns the Alpaca API key.
+    Returns the Alpaca API key id.
 
-    Env contract (preferred):
-    - ALPACA_API_KEY
-
-    Back-compat:
-    - ALPACA_KEY_ID
+    Env contract (official Alpaca SDK):
+    - APCA_API_KEY_ID
     """
-    v = get_env("ALPACA_API_KEY", default=None, required=False) or get_env(
-        "ALPACA_KEY_ID", default=None, required=False
-    )
+    v = get_env("APCA_API_KEY_ID", default=None, required=False)
     if v:
         return str(v)
 
     if required:
-        raise RuntimeError("Missing required env var: ALPACA_API_KEY")
+        raise RuntimeError("Missing required env var: APCA_API_KEY_ID")
     return ""
 
 
@@ -112,13 +107,32 @@ def get_alpaca_api_key(*, required: bool = True) -> str:
 
 def get_alpaca_secret_key(*, required: bool = True) -> str:
     """
-    Returns ALPACA_SECRET_KEY.
+    Returns the Alpaca API secret key.
+
+    Env contract (official Alpaca SDK):
+    - APCA_API_SECRET_KEY
     """
-    v = get_env("ALPACA_SECRET_KEY", default=None, required=False)
+    v = get_env("APCA_API_SECRET_KEY", default=None, required=False)
     if v:
         return str(v)
 
     if required:
-        raise RuntimeError("Missing required env var: ALPACA_SECRET_KEY")
+        raise RuntimeError("Missing required env var: APCA_API_SECRET_KEY")
+    return ""
+
+
+def get_alpaca_api_base_url(*, required: bool = True) -> str:
+    """
+    Returns the Alpaca API base URL.
+
+    Env contract (official Alpaca SDK):
+    - APCA_API_BASE_URL
+    """
+    v = get_env("APCA_API_BASE_URL", default=None, required=False)
+    if v:
+        s = str(v).strip()
+        return s[:-1] if s.endswith("/") else s
+    if required:
+        raise RuntimeError("Missing required env var: APCA_API_BASE_URL")
     return ""
 

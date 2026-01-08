@@ -89,8 +89,9 @@ Add to your Cloud Function environment:
 
 ```bash
 # Required
-ALPACA_API_KEY=your_alpaca_key
-ALPACA_SECRET_KEY=your_alpaca_secret
+APCA_API_KEY_ID=your_alpaca_key
+APCA_API_SECRET_KEY=your_alpaca_secret
+APCA_API_BASE_URL=https://paper-api.alpaca.markets
 FIREBASE_PROJECT_ID=your_project_id
 VERTEX_AI_PROJECT_ID=your_project_id  # Can be same as Firebase
 VERTEX_AI_LOCATION=us-central1

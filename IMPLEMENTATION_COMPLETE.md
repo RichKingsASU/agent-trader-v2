@@ -139,8 +139,8 @@ MACRO_EVENT_SYSTEM_SUMMARY.md                      (This document)
 ### 1. Set Environment Variables
 ```bash
 # Required
-export ALPACA_API_KEY="pk_..."
-export ALPACA_SECRET_KEY="..."
+export APCA_API_KEY_ID="pk_..."
+export APCA_API_SECRET_KEY="..."
 export FIREBASE_PROJECT_ID="your-project"
 export VERTEX_AI_PROJECT_ID="your-project"
 export VERTEX_AI_MODEL_ID="gemini-2.5-flash"

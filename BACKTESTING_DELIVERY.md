@@ -378,8 +378,8 @@ tests/test_backtester.py::test_integration_with_gamma_scalper PASSED
 
 ### Option 1: Quick Start Script
 ```bash
-export ALPACA_API_KEY="your_key"
-export ALPACA_SECRET_KEY="your_secret"
+export APCA_API_KEY_ID="your_key"
+export APCA_API_SECRET_KEY="your_secret"
 python scripts/run_backtest_example.py
 ```
 

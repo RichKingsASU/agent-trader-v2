@@ -350,8 +350,9 @@ firebase deploy --only functions:initialize_daily_vix
 ### 2. Set Secrets
 
 ```bash
-firebase functions:secrets:set ALPACA_API_KEY
-firebase functions:secrets:set ALPACA_SECRET_KEY
+firebase functions:secrets:set APCA_API_KEY_ID
+firebase functions:secrets:set APCA_API_SECRET_KEY
+firebase functions:secrets:set APCA_API_BASE_URL
 ```
 
 ### 3. Update Strategy Execution

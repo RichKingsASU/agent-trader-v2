@@ -280,8 +280,9 @@ pytest functions/test_gex_engine.py -v
 
 ```bash
 # Set environment variables
-export ALPACA_KEY_ID="your_key_id"
-export ALPACA_SECRET_KEY="your_secret_key"
+export APCA_API_KEY_ID="your_key_id"
+export APCA_API_SECRET_KEY="your_secret_key"
+export APCA_API_BASE_URL="https://paper-api.alpaca.markets"
 
 # Run example
 python functions/example_gex_usage.py

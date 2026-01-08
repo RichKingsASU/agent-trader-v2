@@ -21,6 +21,7 @@ from backend.common.ops_metrics import (
     reconnect_attempts_total,
 )
 from backend.ingestion.rate_limit import Backoff
+from backend.common.ws_reconnect_policy import classify_ws_failure, ensure_retry_allowed
 from backend.observability.logger import intent_end, intent_start, log_event
 
 LAST_MARKETDATA_TS_UTC: datetime | None = None
@@ -191,6 +192,16 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
     alpaca = load_alpaca_env()
     symbols = _symbols_from_env()
 
+    # Deterministic Alpaca auth smoke tests (startup gate).
+    # Runs before any subscriptions are made.
+    if os.getenv("SKIP_ALPACA_AUTH_SMOKE_TESTS", "").strip().lower() not in ("1", "true", "yes", "y"):
+        from backend.streams.alpaca_auth_smoke import run_alpaca_auth_smoke_tests_async  # noqa: WPS433
+
+        feed = (os.getenv("ALPACA_DATA_FEED") or "iex").strip().lower() or "iex"
+        timeout_s = float(os.getenv("ALPACA_AUTH_SMOKE_TIMEOUT_S", "5"))
+        logging.info("Running Alpaca auth smoke tests (feed=%s, timeout_s=%s)...", feed, timeout_s)
+        await run_alpaca_auth_smoke_tests_async(feed=feed, timeout_s=timeout_s)
+
     logging.info(f"Subscribing to quotes for: {symbols}")
     if not symbols:
         raise RuntimeError("ALPACA_SYMBOLS resolved to empty list")
@@ -199,6 +210,8 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
     backoff_base_s = float(os.getenv("RECONNECT_BACKOFF_BASE_S") or "1")
     backoff_max_s = float(os.getenv("RECONNECT_BACKOFF_MAX_S") or "60")
     max_retry_window_s = float(os.getenv("RECONNECT_MAX_RETRY_WINDOW_S") or "900")
+    max_attempts = int(os.getenv("RECONNECT_MAX_ATTEMPTS") or "5")
+    min_sleep_s = float(os.getenv("RECONNECT_MIN_SLEEP_S") or "0.5")
 
     backoff = Backoff(base_seconds=backoff_base_s, max_seconds=backoff_max_s)
     global _BACKOFF, _RESET_BACKOFF_ON_FIRST_QUOTE
@@ -246,7 +259,22 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
                 status="ended",
                 sleep_s=sleep_s,
                 backoff_attempt=backoff.attempt,
+                failure_category="transient",
             )
+            try:
+                ensure_retry_allowed(attempt=backoff.attempt, max_attempts=max_attempts)
+            except Exception:
+                log_event(
+                    "subscription_reconnect_giveup",
+                    level="ERROR",
+                    component="marketdata-mcp-server",
+                    source=LAST_MARKETDATA_SOURCE,
+                    status="max_attempts_exceeded",
+                    max_attempts=max_attempts,
+                    backoff_attempt=backoff.attempt,
+                    failure_category="transient",
+                )
+                raise
             if _RETRY_WINDOW_STARTED_M is not None and (time.monotonic() - _RETRY_WINDOW_STARTED_M) > max_retry_window_s:
                 log_event(
                     "subscription_reconnect_giveup",
@@ -256,6 +284,7 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
                     status="max_retry_window_exceeded",
                     max_retry_window_s=max_retry_window_s,
                     backoff_attempt=backoff.attempt,
+                    failure_category="transient",
                 )
                 raise RuntimeError("Reconnect max retry window exceeded")
             await asyncio.sleep(sleep_s)
@@ -269,6 +298,35 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
             raise
         except Exception as e:
             errors_total.inc(labels={"component": "marketdata-mcp-server"})
+            failure = classify_ws_failure(e)
+            # Auth failures are unrecoverable: stop immediately (do not retry endlessly).
+            if failure.is_auth_failure():
+                log_event(
+                    "subscription_auth_failure",
+                    level="ERROR",
+                    component="marketdata-mcp-server",
+                    source=LAST_MARKETDATA_SOURCE,
+                    status="unrecoverable",
+                    error_type=type(e).__name__,
+                    error=str(e),
+                    failure_category=failure.category,
+                    http_status=failure.http_status,
+                    classification_reason=failure.reason,
+                )
+                raise SystemExit(1)
+            if failure.is_rate_limited():
+                log_event(
+                    "subscription_rate_limited",
+                    level="WARNING",
+                    component="marketdata-mcp-server",
+                    source=LAST_MARKETDATA_SOURCE,
+                    status="retrying_with_backoff",
+                    error_type=type(e).__name__,
+                    error=str(e),
+                    failure_category=failure.category,
+                    http_status=failure.http_status,
+                    classification_reason=failure.reason,
+                )
             sleep_s = backoff.next_sleep()
             try:
                 reconnect_attempts_total.inc(1.0, labels={"component": "marketdata-mcp-server", "stream": "alpaca_quotes"})
@@ -285,7 +343,26 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
                 error=f"{type(e).__name__}: {e}",
                 sleep_s=sleep_s,
                 backoff_attempt=backoff.attempt,
+                failure_category=failure.category,
+                http_status=failure.http_status,
+                classification_reason=failure.reason,
             )
+            try:
+                ensure_retry_allowed(attempt=backoff.attempt, max_attempts=max_attempts)
+            except Exception:
+                log_event(
+                    "subscription_reconnect_giveup",
+                    level="ERROR",
+                    component="marketdata-mcp-server",
+                    source=LAST_MARKETDATA_SOURCE,
+                    status="max_attempts_exceeded",
+                    max_attempts=max_attempts,
+                    backoff_attempt=backoff.attempt,
+                    failure_category=failure.category,
+                    http_status=failure.http_status,
+                    classification_reason=failure.reason,
+                )
+                raise
             if _RETRY_WINDOW_STARTED_M is not None and (time.monotonic() - _RETRY_WINDOW_STARTED_M) > max_retry_window_s:
                 log_event(
                     "subscription_reconnect_giveup",
@@ -295,6 +372,9 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
                     status="max_retry_window_exceeded",
                     max_retry_window_s=max_retry_window_s,
                     backoff_attempt=backoff.attempt,
+                    failure_category=failure.category,
+                    http_status=failure.http_status,
+                    classification_reason=failure.reason,
                 )
                 raise
             await asyncio.sleep(sleep_s)

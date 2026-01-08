@@ -115,9 +115,9 @@ See `docs/EXECUTION_AGENT_STATE_MACHINE.md`.
 ### Broker / data sources
 
 - Alpaca:
-  - `ALPACA_API_KEY`
-  - `ALPACA_SECRET_KEY`
-  - `ALPACA_TRADING_HOST` (defaults to paper host)
+  - `APCA_API_KEY_ID`
+  - `APCA_API_SECRET_KEY`
+  - `APCA_API_BASE_URL`
 - Postgres:
   - `DATABASE_URL` (for `public.broker_positions`)
 - Firestore:

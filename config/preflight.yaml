@@ -1,4 +1,4 @@
-required_env_vars: [ALPACA_KEY_ID, ALPACA_SECRET_KEY, FIRESTORE_PROJECT_ID]
+required_env_vars: [APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL, FIRESTORE_PROJECT_ID]
 region_default: us-central1
 smoke_module: backend.streams_bridge.test_writer_smoke
 ingest_module: backend.ingestion.market_data_ingest
