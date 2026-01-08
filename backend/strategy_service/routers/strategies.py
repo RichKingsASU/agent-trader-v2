@@ -21,6 +21,10 @@ COLLECTION_STRATEGIES = "strategies"
 RISK_SERVICE_URL = os.getenv("RISK_SERVICE_URL", "http://127.0.0.1:8002")
 
 class PaperOrderSimulateRequest(BaseModel):
+    correlation_id: str | None = None
+    signal_id: str | None = None
+    allocation_id: str | None = None
+    execution_id: str | None = None
     broker_account_id: UUID
     strategy_id: UUID
     symbol: str
@@ -92,6 +96,10 @@ def create_strategy(payload: StrategyCreate, request: Request):
 @router.post("/simulate-order", response_model=PaperOrder)
 def simulate_order(payload: PaperOrderSimulateRequest, request: Request):
     ctx: TenantContext = get_tenant_context(request)
+    corr = risk_correlation_id(correlation_id=payload.correlation_id, headers=dict(request.headers))
+    payload.correlation_id = corr
+    if payload.execution_id is None:
+        payload.execution_id = str(uuid4())
     # For now, we'll assume a simple risk check that always passes.
     # In the future, we can add a more sophisticated risk check here.
     
@@ -122,6 +130,10 @@ def simulate_order(payload: PaperOrderSimulateRequest, request: Request):
     paper_order = insert_paper_order(
         tenant_id=ctx.tenant_id,
         payload=PaperOrderCreate(
+            correlation_id=corr,
+            signal_id=payload.signal_id,
+            allocation_id=payload.allocation_id,
+            execution_id=payload.execution_id,
             uid=ctx.uid,
             broker_account_id=payload.broker_account_id,
             strategy_id=payload.strategy_id,
@@ -136,6 +148,10 @@ def simulate_order(payload: PaperOrderSimulateRequest, request: Request):
             risk_scope=risk_result.scope,
             risk_reason=risk_result.reason,
             raw_order={
+                "correlation_id": corr,
+                "signal_id": payload.signal_id,
+                "allocation_id": payload.allocation_id,
+                "execution_id": payload.execution_id,
                 "instrument_type": payload.instrument_type,
                 "symbol": payload.symbol,
                 "side": payload.side,

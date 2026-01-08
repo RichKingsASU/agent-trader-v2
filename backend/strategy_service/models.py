@@ -33,6 +33,12 @@ class Strategy(BaseModel):
 
 
 class PaperOrderCreate(BaseModel):
+    # Correlation across signal -> allocation -> execution (optional but persisted when present)
+    correlation_id: Optional[str] = None
+    signal_id: Optional[str] = None
+    allocation_id: Optional[str] = None
+    execution_id: Optional[str] = None
+
     uid: str
     broker_account_id: UUID
     strategy_id: UUID

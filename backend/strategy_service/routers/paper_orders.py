@@ -9,8 +9,11 @@ import os
 
 from backend.tenancy.auth import get_tenant_context
 from backend.tenancy.context import TenantContext
+from backend.common.logging import log_event
+from backend.observability.risk_signals import risk_correlation_id
 
 from ..db import build_raw_order, insert_paper_order
+from ..db import insert_paper_order_idempotent
 from ..models import PaperOrderCreate
 from backend.common.a2a_sdk import RiskAgentClient
 from backend.contracts.risk import TradeCheckRequest
@@ -21,6 +24,10 @@ RISK_SERVICE_URL = os.getenv("RISK_SERVICE_URL", "http://127.0.0.1:8002")
 
 
 class PaperOrderRequest(BaseModel):
+    correlation_id: str | None = None
+    signal_id: str | None = None
+    allocation_id: str | None = None
+    execution_id: str | None = None
     broker_account_id: UUID
     strategy_id: UUID
     symbol: str
@@ -30,11 +37,19 @@ class PaperOrderRequest(BaseModel):
     time_in_force: str = "day"
     notional: float
     quantity: float | None = None
+    idempotency_key: str | None = None
 
 
 @router.post("/paper_orders", tags=["paper_orders"])
 async def create_paper_order(order: PaperOrderRequest, request: Request):
     ctx: TenantContext = get_tenant_context(request)
+    corr = risk_correlation_id(correlation_id=order.correlation_id, headers=dict(request.headers))
+    order.correlation_id = corr
+    if order.execution_id is None:
+        # Assign an execution id for this attempt (joinable across logs + writes)
+        import uuid
+
+        order.execution_id = str(uuid.uuid4())
     # 1. Run risk check
     try:
         risk_req = TradeCheckRequest(
@@ -66,6 +81,10 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
     if risk_result.allowed:
         logical_order = {
             "uid": ctx.uid,
+            "correlation_id": corr,
+            "signal_id": order.signal_id,
+            "allocation_id": order.allocation_id,
+            "execution_id": order.execution_id,
             "broker_account_id": str(order.broker_account_id),
             "strategy_id": str(order.strategy_id),
             "symbol": order.symbol,
@@ -78,6 +97,10 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
         }
 
         payload = PaperOrderCreate(
+            correlation_id=corr,
+            signal_id=order.signal_id,
+            allocation_id=order.allocation_id,
+            execution_id=order.execution_id,
             uid=ctx.uid,
             broker_account_id=order.broker_account_id,
             strategy_id=order.strategy_id,
@@ -94,6 +117,24 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
             raw_order=build_raw_order(logical_order),
             status="simulated",
         )
+        try:
+            log_event(
+                __import__("logging").getLogger(__name__),
+                "execution.completed",
+                severity="INFO",
+                correlation_id=corr,
+                tenant_id=ctx.tenant_id,
+                uid=ctx.uid,
+                mode="paper",
+                signal_id=order.signal_id,
+                allocation_id=order.allocation_id,
+                execution_id=order.execution_id,
+                symbol=order.symbol,
+                side=order.side,
+                notional=float(order.notional),
+            )
+        except Exception:
+            pass
         return insert_paper_order(tenant_id=ctx.tenant_id, payload=payload)
     else:
         # If risk check fails, return the reason

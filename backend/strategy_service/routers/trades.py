@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 import os
 from uuid import UUID, uuid4
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 import logging
 import httpx
@@ -12,11 +12,14 @@ from backend.tenancy.context import TenantContext
 from backend.persistence.firebase_client import get_firestore_client
 from backend.persistence.firestore_retry import with_firestore_retry
 from backend.common.kill_switch import get_kill_switch_state
+from backend.common.logging import log_event
+from backend.observability.risk_signals import risk_correlation_id
 from google.cloud import firestore
 from backend.common.a2a_sdk import RiskAgentSyncClient
 from backend.contracts.risk import TradeCheckRequest
 
 from ..db import build_raw_order, insert_paper_order
+from ..db import insert_paper_order_idempotent
 from ..models import PaperOrderCreate
 
 router = APIRouter()
@@ -25,6 +28,11 @@ logger = logging.getLogger(__name__)
 RISK_SERVICE_URL = os.getenv("RISK_SERVICE_URL", "http://127.0.0.1:8002")
 
 class TradeRequest(BaseModel):
+    # Correlation across signal -> allocation -> execution
+    correlation_id: str | None = None
+    signal_id: str | None = None
+    allocation_id: str | None = None
+    execution_id: str | None = None
     broker_account_id: UUID
     strategy_id: UUID
     symbol: str
@@ -34,6 +42,7 @@ class TradeRequest(BaseModel):
     time_in_force: str = "day"
     notional: float
     quantity: float = None
+    idempotency_key: str | None = None
 
 
 def get_shadow_mode_flag() -> bool:
@@ -101,7 +110,7 @@ def get_current_price(symbol: str) -> Decimal:
         return Decimal("0")
 
 
-def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict:
+def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, shadow_id: str | None = None) -> dict:
     """
     Create a synthetic shadow trade and log it to user-scoped shadowTradeHistory collection.
     
@@ -116,7 +125,8 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict
     """
     try:
         db = get_firestore_client()
-        shadow_id = str(uuid4())
+        if shadow_id is None:
+            shadow_id = str(uuid4())
         
         # Get current price for fill simulation
         fill_price = get_current_price(trade_request.symbol)
@@ -134,6 +144,10 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict
         # Create shadow trade record
         shadow_trade = {
             "shadow_id": shadow_id,
+            "correlation_id": trade_request.correlation_id,
+            "signal_id": trade_request.signal_id,
+            "allocation_id": trade_request.allocation_id,
+            "execution_id": getattr(trade_request, "execution_id", None),
             "uid": ctx.uid,
             "tenant_id": ctx.tenant_id,
             "broker_account_id": str(trade_request.broker_account_id),
@@ -157,13 +171,19 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict
         }
         
         # Write to user-scoped shadowTradeHistory collection
-        with_firestore_retry(
-            lambda: db.collection("users")
+        ref = (
+            db.collection("users")
             .document(ctx.uid)
             .collection("shadowTradeHistory")
             .document(shadow_id)
-            .set(shadow_trade, merge=False)
         )
+        try:
+            with_firestore_retry(lambda: ref.create(shadow_trade))
+        except AlreadyExists:
+            # Retry/restart-safe behavior: return the existing record.
+            snap = with_firestore_retry(lambda: ref.get())
+            if snap.exists:
+                return snap.to_dict() or shadow_trade
         
         logger.info(f"Shadow trade created: {shadow_id} - {trade_request.symbol} {trade_request.side} qty={qty} @ ${fill_price}")
         
@@ -195,10 +215,39 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     Fail-safe: On any error reading the shadow mode flag, defaults to shadow mode = True
     """
     ctx: TenantContext = get_tenant_context(request)
+    execution_id = str(uuid4())
+    corr = risk_correlation_id(correlation_id=trade_request.correlation_id, headers=dict(request.headers))
+    # Ensure downstream writes get the same chain correlation.
+    trade_request.correlation_id = corr
+    trade_request.execution_id = execution_id
     
     # Check shadow mode flag (fail-safe: defaults to True)
     is_shadow_mode = get_shadow_mode_flag()
     logger.info(f"Executing trade in {'SHADOW' if is_shadow_mode else 'LIVE'} mode")
+
+    try:
+        log_event(
+            logger,
+            "execution.attempt",
+            severity="INFO",
+            correlation_id=corr,
+            tenant_id=ctx.tenant_id,
+            uid=ctx.uid,
+            broker_account_id=str(trade_request.broker_account_id),
+            strategy_id=str(trade_request.strategy_id),
+            symbol=trade_request.symbol,
+            side=trade_request.side,
+            notional=float(trade_request.notional),
+            instrument_type=trade_request.instrument_type,
+            order_type=trade_request.order_type,
+            time_in_force=trade_request.time_in_force,
+            mode="shadow" if is_shadow_mode else "live",
+            signal_id=trade_request.signal_id,
+            allocation_id=trade_request.allocation_id,
+            execution_id=execution_id,
+        )
+    except Exception:
+        pass
 
     # Global kill switch: block any non-shadow ("live") execution path.
     enabled, source = get_kill_switch_state()
@@ -236,8 +285,33 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     # SHADOW MODE: Create synthetic order without contacting broker
     if is_shadow_mode:
         try:
-            shadow_trade = create_shadow_trade(trade_request, ctx)
+            shadow_id = None
+            if idem:
+                from backend.common.idempotency import stable_uuid_from_key
+
+                shadow_id = str(stable_uuid_from_key(key=f"{ctx.tenant_id}:{ctx.uid}:shadow_trade:{idem}"))
+            shadow_trade = create_shadow_trade(trade_request, ctx, shadow_id=shadow_id)
             logger.info(f"Shadow trade executed successfully: {shadow_trade['shadow_id']}")
+            try:
+                log_event(
+                    logger,
+                    "execution.completed",
+                    severity="INFO",
+                    correlation_id=corr,
+                    tenant_id=ctx.tenant_id,
+                    uid=ctx.uid,
+                    mode="shadow",
+                    signal_id=trade_request.signal_id,
+                    allocation_id=trade_request.allocation_id,
+                    execution_id=execution_id,
+                    shadow_id=shadow_trade.get("shadow_id"),
+                    symbol=trade_request.symbol,
+                    side=trade_request.side,
+                    quantity=shadow_trade.get("quantity"),
+                    entry_price=shadow_trade.get("entry_price"),
+                )
+            except Exception:
+                pass
             
             # Return shadow trade in a format similar to paper order
             return {
@@ -262,6 +336,10 @@ def execute_trade(trade_request: TradeRequest, request: Request):
         try:
             logical_order = {
                 "uid": ctx.uid,
+                "correlation_id": corr,
+                "signal_id": trade_request.signal_id,
+                "allocation_id": trade_request.allocation_id,
+                "execution_id": execution_id,
                 "broker_account_id": str(trade_request.broker_account_id),
                 "strategy_id": str(trade_request.strategy_id),
                 "symbol": trade_request.symbol,
@@ -273,6 +351,10 @@ def execute_trade(trade_request: TradeRequest, request: Request):
                 "quantity": trade_request.quantity,
             }
             payload = PaperOrderCreate(
+                correlation_id=corr,
+                signal_id=trade_request.signal_id,
+                allocation_id=trade_request.allocation_id,
+                execution_id=execution_id,
                 uid=ctx.uid,
                 broker_account_id=trade_request.broker_account_id,
                 strategy_id=trade_request.strategy_id,
@@ -290,8 +372,32 @@ def execute_trade(trade_request: TradeRequest, request: Request):
                 status="simulated",  # TODO: Change to "submitted" when live Alpaca integration is complete
             )
             
-            result = insert_paper_order(tenant_id=ctx.tenant_id, payload=payload)
+            if idem:
+                result = insert_paper_order_idempotent(
+                    tenant_id=ctx.tenant_id, payload=payload, idempotency_key=idem
+                )
+            else:
+                result = insert_paper_order(tenant_id=ctx.tenant_id, payload=payload)
             logger.info(f"Live/Paper trade executed successfully: {result.id}")
+            try:
+                log_event(
+                    logger,
+                    "execution.completed",
+                    severity="INFO",
+                    correlation_id=corr,
+                    tenant_id=ctx.tenant_id,
+                    uid=ctx.uid,
+                    mode="paper",
+                    signal_id=trade_request.signal_id,
+                    allocation_id=trade_request.allocation_id,
+                    execution_id=execution_id,
+                    paper_order_id=str(result.id),
+                    symbol=trade_request.symbol,
+                    side=trade_request.side,
+                    notional=float(trade_request.notional),
+                )
+            except Exception:
+                pass
             return result
             
         except Exception as e:
