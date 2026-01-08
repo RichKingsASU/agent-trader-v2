@@ -49,12 +49,18 @@ class AccountUpdatesClient:
     async def run_forever(self):
         if not self.cfg.account_updates_url:
             logger.warning("ACCOUNT_UPDATES_URL not set; account updates client idle.")
+            idle_iter = 0
             while True:
+                idle_iter += 1
+                logger.info("account_updates idle_loop_iteration=%d", idle_iter)
                 await asyncio.sleep(30)
             return
 
         attempt = 0
+        loop_iter = 0
         while True:
+            loop_iter += 1
+            logger.info("account_updates connect_loop_iteration=%d", loop_iter)
             try:
                 headers = {}
                 if self.cfg.account_updates_api_key:
@@ -77,6 +83,7 @@ class AccountUpdatesClient:
 
                 async with websockets.connect(self.cfg.account_updates_url, extra_headers=headers) as websocket:
                     attempt = 0
+                    recv_iter = 0
                     try:
                         log_event(
                             logger,
@@ -90,6 +97,9 @@ class AccountUpdatesClient:
                         pass
                     while True:
                         message = await websocket.recv()
+                        recv_iter += 1
+                        if recv_iter % 100 == 0:
+                            logger.info("account_updates recv_loop_iteration=%d", recv_iter)
                         self._recv_total += 1
                         self._recv_since_log += 1
                         try:

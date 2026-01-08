@@ -218,7 +218,16 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
     _BACKOFF = backoff
     global _RETRY_WINDOW_STARTED_M
 
+    loop_iter = 0
     while True:
+        loop_iter += 1
+        log_event(
+            "alpaca_quotes_stream_loop_iteration",
+            level="INFO",
+            component="marketdata-mcp-server",
+            source=LAST_MARKETDATA_SOURCE,
+            iteration=int(loop_iter),
+        )
         wss_client: StockDataStream | None = None
         try:
             wss_client = StockDataStream(alpaca.key_id, alpaca.secret_key, feed=DataFeed.IEX)

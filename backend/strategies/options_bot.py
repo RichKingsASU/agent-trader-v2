@@ -110,7 +110,11 @@ async def main():
         extra={"event_type": "options_bot.subscribed", "subject": subject, "delta_threshold": delta_threshold},
     )
 
+    loop_iter = 0
     while True:
+        loop_iter += 1
+        if loop_iter % 60 == 0:
+            print(f"[options_bot] loop_iteration={loop_iter}")
         await asyncio.sleep(1)
 
 if __name__ == "__main__":

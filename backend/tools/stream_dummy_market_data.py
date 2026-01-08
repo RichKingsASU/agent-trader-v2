@@ -1,4 +1,7 @@
 import os
+import logging
+import signal
+import threading
 import time
 import random
 import uuid
@@ -14,6 +17,8 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL env var is not set")
 
 SYMBOL = "SPY"
+logger = logging.getLogger(__name__)
+_SHUTDOWN_EVENT = threading.Event()
 
 init_structured_logging(service="dummy-market-data-streamer")
 logger = logging.getLogger(__name__)
@@ -27,8 +32,26 @@ def main() -> None:
 
     base_price = 500.0  # starting reference
 
+    # Best-effort: allow clean SIGTERM/SIGINT shutdown (Cloud Run, ctrl-c).
+    def _handle_signal(signum, _frame=None):  # type: ignore[no-untyped-def]
+        _SHUTDOWN_EVENT.set()
+        try:
+            logger.info("dummy_market_data signal_received signum=%s", int(signum))
+        except Exception:
+            pass
+
+    if threading.current_thread() is threading.main_thread():
+        for s in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(s, _handle_signal)
+            except Exception:
+                pass
+
     with psycopg.connect(DATABASE_URL) as conn:
-        while True:
+        iteration = 0
+        while not _SHUTDOWN_EVENT.is_set():
+            iteration += 1
+            print(f"[streamer] loop_iteration={iteration}")
             try:
                 iteration_id = uuid.uuid4().hex
                 # random walk around base_price
@@ -73,13 +96,10 @@ def main() -> None:
                     },
                 )
             except Exception as e:
-                logger.exception(
-                    "dummy_stream.error",
-                    extra={"event_type": "dummy_stream.error", "error": repr(e)},
-                )
-                time.sleep(2.0)
+                print(f"[streamer] ERROR: {e!r}")
+                _SHUTDOWN_EVENT.wait(timeout=2.0)
 
-            time.sleep(1.0)
+            _SHUTDOWN_EVENT.wait(timeout=1.0)
 
 
 if __name__ == "__main__":

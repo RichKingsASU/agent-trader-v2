@@ -2,6 +2,8 @@ import sys
 import os
 import datetime as dt
 import logging
+import signal
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional, TypeVar
@@ -18,6 +20,7 @@ T = TypeVar("T")
 # --- Standard Header ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+_SHUTDOWN_EVENT = threading.Event()
 
 _symbols_raw = os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ")
 SYMS = [s.strip() for s in _symbols_raw.split(",") if s.strip()]
@@ -183,18 +186,38 @@ def _run_synthetic_mode() -> None:
         git_sha=os.getenv("GIT_SHA") or None,
         validate_credentials=not _env_bool("PUBSUB_SKIP_CREDENTIALS_VALIDATION", default=False),
     )
+
+    # Best-effort: allow SIGTERM/SIGINT to interrupt the loop promptly.
+    def _handle_signal(signum: int, _frame: Any | None = None) -> None:
+        _SHUTDOWN_EVENT.set()
+        try:
+            logger.info("synthetic_bars_ingest signal_received signum=%s", int(signum))
+        except Exception:
+            pass
+
+    if threading.current_thread() is threading.main_thread():
+        for s in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(s, _handle_signal)
+            except Exception:
+                pass
     try:
         seq = 0
-        while True:
-            now = datetime.now(timezone.utc)
-            bar_ts = now.replace(second=0, microsecond=0)
-            for sym in SYMS:
-                # Deterministic walk (avoid randomness for stable debugging).
-                px_by_symbol[sym] = float(px_by_symbol.get(sym, base_px)) + 0.05
-                payload = _synthetic_bar_payload(symbol=sym, ts=bar_ts, px=px_by_symbol[sym], seq=seq)
-                pub.publish_event(event_type=event_type, payload=payload)
-            seq += 1
-            time.sleep(max(0.1, interval_s))
+        while not _SHUTDOWN_EVENT.is_set():
+            logger.info("synthetic_bars_ingest loop_iteration=%d", seq + 1)
+            try:
+                now = datetime.now(timezone.utc)
+                bar_ts = now.replace(second=0, microsecond=0)
+                for sym in SYMS:
+                    # Deterministic walk (avoid randomness for stable debugging).
+                    px_by_symbol[sym] = float(px_by_symbol.get(sym, base_px)) + 0.05
+                    payload = _synthetic_bar_payload(symbol=sym, ts=bar_ts, px=px_by_symbol[sym], seq=seq)
+                    pub.publish_event(event_type=event_type, payload=payload)
+                seq += 1
+            except Exception:
+                # Never allow the service loop to die silently.
+                logger.exception("synthetic_bars_ingest loop_error iteration=%d", seq + 1)
+            _SHUTDOWN_EVENT.wait(timeout=max(0.1, float(interval_s)))
     finally:
         try:
             pub.close()

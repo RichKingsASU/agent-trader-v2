@@ -110,7 +110,10 @@ async def main():
 async def _heartbeat_loop(ops: OpsLogger) -> None:
     interval = float(os.getenv("OPS_HEARTBEAT_LOG_INTERVAL_S") or "60")
     interval = max(5.0, interval)
+    iteration = 0
     while True:
+        iteration += 1
+        logger.info("stream_bridge heartbeat_loop_iteration=%d", iteration)
         try:
             # Include a small, log-friendly snapshot of in-process counters so
             # operators can see traffic without an external metrics system.
@@ -134,8 +137,8 @@ async def _heartbeat_loop(ops: OpsLogger) -> None:
                 reconnect_attempts_total=_by_stream("reconnect_attempts_total"),
             )
         except Exception:
-            logger.exception("stream_bridge.heartbeat_loop_failed")
-            pass
+            # Never let the loop die silently or hide recurring failures.
+            logger.exception("stream_bridge heartbeat_loop_error iteration=%d", iteration)
         await asyncio.sleep(interval)
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops
 from .driver import run_strategy
 
 app = FastAPI(title="AgentTrader Strategy Engine")
+logger = logging.getLogger(__name__)
 install_fastapi_request_id_middleware(app, service="strategy-engine")
 install_app_heartbeat(app, service_name="strategy-engine")
 
@@ -303,7 +304,10 @@ async def _startup() -> None:
     cycle_s = max(5.0, min(cycle_s, 300.0))
 
     async def _loop() -> None:
-        while True:
+        iteration = 0
+        while not getattr(app.state, "shutting_down", False):
+            iteration += 1
+            logger.info("strategy_engine cycle_loop_iteration=%d", iteration)
             try:
                 # Never enable execution here (safety-first; EXECUTE is explicitly out-of-scope).
                 await run_strategy(execute=False)
@@ -311,7 +315,7 @@ async def _startup() -> None:
                 raise
             except Exception:
                 # Best-effort: keep process alive; health endpoints reflect state via heartbeat.
-                pass
+                logger.exception("strategy_engine cycle_loop_error iteration=%d", iteration)
             await asyncio.sleep(cycle_s)
 
     app.state.cycle_task = asyncio.create_task(_loop())
