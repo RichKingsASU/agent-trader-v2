@@ -5,6 +5,12 @@ from decimal import Decimal
 
 
 class TradeCheckRequest(BaseModel):
+    # Correlation across signal -> allocation -> execution (optional, but preserved when present)
+    correlation_id: Optional[str] = None
+    signal_id: Optional[str] = None
+    allocation_id: Optional[str] = None
+    execution_id: Optional[str] = None
+
     broker_account_id: UUID
     strategy_id: Optional[UUID] = None
     symbol: str
