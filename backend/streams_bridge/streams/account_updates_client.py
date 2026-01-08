@@ -41,6 +41,7 @@ class AccountUpdatesClient:
                 published_since_last=int(self._pub_since_log),
             )
         except Exception:
+            logger.exception("stream_bridge.account_updates.log_stats_failed")
             pass
         self._recv_since_log = 0
         self._pub_since_log = 0
@@ -48,12 +49,18 @@ class AccountUpdatesClient:
     async def run_forever(self):
         if not self.cfg.account_updates_url:
             logger.warning("ACCOUNT_UPDATES_URL not set; account updates client idle.")
+            idle_iter = 0
             while True:
+                idle_iter += 1
+                logger.info("account_updates idle_loop_iteration=%d", idle_iter)
                 await asyncio.sleep(30)
             return
 
         attempt = 0
+        loop_iter = 0
         while True:
+            loop_iter += 1
+            logger.info("account_updates connect_loop_iteration=%d", loop_iter)
             try:
                 headers = {}
                 if self.cfg.account_updates_api_key:
@@ -71,10 +78,12 @@ class AccountUpdatesClient:
                         url_configured=True,
                     )
                 except Exception:
+                    logger.exception("stream_bridge.account_updates.ws_connect_attempt_log_failed")
                     pass
 
                 async with websockets.connect(self.cfg.account_updates_url, extra_headers=headers) as websocket:
                     attempt = 0
+                    recv_iter = 0
                     try:
                         log_event(
                             logger,
@@ -84,9 +93,13 @@ class AccountUpdatesClient:
                             stream="account_updates",
                         )
                     except Exception:
+                        logger.exception("stream_bridge.account_updates.ws_connected_log_failed")
                         pass
                     while True:
                         message = await websocket.recv()
+                        recv_iter += 1
+                        if recv_iter % 100 == 0:
+                            logger.info("account_updates recv_loop_iteration=%d", recv_iter)
                         self._recv_total += 1
                         self._recv_since_log += 1
                         try:
@@ -95,6 +108,7 @@ class AccountUpdatesClient:
                                 labels={"component": "stream-bridge", "stream": "account_updates"},
                             )
                         except Exception:
+                            logger.exception("stream_bridge.account_updates.metrics_messages_received_inc_failed")
                             pass
                         payload = json.loads(message)
                         positions, balances, account_meta = map_devconsole_account_update(payload)
@@ -112,6 +126,7 @@ class AccountUpdatesClient:
                                 labels={"component": "stream-bridge", "stream": "account_updates"},
                             )
                         except Exception:
+                            logger.exception("stream_bridge.account_updates.metrics_messages_published_inc_failed")
                             pass
                         self._maybe_log_stats()
 
@@ -129,6 +144,7 @@ class AccountUpdatesClient:
                         error=f"{type(e).__name__}: {e}",
                     )
                 except Exception:
+                    logger.exception("stream_bridge.account_updates.ws_disconnected_log_failed")
                     pass
                 logger.exception(f"AccountUpdatesClient error: {e}")
                 attempt += 1
@@ -139,5 +155,6 @@ class AccountUpdatesClient:
                         labels={"component": "stream-bridge", "stream": "account_updates"},
                     )
                 except Exception:
+                    logger.exception("stream_bridge.account_updates.metrics_reconnect_attempt_inc_failed")
                     pass
                 await asyncio.sleep(5)

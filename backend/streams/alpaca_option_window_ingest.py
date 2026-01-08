@@ -56,6 +56,7 @@ DATA_BASE = "https://data.alpaca.markets"
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.env import get_env
+from backend.common.logging import init_structured_logging
 from backend.observability.build_fingerprint import get_build_fingerprint
 
 # Keep consistent with other backend/streams scripts
@@ -528,10 +529,7 @@ def load_config() -> WindowConfig:
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
+    init_structured_logging(service="options-window-ingest")
     enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="options-window-ingest",
@@ -539,9 +537,14 @@ def main() -> int:
     )
     try:
         fp = get_build_fingerprint()
-        print(
-            json.dumps({"intent_type": "build_fingerprint", **fp}, separators=(",", ":"), ensure_ascii=False),
-            flush=True,
+        logger.info(
+            "build_fingerprint",
+            extra={
+                "event_type": "build_fingerprint",
+                "intent_type": "build_fingerprint",
+                "service": "options-window-ingest",
+                **fp,
+            },
         )
     except Exception:
         pass

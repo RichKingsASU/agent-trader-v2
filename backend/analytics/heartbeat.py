@@ -4,6 +4,7 @@ Heartbeat monitoring for system health checks.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Literal, Optional
@@ -13,6 +14,7 @@ from google.cloud import firestore
 from backend.persistence.firebase_client import get_db
 from backend.time.nyse_time import to_utc
 
+logger = logging.getLogger(__name__)
 
 HeartbeatStatus = Literal["healthy", "degraded", "down", "unknown"]
 
@@ -111,7 +113,16 @@ def check_heartbeat(
         
     except Exception as e:
         # Log error but don't crash
-        print(f"Error checking heartbeat for {service_id}: {e}")
+        logger.exception(
+            "heartbeat.check_failed",
+            extra={
+                "event_type": "heartbeat.check_failed",
+                "tenant_id": tenant_id,
+                "target_service_id": service_id,
+                "errorType": type(e).__name__,
+                "error": str(e),
+            },
+        )
         return HeartbeatInfo(
             service_id=service_id,
             last_heartbeat=None,

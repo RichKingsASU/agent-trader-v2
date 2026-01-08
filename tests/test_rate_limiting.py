@@ -18,10 +18,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "functions"))
 from strategies.loader import StrategyLoader
 
 
+def out(msg: str = "") -> None:
+    sys.stdout.write(str(msg) + "\n")
+
+
 async def test_basic_rate_limiting():
     """Test basic rate limiting with low user count."""
-    print("Test 1: Basic Rate Limiting (100 users)")
-    print("=" * 60)
+    out("Test 1: Basic Rate Limiting (100 users)")
+    out("=" * 60)
     
     loader = StrategyLoader(config={
         "enable_rate_limiting": True,
@@ -48,22 +52,22 @@ async def test_basic_rate_limiting():
         
         if (i + 1) % 25 == 0:
             elapsed = time.time() - start_time
-            print(f"  Processed {i + 1}/{user_count} users in {elapsed:.2f}s")
+            out(f"  Processed {i + 1}/{user_count} users in {elapsed:.2f}s")
     
     total_time = time.time() - start_time
     throughput = user_count / total_time
     
-    print(f"\n✅ Test 1 Complete:")
-    print(f"   Total time: {total_time:.2f}s")
-    print(f"   Throughput: {throughput:.2f} evaluations/sec")
-    print(f"   Expected: ~50-100 evaluations/sec (no rate limiting)")
-    print()
+    out(f"\n✅ Test 1 Complete:")
+    out(f"   Total time: {total_time:.2f}s")
+    out(f"   Throughput: {throughput:.2f} evaluations/sec")
+    out(f"   Expected: ~50-100 evaluations/sec (no rate limiting)")
+    out("")
 
 
 async def test_high_traffic_rate_limiting():
     """Test rate limiting with high user count (simulates traffic spike)."""
-    print("Test 2: High Traffic Rate Limiting (500 users)")
-    print("=" * 60)
+    out("Test 2: High Traffic Rate Limiting (500 users)")
+    out("=" * 60)
     
     loader = StrategyLoader(config={
         "enable_rate_limiting": True,
@@ -89,22 +93,22 @@ async def test_high_traffic_rate_limiting():
         
         if (i + 1) % 100 == 0:
             elapsed = time.time() - start_time
-            print(f"  Processed {i + 1}/{user_count} users in {elapsed:.2f}s")
+            out(f"  Processed {i + 1}/{user_count} users in {elapsed:.2f}s")
     
     total_time = time.time() - start_time
     throughput = user_count / total_time
     
-    print(f"\n✅ Test 2 Complete:")
-    print(f"   Total time: {total_time:.2f}s")
-    print(f"   Throughput: {throughput:.2f} evaluations/sec")
-    print(f"   Expected: ~30-50 evaluations/sec (with rate limiting)")
-    print()
+    out(f"\n✅ Test 2 Complete:")
+    out(f"   Total time: {total_time:.2f}s")
+    out(f"   Throughput: {throughput:.2f} evaluations/sec")
+    out(f"   Expected: ~30-50 evaluations/sec (with rate limiting)")
+    out("")
 
 
 async def test_batch_limit():
     """Test that batch limit is enforced."""
-    print("Test 3: Batch Limit Enforcement (600 writes)")
-    print("=" * 60)
+    out("Test 3: Batch Limit Enforcement (600 writes)")
+    out("=" * 60)
     
     loader = StrategyLoader(config={
         "enable_rate_limiting": True,
@@ -136,27 +140,27 @@ async def test_batch_limit():
         # Detect batch switch (counter reset)
         if batch_after < batch_before:
             batch_switches.append(i)
-            print(f"  ⚠️  Batch limit reached at evaluation {i + 1}, cooldown triggered")
+            out(f"  ⚠️  Batch limit reached at evaluation {i + 1}, cooldown triggered")
         
         if (i + 1) % 150 == 0:
             elapsed = time.time() - start_time
-            print(f"  Processed {i + 1}/{user_count} users in {elapsed:.2f}s")
+            out(f"  Processed {i + 1}/{user_count} users in {elapsed:.2f}s")
     
     total_time = time.time() - start_time
     throughput = user_count / total_time
     
-    print(f"\n✅ Test 3 Complete:")
-    print(f"   Total time: {total_time:.2f}s")
-    print(f"   Throughput: {throughput:.2f} evaluations/sec")
-    print(f"   Batch switches: {len(batch_switches)}")
-    print(f"   Expected: 1 batch switch (at ~500 writes)")
-    print()
+    out(f"\n✅ Test 3 Complete:")
+    out(f"   Total time: {total_time:.2f}s")
+    out(f"   Throughput: {throughput:.2f} evaluations/sec")
+    out(f"   Batch switches: {len(batch_switches)}")
+    out(f"   Expected: 1 batch switch (at ~500 writes)")
+    out("")
 
 
 async def test_disabled_rate_limiting():
     """Test with rate limiting disabled (development mode)."""
-    print("Test 4: Rate Limiting Disabled (500 users)")
-    print("=" * 60)
+    out("Test 4: Rate Limiting Disabled (500 users)")
+    out("=" * 60)
     
     loader = StrategyLoader(config={
         "enable_rate_limiting": False,
@@ -179,24 +183,24 @@ async def test_disabled_rate_limiting():
         
         if (i + 1) % 100 == 0:
             elapsed = time.time() - start_time
-            print(f"  Processed {i + 1}/{user_count} users in {elapsed:.2f}s")
+            out(f"  Processed {i + 1}/{user_count} users in {elapsed:.2f}s")
     
     total_time = time.time() - start_time
     throughput = user_count / total_time
     
-    print(f"\n✅ Test 4 Complete:")
-    print(f"   Total time: {total_time:.2f}s")
-    print(f"   Throughput: {throughput:.2f} evaluations/sec")
-    print(f"   Expected: ~100-200 evaluations/sec (no rate limiting)")
-    print()
+    out(f"\n✅ Test 4 Complete:")
+    out(f"   Total time: {total_time:.2f}s")
+    out(f"   Throughput: {throughput:.2f} evaluations/sec")
+    out(f"   Expected: ~100-200 evaluations/sec (no rate limiting)")
+    out("")
 
 
 async def main():
     """Run all rate limiting tests."""
-    print("\n" + "=" * 60)
-    print("Rate Limiting Test Suite")
-    print("=" * 60)
-    print()
+    out("\n" + "=" * 60)
+    out("Rate Limiting Test Suite")
+    out("=" * 60)
+    out("")
     
     try:
         await test_basic_rate_limiting()
@@ -204,27 +208,27 @@ async def main():
         await test_batch_limit()
         await test_disabled_rate_limiting()
         
-        print("=" * 60)
-        print("✅ All tests completed successfully!")
-        print("=" * 60)
-        print()
+        out("=" * 60)
+        out("✅ All tests completed successfully!")
+        out("=" * 60)
+        out("")
         
-        print("Summary:")
-        print("  Test 1: Basic rate limiting (100 users) ✅")
-        print("  Test 2: High traffic rate limiting (500 users) ✅")
-        print("  Test 3: Batch limit enforcement (600 writes) ✅")
-        print("  Test 4: Rate limiting disabled (500 users) ✅")
-        print()
+        out("Summary:")
+        out("  Test 1: Basic rate limiting (100 users) ✅")
+        out("  Test 2: High traffic rate limiting (500 users) ✅")
+        out("  Test 3: Batch limit enforcement (600 writes) ✅")
+        out("  Test 4: Rate limiting disabled (500 users) ✅")
+        out("")
         
-        print("Key Observations:")
-        print("  - Rate limiting reduces throughput as expected")
-        print("  - Batch limit is enforced (cooldown triggered)")
-        print("  - No rate limiting = highest throughput")
-        print("  - High traffic triggers staggered delays")
-        print()
+        out("Key Observations:")
+        out("  - Rate limiting reduces throughput as expected")
+        out("  - Batch limit is enforced (cooldown triggered)")
+        out("  - No rate limiting = highest throughput")
+        out("  - High traffic triggers staggered delays")
+        out("")
         
     except Exception as e:
-        print(f"\n❌ Test suite failed: {e}")
+        out(f"\n❌ Test suite failed: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

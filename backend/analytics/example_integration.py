@@ -167,11 +167,15 @@ In backend/ingestion/market_data_ingest.py or similar:
 ```python
 from backend.analytics.heartbeat import write_heartbeat
 import time
+import threading
 
 def run_market_ingest_loop(tenant_id: str):
     service_id = "market_ingest"
+    shutdown_event = threading.Event()
     
-    while True:
+    loop_iter = 0
+    while not shutdown_event.is_set():
+        loop_iter += 1
         try:
             # Fetch and process market data
             quotes = fetch_latest_quotes()
@@ -188,7 +192,7 @@ def run_market_ingest_loop(tenant_id: str):
                 }
             )
             
-            time.sleep(30)  # Wait 30 seconds
+            shutdown_event.wait(timeout=30)  # Wait 30 seconds (interruptible)
             
         except Exception as e:
             # Write degraded status
@@ -202,7 +206,7 @@ def run_market_ingest_loop(tenant_id: str):
                 }
             )
             
-            time.sleep(30)
+            shutdown_event.wait(timeout=30)
 ```
 """
 
@@ -356,7 +360,7 @@ def compute_and_cache_daily_analytics(tenant_id: str):
         "computed_at": firestore.SERVER_TIMESTAMP,
     })
     
-    print(f"Cached analytics for {start_of_day.strftime('%Y-%m-%d')}: ${analytics.total_pnl:.2f}")
+    logger.info("Cached analytics", extra={"event_type": "analytics.cached", "day": start_of_day.strftime("%Y-%m-%d"), "total_pnl": float(analytics.total_pnl)})
 ```
 """
 
@@ -378,7 +382,10 @@ async def system_health_websocket(websocket: WebSocket, tenant_id: str):
     await websocket.accept()
     
     try:
-        while True:
+        stop_event = asyncio.Event()
+        loop_iter = 0
+        while not stop_event.is_set():
+            loop_iter += 1
             tracker = get_metrics_tracker()
             
             # Gather current metrics
@@ -392,11 +399,14 @@ async def system_health_websocket(websocket: WebSocket, tenant_id: str):
             # Send to client
             await websocket.send_json(health_data)
             
-            # Update every 5 seconds
-            await asyncio.sleep(5)
+            # Update every 5 seconds (shutdown-friendly).
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                pass
             
     except WebSocketDisconnect:
-        print(f"Client disconnected from system health feed")
+        logger.info("Client disconnected from system health feed", extra={"event_type": "ws.client_disconnected"})
 ```
 
 Frontend usage:
@@ -461,5 +471,7 @@ def check_token_budget_alerts(tenant_id: str, monthly_budget_usd: float = 100.0)
 
 
 if __name__ == "__main__":
-    print("This file contains example integrations for the analytics engine.")
-    print("Copy the relevant examples into your actual service files.")
+    import sys
+
+    sys.stdout.write("This file contains example integrations for the analytics engine.\n")
+    sys.stdout.write("Copy the relevant examples into your actual service files.\n")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import ssl
+import sys
 import threading
 import time
 import urllib.error
@@ -149,8 +150,13 @@ def _heartbeat_thread(
         ts = _utcnow_iso()
         try:
             if mode == "stdout":
+                env = _env("ENVIRONMENT") or _env("ENV") or _env("APP_ENV") or _env("DEPLOY_ENV") or "unknown"
                 # Required format: HEARTBEAT: ts=<iso>
-                print(f"{HEARTBEAT_PREFIX} ts={ts} service={service_name}", flush=True)
+                sys.stdout.write(f"{HEARTBEAT_PREFIX} ts={ts} service={service_name} env={env}\n")
+                try:
+                    sys.stdout.flush()
+                except Exception:
+                    pass
             elif mode == "k8s-configmap":
                 assert target is not None
                 _patch_configmap_key(target=target, value=ts)
@@ -160,10 +166,14 @@ def _heartbeat_thread(
             now = time.monotonic()
             if (now - last_err_log) >= err_log_min_interval_s:
                 last_err_log = now
-                print(
-                    f"HEARTBEAT_ERROR: mode={mode} service={service_name} err={type(e).__name__}: {e}",
-                    flush=True,
+                env = _env("ENVIRONMENT") or _env("ENV") or _env("APP_ENV") or _env("DEPLOY_ENV") or "unknown"
+                sys.stdout.write(
+                    f"HEARTBEAT_ERROR: mode={mode} service={service_name} env={env} err={type(e).__name__}: {e}\n"
                 )
+                try:
+                    sys.stdout.flush()
+                except Exception:
+                    pass
 
         # Sleep in small increments so shutdown is responsive.
         deadline = time.monotonic() + interval_s
@@ -192,7 +202,15 @@ def start_heartbeat_background(
     if not m:
         return None
     if m not in {"stdout", "k8s-configmap"}:
-        print(f"HEARTBEAT_DISABLED: unknown mode={m}", flush=True)
+        env = _env("ENVIRONMENT") or _env("ENV") or _env("APP_ENV") or _env("DEPLOY_ENV") or "unknown"
+        try:
+            sys.stdout.write(f"HEARTBEAT_DISABLED: unknown mode={m} env={env}\n")
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+        except Exception:
+            pass
         return None
 
     itv = float(interval_s if interval_s is not None else _float_env("HEARTBEAT_INTERVAL_SECONDS", 30.0))

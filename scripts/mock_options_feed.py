@@ -2,6 +2,7 @@ import asyncio
 import os
 import json
 import random
+import signal
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 import nats
@@ -36,8 +37,28 @@ async def publish_volatile_options_feed():
 
     iteration_counter = 0
     premiums = BASE_PREMIUMS.copy()
+    stop_event = asyncio.Event()
 
-    while True:
+    # Best-effort: handle SIGINT/SIGTERM for clean shutdown.
+    loop = asyncio.get_running_loop()
+
+    def _handle_signal(signum: int, _frame=None) -> None:  # type: ignore[no-untyped-def]
+        try:
+            print(f"[mock_options_feed] signal_received signum={int(signum)}")
+        except Exception:
+            pass
+        stop_event.set()
+
+    for s in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(s, _handle_signal, int(s), None)
+        except NotImplementedError:
+            try:
+                signal.signal(s, _handle_signal)
+            except Exception:
+                pass
+
+    while not stop_event.is_set():
         iteration_counter += 1
         
         for symbol in SYMBOLS:
@@ -79,10 +100,16 @@ async def publish_volatile_options_feed():
                 print(f"Published: {message}")
             except Exception as e:
                 print(f"Error publishing to NATS: {e}")
-                await asyncio.sleep(5) # Wait before retrying
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    pass
         
         # Wait for a second before the next batch of publications
-        await asyncio.sleep(1)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
 
 if __name__ == '__main__':
     print("Starting volatile options feed publisher...")
