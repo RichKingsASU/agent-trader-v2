@@ -4,7 +4,7 @@ import json
 import os
 import re
 from dataclasses import asdict, is_dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -270,7 +270,8 @@ class FileProposalStore(_FileStoreBase, ProposalStore):
             # Most proposal models use created_at_utc; fall back to created_at/ts.
             created = pd.get("created_at_utc", pd.get("created_at", pd.get("ts")))
             if created is None:
-                created = datetime.utcnow().isoformat() + "Z"
+                # Avoid naive `utcnow()`; keep explicit UTC offset/Z.
+                created = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                 pd["created_at_utc"] = created
             pd["created_at_utc"] = _dt_to_utc_iso(created)
 

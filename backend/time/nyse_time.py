@@ -22,6 +22,8 @@ from datetime import date, datetime, time, timedelta
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
+from backend.time.utc_audit import ensure_utc
+
 UTC = ZoneInfo("UTC")
 NYSE_TZ = ZoneInfo("America/New_York")
 
@@ -95,10 +97,7 @@ def parse_ts(x: Any) -> datetime:
         x = dt_duck
 
     if isinstance(x, datetime):
-        dt = x
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        return dt.astimezone(UTC)
+        return ensure_utc(x, source="backend.time.nyse_time.parse_ts", field="datetime", utc_tz=UTC)
 
     if isinstance(x, (int, float)):
         v = float(x)
@@ -117,9 +116,7 @@ def parse_ts(x: Any) -> datetime:
             dt = datetime.fromisoformat(s)
         except ValueError as e:
             raise ValueError(f"unparseable timestamp string: {x!r}") from e
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        return dt.astimezone(UTC)
+        return ensure_utc(dt, source="backend.time.nyse_time.parse_ts", field="iso_string", utc_tz=UTC)
 
     raise TypeError(f"unsupported timestamp type: {type(x).__name__}")
 
@@ -129,9 +126,7 @@ def to_utc(dt: datetime) -> datetime:
 
     if not isinstance(dt, datetime):
         raise TypeError("to_utc expects a datetime")
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
+    return ensure_utc(dt, source="backend.time.nyse_time.to_utc", field="dt", utc_tz=UTC)
 
 
 def to_nyse(dt: datetime) -> datetime:
