@@ -8,6 +8,8 @@
   --link: #1f2937;
 
   --ok: #0f766e;
+  --warn: #b45309;
+  --danger: #b91c1c;
   --degraded: #b45309;
   --halted: #92400e;
   --offline: #4b5563;
@@ -139,6 +141,14 @@ a:hover {
   color: var(--ok);
   border-color: rgba(15, 118, 110, 0.25);
 }
+.badge.warn {
+  color: var(--warn);
+  border-color: rgba(180, 83, 9, 0.25);
+}
+.badge.danger {
+  color: var(--danger);
+  border-color: rgba(185, 28, 28, 0.25);
+}
 .badge.degraded {
   color: var(--degraded);
   border-color: rgba(180, 83, 9, 0.25);
@@ -187,6 +197,46 @@ a:hover {
   padding: 10px 12px;
   color: #7f1d1d;
   font-size: 13px;
+}
+
+.banner {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.banner.warn {
+  border-color: rgba(180, 83, 9, 0.25);
+  background: rgba(180, 83, 9, 0.06);
+}
+.banner.danger {
+  border-color: rgba(185, 28, 28, 0.25);
+  background: rgba(185, 28, 28, 0.06);
+}
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn:hover {
+  background: rgba(17, 24, 39, 0.03);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.btn.subtle {
+  color: var(--muted);
+}
+.btn.danger {
+  border-color: rgba(185, 28, 28, 0.25);
+  color: #7f1d1d;
 }
 
 .json {
