@@ -41,6 +41,10 @@ from backend.common.vertex_ai import init_vertex_ai_or_log
 from backend.execution.marketdata_health import check_market_ingest_heartbeat
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
+from backend.persistence.firebase_client import get_firestore_client
+from backend.persistence.firestore_retry import with_firestore_retry
+from backend.risk.daily_capital_snapshot import DailyCapitalSnapshotError, DailyCapitalSnapshotStore
+from backend.time.nyse_time import to_nyse
 from backend.safety.startup_validation import (
     validate_agent_mode_or_exit,
     validate_flag_exact_false_or_exit,
@@ -320,6 +324,59 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
         client_intent_id=req.client_intent_id or None,
         metadata=req.metadata,
     )
+
+    # --- Daily capital snapshot guard (no trade before/after window; no date drift) ---
+    try:
+        tenant_for_snapshot = str(
+            req.metadata.get("tenant_id")
+            or os.getenv("TENANT_ID")
+            or os.getenv("EXEC_TENANT_ID")
+            or ""
+        ).strip()
+        uid_for_snapshot = str(req.metadata.get("uid") or req.metadata.get("user_id") or "").strip()
+        if not tenant_for_snapshot or not uid_for_snapshot:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_tenant_or_uid",
+                    "message": "Execution requires metadata.tenant_id and metadata.uid (or metadata.user_id) to enforce DailyCapitalSnapshot.",
+                },
+            )
+        db = get_firestore_client()
+        acct_doc = with_firestore_retry(
+            lambda: db.collection("users")
+            .document(uid_for_snapshot)
+            .collection("alpacaAccounts")
+            .document("snapshot")
+            .get()
+        )
+        if not acct_doc.exists:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "missing_account_snapshot",
+                    "message": f"Missing warm-cache account snapshot at users/{uid_for_snapshot}/alpacaAccounts/snapshot",
+                },
+            )
+        acct = acct_doc.to_dict() or {}
+        now = datetime.now(timezone.utc)
+        trading_date_ny = to_nyse(now).date()
+        store = DailyCapitalSnapshotStore(db=db)
+        snap = store.get_or_create_once(
+            tenant_id=tenant_for_snapshot,
+            uid=uid_for_snapshot,
+            trading_date_ny=trading_date_ny,
+            account_snapshot=acct,
+            now_utc=now,
+            source="execution_service.execute",
+        )
+        snap.assert_date_match(trading_date_ny=trading_date_ny)
+        snap.assert_trade_window(now_utc=now)
+    except DailyCapitalSnapshotError as e:
+        msg = str(e)
+        if "fingerprint mismatch" in msg or "Trading day mismatch" in msg:
+            raise HTTPException(status_code=500, detail={"error": "daily_capital_snapshot_invalid", "message": msg})
+        raise HTTPException(status_code=409, detail={"error": "daily_capital_snapshot_blocked", "message": msg})
 
     # --- Update state machine inputs for this request ---
     agent_mode = read_agent_mode()

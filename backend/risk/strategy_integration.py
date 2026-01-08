@@ -50,6 +50,8 @@ class StrategyCircuitBreakerWrapper:
         account_snapshot: Dict[str, Any],
         trades_today: List[Any],
         starting_equity: float,
+        session_start_utc: Optional[datetime] = None,
+        session_end_utc: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """
         Evaluate a trading signal with circuit breaker protections.
@@ -91,6 +93,8 @@ class StrategyCircuitBreakerWrapper:
             strategy_id=strategy_id,
             trades=trades_today,
             starting_equity=starting_equity,
+            session_start_utc=session_start_utc,
+            session_end_utc=session_end_utc,
         )
         
         if should_trigger and loss_event:
