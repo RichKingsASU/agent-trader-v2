@@ -16,9 +16,10 @@ from typing import Any, Dict
 from alpaca.data.enums import DataFeed
 from alpaca.data.live.stock import StockDataStream
 
-from backend.common.ingest_switch import get_ingest_enabled_state
+from backend.common.ingest_switch import get_effective_ingest_enabled_state
 from backend.ingestion.firebase_writer import FirebaseWriter, FirestorePaths
 from backend.ingestion.rate_limit import Backoff, TokenBucket
+from backend.messaging.publisher import PubSubPublisher
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
@@ -120,8 +121,10 @@ class MarketDataIngestor:
         self._stats = IngestStats()
 
         self._last_symbol: str | None = None
-        self._ingest_enabled: bool | None = None
-        self._ingest_enabled_source: str | None = None
+        self._ingest_enabled_last: bool | None = None
+        self._ingest_enabled_source_last: str | None = None
+
+        self._heartbeat_pubsub: PubSubPublisher | None = None
 
         self._latest_by_symbol: Dict[str, QuoteSnapshot] = {}
         self._dirty_symbols: set[str] = set()
@@ -137,6 +140,29 @@ class MarketDataIngestor:
         self._wss: StockDataStream | None = None
         self._backoff: Backoff | None = None
         self._reset_backoff_on_first_quote: bool = False
+
+        # Optional: emit an ingest heartbeat *event* to Pub/Sub for cross-service visibility.
+        # This is separate from the Firestore heartbeat doc (ops/market_ingest).
+        topic_id = (os.getenv("INGEST_HEARTBEAT_TOPIC_ID") or "").strip()
+        project_id = (
+            (os.getenv("PUBSUB_PROJECT_ID") or "").strip()
+            or (os.getenv("GCP_PROJECT") or "").strip()
+            or (os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
+        )
+        if topic_id and project_id:
+            pipeline_id = (os.getenv("INGEST_PIPELINE_ID") or os.getenv("AGENT_NAME") or "market-ingest").strip() or "market-ingest"
+            git_sha = (os.getenv("GIT_SHA") or os.getenv("K_REVISION") or "").strip() or None
+            try:
+                self._heartbeat_pubsub = PubSubPublisher(
+                    project_id=project_id,
+                    topic_id=topic_id,
+                    agent_name=pipeline_id,
+                    git_sha=git_sha,
+                    validate_credentials=False,
+                )
+            except Exception as e:
+                # Never fail startup due to optional telemetry.
+                log_json("ingest_heartbeat_pubsub", status="disabled", reason="init_failed", error=str(e), severity="WARNING")
 
     @property
     def stats(self) -> IngestStats:
@@ -160,6 +186,26 @@ class MarketDataIngestor:
                 self._writer.close()
         except Exception:
             pass
+        try:
+            if self._heartbeat_pubsub is not None:
+                self._heartbeat_pubsub.close()
+        except Exception:
+            pass
+
+    def _effective_ingest_enabled(self, *, context: str) -> bool:
+        enabled, source = get_effective_ingest_enabled_state(default_enabled=True)
+        if self._ingest_enabled_last is None or enabled != self._ingest_enabled_last:
+            self._ingest_enabled_last = enabled
+            self._ingest_enabled_source_last = source
+            log_json(
+                "ingest_enabled_transition",
+                status="enabled" if enabled else "disabled",
+                enabled=bool(enabled),
+                source=str(source or ""),
+                context=str(context),
+                severity="INFO" if enabled else "WARNING",
+            )
+        return bool(enabled)
 
     async def _quote_handler(self, data: Any) -> None:
         """
@@ -226,6 +272,11 @@ class MarketDataIngestor:
         flush_sleep = max(0.01, self.cfg.flush_interval_ms / 1000.0)
 
         while not self._stop.is_set():
+            if not self._effective_ingest_enabled(context="flush_loop"):
+                # Pause writes while disabled; yield to event loop.
+                await asyncio.sleep(flush_sleep)
+                continue
+
             wrote_any = False
             pending: list[tuple[str, dict[str, Any]]] = []
             pending_monotonic: dict[str, float] = {}
@@ -345,13 +396,13 @@ class MarketDataIngestor:
         interval = max(1.0, float(self.cfg.heartbeat_interval_s))
 
         while not self._stop.is_set():
-            enabled, source = get_ingest_enabled_state()
+            enabled = self._effective_ingest_enabled(context="heartbeat_loop")
             payload = {
                 "ts": _ts(),
-                "status": "running" if enabled else "paused",
+                "status": "running" if enabled else "disabled",
                 "last_symbol": self._last_symbol,
                 "ingest_enabled": bool(enabled),
-                "ingest_enabled_source": source,
+                "ingest_enabled_source": str(self._ingest_enabled_source_last or ""),
             }
 
             if self.cfg.dry_run:
@@ -390,6 +441,26 @@ class MarketDataIngestor:
                         severity="ERROR",
                     )
 
+            # Synthetic heartbeat *event* (Pub/Sub) every interval (best-effort).
+            if self._heartbeat_pubsub is not None:
+                try:
+                    event_payload = {
+                        "pipeline_id": (os.getenv("INGEST_PIPELINE_ID") or os.getenv("AGENT_NAME") or "market-ingest"),
+                        "tenant_id": self.cfg.tenant_id,
+                        "status": "running" if enabled else "disabled",
+                        "ingest_enabled": bool(enabled),
+                        "source": str(self._ingest_enabled_source_last or ""),
+                        "ts": payload["ts"],
+                    }
+                    # Offload sync Pub/Sub publish to a worker thread to avoid blocking the event loop.
+                    await asyncio.wait_for(
+                        asyncio.to_thread(self._heartbeat_pubsub.publish_event, event_type="ingest.heartbeat", payload=event_payload),
+                        timeout=float(os.getenv("INGEST_HEARTBEAT_PUBLISH_TIMEOUT_S") or "2"),
+                    )
+                    log_json("ingest_heartbeat_pubsub", status="ok", ts=payload["ts"])
+                except Exception as e:
+                    log_json("ingest_heartbeat_pubsub", status="error", error=str(e), ts=payload["ts"], severity="WARNING")
+
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
@@ -408,6 +479,9 @@ class MarketDataIngestor:
         """
         Runs ingestion with reconnect logic until stopped.
         """
+        # Startup gate: record initial ingest-enabled state.
+        self._effective_ingest_enabled(context="startup")
+
         alpaca = load_alpaca_env(require_keys=not self.cfg.dry_run)
         backoff = Backoff(base_seconds=self.cfg.backoff_base_s, max_seconds=self.cfg.backoff_max_s)
         self._backoff = backoff
@@ -438,36 +512,16 @@ class MarketDataIngestor:
             tg.create_task(self._stop_after_loop())
 
             while not self._stop.is_set():
-                enabled, source = get_ingest_enabled_state()
-                if self._ingest_enabled is None:
-                    self._ingest_enabled = bool(enabled)
-                    self._ingest_enabled_source = source
-                    log_json(
-                        "ingest_switch",
-                        status="initial",
-                        ingest_enabled=bool(enabled),
-                        ingest_enabled_source=source,
-                    )
-                elif bool(enabled) != bool(self._ingest_enabled):
-                    self._ingest_enabled = bool(enabled)
-                    self._ingest_enabled_source = source
-                    log_json(
-                        "ingest_switch",
-                        status="resumed" if enabled else "halted",
-                        ingest_enabled=bool(enabled),
-                        ingest_enabled_source=source,
-                        severity="WARNING" if not enabled else "INFO",
-                    )
-
-                if not enabled:
-                    # Ensure we are not holding an open websocket while paused.
+                if not self._effective_ingest_enabled(context="run_loop"):
+                    # If ingestion is disabled, ensure we are not holding a websocket connection.
                     try:
                         if self._wss is not None:
                             self._wss.stop()
                     except Exception:
                         pass
+                    # Avoid tight loops while disabled; remain responsive to stop.
                     try:
-                        await asyncio.wait_for(self._stop.wait(), timeout=max(1.0, ingest_poll_s))
+                        await asyncio.wait_for(self._stop.wait(), timeout=min(5.0, float(self.cfg.heartbeat_interval_s)))
                     except asyncio.TimeoutError:
                         pass
                     continue
