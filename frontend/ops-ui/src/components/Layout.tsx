@@ -1,27 +1,30 @@
 import type { PropsWithChildren } from "react";
 import { NavLink } from "react-router-dom";
-import { missionControlApi } from "@/api/client";
+import { app, isFirebaseConfigured } from "@/firebase";
 
 function navClassName({ isActive }: { isActive: boolean }) {
   return isActive ? "mono" : "muted";
 }
 
 export function Layout({ children }: PropsWithChildren) {
-  const base = missionControlApi.getBaseUrl();
+  const projectId = app?.options?.projectId || window.__OPS_DASHBOARD_CONFIG__?.firebase?.projectId || "—";
   return (
     <div>
       <div className="topbar">
         <div className="topbar-inner">
           <div>
-            <div className="brand">AgentTrader Ops UI</div>
-            <div className="meta">Read-only • Mission Control: <span className="mono">{base}</span></div>
+            <div className="brand">Firebase Ops Dashboard</div>
+            <div className="meta">
+              Read-only • Firestore project: <span className="mono">{projectId}</span>
+              {!isFirebaseConfigured ? <span className="muted"> (not configured)</span> : null}
+            </div>
           </div>
           <nav className="nav">
             <NavLink to="/" className={navClassName}>
               Overview
             </NavLink>
-            <NavLink to="/reports/deploy" className={navClassName}>
-              Deploy report
+            <NavLink to="/ingest" className={navClassName}>
+              Ingest health
             </NavLink>
           </nav>
         </div>

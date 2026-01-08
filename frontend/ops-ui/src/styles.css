@@ -41,6 +41,21 @@ a:hover {
   text-decoration: underline;
 }
 
+button {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .container {
   max-width: 1200px;
   margin: 0 auto;
