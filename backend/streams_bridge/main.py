@@ -10,7 +10,6 @@ import asyncio
 import json
 import logging
 import os
-import signal
 from .config import load_config
 from .firestore_writer import FirestoreWriter
 from .streams.price_stream_client import PriceStreamClient
@@ -22,6 +21,7 @@ from backend.common.agent_boot import configure_startup_logging
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.observability.ops_json_logger import OpsLogger
+from backend.safety.process_safety import AsyncShutdown, startup_banner
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,10 @@ async def main():
     enforce_agent_mode_guard()
     configure_startup_logging(
         agent_name="stream-bridge",
+        intent="Bridge upstream streams into Firestore (price, options flow, news, account updates).",
+    )
+    startup_banner(
+        service="stream-bridge",
         intent="Bridge upstream streams into Firestore (price, options flow, news, account updates).",
     )
     ops = OpsLogger("stream-bridge")
@@ -57,7 +61,8 @@ async def main():
         pass
 
     try:
-        loop = asyncio.get_running_loop()
+        shutdown = AsyncShutdown(service="stream-bridge")
+        shutdown.install()
 
         def _initiate_shutdown() -> None:
             try:
@@ -70,11 +75,7 @@ async def main():
                 except Exception:
                     pass
 
-        for s in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(s, _initiate_shutdown)
-            except NotImplementedError:
-                signal.signal(s, lambda *_args: _initiate_shutdown())
+        shutdown.add_callback(_initiate_shutdown)
 
         await asyncio.gather(*tasks)
     except asyncio.CancelledError:
@@ -88,6 +89,10 @@ async def main():
             except Exception:
                 pass
         await asyncio.gather(heartbeat_task, *tasks, return_exceptions=True)
+        try:
+            writer.close()
+        except Exception:
+            pass
         logger.info("Stream Bridge service stopped.")
 
 async def _heartbeat_loop(ops: OpsLogger) -> None:

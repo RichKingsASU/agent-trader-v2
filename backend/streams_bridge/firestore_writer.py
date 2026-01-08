@@ -50,6 +50,20 @@ class FirestoreWriter:
 
         self._db = get_firestore_client(project_id=project_id)
 
+    def close(self) -> None:
+        """
+        Best-effort close for the underlying Firestore client.
+        """
+        db = getattr(self, "_db", None)
+        if db is None:
+            return
+        try:
+            close = getattr(db, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+
     def _retry(self, fn, *, max_attempts: int = 6, base_delay_s: float = 0.2, max_delay_s: float = 5.0):
         transient = (
             gexc.Aborted,

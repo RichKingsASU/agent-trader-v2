@@ -22,6 +22,7 @@ from backend.streams.alpaca_env import load_alpaca_env
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.observability.build_fingerprint import get_build_fingerprint
+from backend.safety.process_safety import startup_banner
 
 
 def _utc_now() -> datetime:
@@ -139,6 +140,16 @@ class MarketDataIngestor:
         try:
             if self._wss is not None:
                 self._wss.stop()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        """
+        Best-effort close of network clients (Firestore).
+        """
+        try:
+            if self._writer is not None:
+                self._writer.close()
         except Exception:
             pass
 
@@ -559,6 +570,10 @@ async def _amain() -> int:
         agent_name="market-data-ingest",
         intent="Continuously ingest stock quotes from Alpaca and write latest snapshots to Firestore.",
     )
+    startup_banner(
+        service="market-data-ingest",
+        intent="Continuously ingest stock quotes from Alpaca and write latest snapshots to Firestore.",
+    )
     try:
         fp = get_build_fingerprint()
         print(
@@ -568,6 +583,13 @@ async def _amain() -> int:
     except Exception:
         pass
     cfg = load_config_from_env()
+    # Environment validation (fail-fast for 24/7 daemons).
+    if not cfg.dry_run:
+        # Validates required Alpaca credentials are present.
+        load_alpaca_env(require_keys=True)
+    if not cfg.symbols:
+        log_json("startup", status="error", error="MONITORED_SYMBOLS resolved to empty", severity="ERROR")
+        return 2
     ingestor = MarketDataIngestor(cfg)
 
     loop = asyncio.get_running_loop()
@@ -621,6 +643,16 @@ async def _amain() -> int:
     except Exception as e:
         log_json("shutdown", status="error", error=str(e), severity="ERROR")
         return 2
+    finally:
+        # Ensure network clients are closed even on fatal errors.
+        try:
+            ingestor.request_stop()
+        except Exception:
+            pass
+        try:
+            ingestor.close()
+        except Exception:
+            pass
 
 
 def main() -> None:
