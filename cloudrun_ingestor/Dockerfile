@@ -5,17 +5,16 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8080
 
+# Set the working directory in the container
 WORKDIR /app
 
 # Copy and install dependencies
-# Paths are relative to the build context (repository root when using 'gcloud builds submit .')
-COPY cloudrun_ingestor/requirements.txt ./requirements.txt
+COPY cloudrun_ingestor/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY backend/ ./backend/
-# Copy the entrypoint
-COPY cloudrun_ingestor/main.py ./main.py
+COPY backend/ /app/backend/
+COPY cloudrun_ingestor/main.py /app/main.py
 
 # Start the Gunicorn server
 # - 1 worker, 1 thread for predictable, single-threaded background work
