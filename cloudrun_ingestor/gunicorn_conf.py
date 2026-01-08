@@ -24,6 +24,9 @@ from typing import Any
 workers = 1
 threads = 1
 timeout = 0
+# Cloud Run sends SIGTERM and provides ~10s for shutdown; keep Gunicorn's graceful
+# shutdown window aligned so workers are not SIGKILLed by Gunicorn during orderly exit.
+graceful_timeout = 10
 
 
 def _utc_ts() -> str:
