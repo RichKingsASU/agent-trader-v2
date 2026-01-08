@@ -59,6 +59,45 @@ def log(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
         return
 
 
+def _require_json_content_type(req: Request) -> None:
+    ct = str(req.headers.get("content-type") or "").strip()
+    if ("\n" in ct) or ("\r" in ct):
+        raise HTTPException(status_code=400, detail="invalid_header_value")
+    if "application/json" not in ct.lower():
+        raise HTTPException(status_code=415, detail="unsupported_media_type")
+
+
+def _validate_pubsub_headers(*, req: Request, subscription_from_body: str) -> dict[str, Optional[str]]:
+    """
+    Best-effort Pub/Sub push header validation.
+
+    - Enforce JSON content type.
+    - If X-Goog-* headers are present, validate they are well-formed.
+    - If X-Goog-Subscription is present, require it matches body.subscription (full or short name).
+
+    No authentication decisions are made here.
+    """
+    _require_json_content_type(req)
+
+    x_sub = str(req.headers.get("x-goog-subscription") or req.headers.get("x-goog-subscription-name") or "").strip()
+    x_topic = str(req.headers.get("x-goog-topic") or "").strip()
+
+    for v in (x_sub, x_topic):
+        if ("\n" in v) or ("\r" in v):
+            raise HTTPException(status_code=400, detail="invalid_header_value")
+
+    if x_topic and (not x_topic.startswith("projects/") or "/topics/" not in x_topic):
+        raise HTTPException(status_code=400, detail="invalid_x_goog_topic")
+
+    if x_sub:
+        body_short = subscription_from_body.split("/subscriptions/")[-1]
+        hdr_short = x_sub.split("/subscriptions/")[-1]
+        if subscription_from_body and (subscription_from_body != x_sub) and (body_short != hdr_short):
+            raise HTTPException(status_code=400, detail="subscription_header_mismatch")
+
+    return {"header_subscription": x_sub or None, "header_topic": x_topic or None}
+
+
 def _require_env(name: str, *, default: Optional[str] = None) -> str:
     v = os.getenv(name)
     if v is None or not str(v).strip():
@@ -130,29 +169,125 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
     app.state.loop_heartbeat_monotonic = time.monotonic()
 
     try:
+        _require_json_content_type(req)
+    except HTTPException as e:
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_headers",
+            error=str(getattr(e, "detail", "")),
+            messageId=None,
+            publishTime=None,
+            subscription=None,
+        )
+        raise
+
+    try:
         body = await req.json()
     except Exception as e:
-        log("pubsub.invalid_json", severity="ERROR", error=str(e))
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_json",
+            error=str(e),
+            messageId=None,
+            publishTime=None,
+            subscription=str(req.headers.get("x-goog-subscription") or req.headers.get("x-goog-subscription-name") or "").strip()
+            or None,
+        )
         raise HTTPException(status_code=400, detail="invalid_json") from e
 
     if not isinstance(body, dict):
-        log("pubsub.invalid_envelope", severity="ERROR", reason="body_not_object")
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_envelope",
+            error="body_not_object",
+            messageId=None,
+            publishTime=None,
+            subscription=None,
+        )
         raise HTTPException(status_code=400, detail="invalid_envelope")
 
     subscription = body.get("subscription")
     subscription_str = str(subscription).strip() if subscription is not None else ""
+    if not subscription_str:
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_envelope",
+            error="missing_subscription",
+            messageId=None,
+            publishTime=None,
+            subscription="",
+        )
+        raise HTTPException(status_code=400, detail="missing_subscription")
 
     message = body.get("message")
     if not isinstance(message, dict):
-        log("pubsub.invalid_envelope", severity="ERROR", reason="missing_message")
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_envelope",
+            error="missing_message",
+            messageId=None,
+            publishTime=None,
+            subscription=subscription_str,
+        )
         raise HTTPException(status_code=400, detail="invalid_envelope")
 
     message_id = str(message.get("messageId") or "").strip()
     if not message_id:
-        log("pubsub.invalid_envelope", severity="ERROR", reason="missing_messageId")
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_envelope",
+            error="missing_messageId",
+            messageId=None,
+            publishTime=str(message.get("publishTime") or "").strip() or None,
+            subscription=subscription_str,
+        )
         raise HTTPException(status_code=400, detail="missing_messageId")
 
-    publish_time = _parse_rfc3339(message.get("publishTime")) or _utc_now()
+    publish_time_raw = str(message.get("publishTime") or "").strip()
+    if not publish_time_raw:
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_envelope",
+            error="missing_publishTime",
+            messageId=message_id,
+            publishTime=None,
+            subscription=subscription_str,
+        )
+        raise HTTPException(status_code=400, detail="missing_publishTime")
+
+    publish_time = _parse_rfc3339(publish_time_raw)
+    if publish_time is None:
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_envelope",
+            error="invalid_publishTime",
+            messageId=message_id,
+            publishTime=publish_time_raw,
+            subscription=subscription_str,
+        )
+        raise HTTPException(status_code=400, detail="invalid_publishTime")
+
+    try:
+        hdr = _validate_pubsub_headers(req=req, subscription_from_body=subscription_str)
+    except HTTPException as e:
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_headers",
+            error=str(getattr(e, "detail", "")),
+            messageId=message_id,
+            publishTime=publish_time_raw,
+            subscription=subscription_str,
+        )
+        raise
     attributes_raw = message.get("attributes") or {}
     attributes: dict[str, str] = {}
     if isinstance(attributes_raw, dict):
@@ -163,29 +298,69 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
 
     data_b64 = message.get("data")
     if not isinstance(data_b64, str) or not data_b64.strip():
-        log("pubsub.invalid_envelope", severity="ERROR", reason="missing_data", messageId=message_id)
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_envelope",
+            error="missing_data",
+            messageId=message_id,
+            publishTime=publish_time_raw,
+            subscription=subscription_str,
+        )
         raise HTTPException(status_code=400, detail="missing_data")
 
     try:
         raw = base64.b64decode(data_b64, validate=True)
     except Exception as e:
-        log("pubsub.invalid_base64", severity="ERROR", error=str(e), messageId=message_id)
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_envelope",
+            error=f"invalid_base64:{str(e)}",
+            messageId=message_id,
+            publishTime=publish_time_raw,
+            subscription=subscription_str,
+        )
         raise HTTPException(status_code=400, detail="invalid_base64") from e
 
     try:
         payload = json.loads(raw.decode("utf-8"))
     except Exception as e:
-        log("pubsub.invalid_payload_json", severity="ERROR", error=str(e), messageId=message_id)
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_payload_json",
+            error=str(e),
+            messageId=message_id,
+            publishTime=publish_time_raw,
+            subscription=subscription_str,
+        )
         raise HTTPException(status_code=400, detail="invalid_payload_json") from e
 
     if not isinstance(payload, dict):
-        log("pubsub.payload_not_object", severity="ERROR", messageId=message_id, payloadType=str(type(payload).__name__))
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="payload_not_object",
+            payloadType=str(type(payload).__name__),
+            messageId=message_id,
+            publishTime=publish_time_raw,
+            subscription=subscription_str,
+        )
         raise HTTPException(status_code=400, detail="payload_not_object")
 
     inferred_topic = infer_topic(attributes=attributes, payload=payload, subscription=subscription_str)
     handler = route_payload(payload=payload, attributes=attributes, topic=inferred_topic)
     if handler is None:
-        log("pubsub.unroutable_payload", severity="ERROR", messageId=message_id, topic=inferred_topic or "", subscription=subscription_str)
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="unroutable_payload",
+            messageId=message_id,
+            publishTime=publish_time_raw,
+            subscription=subscription_str,
+            topic=inferred_topic or "",
+        )
         raise HTTPException(status_code=400, detail="unroutable_payload")
 
     env = os.getenv("ENV") or "unknown"
@@ -216,19 +391,38 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             severity="INFO",
             handler=handler.name,
             messageId=message_id,
+            publishTime=publish_time_raw,
             topic=source_topic,
             subscription=subscription_str,
             serviceId=result.get("serviceId"),
             applied=result.get("applied"),
             reason=result.get("reason"),
+            header_subscription=hdr.get("header_subscription"),
+            header_topic=hdr.get("header_topic"),
         )
         return {"ok": True, **result}
     except ValueError as e:
         # Treat as poison for this consumer; allow DLQ routing.
-        log("materialize.bad_event", severity="ERROR", error=str(e), handler=handler.name, messageId=message_id)
+        log(
+            "materialize.bad_event",
+            severity="ERROR",
+            error=str(e),
+            handler=handler.name,
+            messageId=message_id,
+            publishTime=publish_time_raw,
+            subscription=subscription_str,
+        )
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        log("materialize.exception", severity="ERROR", error=str(e), handler=handler.name, messageId=message_id)
+        log(
+            "materialize.exception",
+            severity="ERROR",
+            error=str(e),
+            handler=handler.name,
+            messageId=message_id,
+            publishTime=publish_time_raw,
+            subscription=subscription_str,
+        )
         raise HTTPException(status_code=500, detail="materialize_exception") from e
 
 
