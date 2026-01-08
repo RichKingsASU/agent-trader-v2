@@ -1,12 +1,6 @@
-/**
- * Changelog:
- * - 2026-01-08: Schema governance — standardize event envelope fields and naming.
- *   - Canonical event fields are camelCase.
- *   - All governed events include: schemaVersion, eventId, producedAt.
- *   - Legacy fields (snake_case + historical keys) remain as optional aliases for compatibility.
- */
-
-export type OpsState = "OK" | "DEGRADED" | "HALTED" | "OFFLINE" | "UNKNOWN";
+// NOTE: Keep aligned with the UI-facing ops contract in `frontend/shared/ops-api-contract`.
+// This is a type-only widening; it must not change runtime behavior.
+export type OpsState = "OK" | "DEGRADED" | "HALTED" | "MARKET_CLOSED" | "OFFLINE" | "UNKNOWN";
 
 export type Agent = {
   name: string;
