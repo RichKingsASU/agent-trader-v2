@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import json
 import os
 import logging
+import random
 import sys
 import time
 import logging
@@ -35,10 +36,6 @@ from backend.observability.correlation import bind_correlation_id, get_or_create
 
 from backend.contracts.ops_alerts import try_write_contract_violation_alert
 from backend.contracts.registry import validate_topic_event
-from event_utils import infer_topic
-from firestore_writer import FirestoreWriter
-from schema_router import route_payload
-from time_audit import ensure_utc
 
 from cloudrun_consumer.event_utils import infer_topic
 from cloudrun_consumer.firestore_writer import FirestoreWriter
@@ -416,25 +413,21 @@ class _DlqPublisher:
 
 def _normalize_env_alias(target: str, aliases: list[str]) -> None:
     """
-    Legacy adapter: payload-only system event record -> EventEnvelopeV1.
+    Ensure `target` env var is set using first available alias.
+
+    This service historically used multiple env var names across deploy targets.
+    We normalize at startup so downstream code can rely on a single canonical key.
     """
-    ts = payload.get("timestamp")
-    ts_s = str(ts).strip() if isinstance(ts, str) else ""
-    if not ts_s:
-        ts_s = published_at.isoformat()
-    agent = str(payload.get("service") or "unknown").strip() or "unknown"
-    sha = str(payload.get("git_sha") or payload.get("sha") or "unknown").strip() or "unknown"
-    trace = str(payload.get("correlation_id") or payload.get("request_id") or message_id).strip() or message_id
-    ev_type = str(payload.get("event_type") or payload.get("event") or "system.event").strip() or "system.event"
-    return {
-        "schemaVersion": 1,
-        "event_type": ev_type,
-        "agent_name": agent,
-        "git_sha": sha,
-        "ts": ts_s,
-        "trace_id": trace,
-        "payload": payload,
-    }
+    t = str(target or "").strip()
+    if not t:
+        return
+    if (os.getenv(t) or "").strip():
+        return
+    for a in aliases or []:
+        av = os.getenv(str(a))
+        if av is not None and str(av).strip():
+            os.environ[t] = str(av).strip()
+            return
 
 
 def _validate_required_env(required: list[str]) -> None:
@@ -511,31 +504,24 @@ async def livez(response: Response) -> dict[str, Any]:
 
 @app.post("/pubsub/push")
 async def pubsub_push(req: Request) -> dict[str, Any]:
+    """
+    Pub/Sub push handler (Cloud Run).
+
+    Ack semantics:
+    - Return 2xx only when the message has been safely handled (including dedupe/no-op).
+    - Return 5xx for retryable/transient errors.
+    - Return 4xx for poison/permanent errors (compatible with Pub/Sub DLQ policies).
+    """
     app.state.loop_heartbeat_monotonic = time.monotonic()
-    start_perf = time.perf_counter()
+    started = time.perf_counter()
 
     def _latency_ms() -> int:
-        return int(max(0.0, (time.perf_counter() - start_perf) * 1000.0))
+        return int(max(0.0, (time.perf_counter() - started) * 1000.0))
 
-    # Ensure the request has a correlation_id even before decoding the message.
     req_correlation_id = get_or_create_correlation_id(headers=dict(req.headers))
 
-    try:
-        _require_json_content_type(req)
-    except HTTPException as e:
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            outcome="failure",
-            correlation_id=req_correlation_id,
-            latency_ms=_latency_ms(),
-            reason="invalid_headers",
-            error=str(getattr(e, "detail", "")),
-            messageId=None,
-            publishTime=None,
-            subscription=None,
-        )
-        raise
+    # Validate headers/content-type up front (no auth decisions).
+    _require_json_content_type(req)
 
     try:
         body = await req.json()
@@ -548,364 +534,113 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             latency_ms=_latency_ms(),
             reason="invalid_json",
             error=str(e),
-            messageId=None,
-            publishTime=None,
-            subscription=str(req.headers.get("x-goog-subscription") or req.headers.get("x-goog-subscription-name") or "").strip()
-            or None,
         )
         raise HTTPException(status_code=400, detail="invalid_json") from e
+
     if not isinstance(body, dict):
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            outcome="failure",
-            correlation_id=req_correlation_id,
-            latency_ms=_latency_ms(),
-            reason="invalid_envelope",
-            error="body_not_object",
-            messageId=None,
-            publishTime=None,
-            subscription=None,
-        )
         raise HTTPException(status_code=400, detail="invalid_envelope")
 
-    subscription = body.get("subscription")
-    subscription_str = str(subscription).strip() if subscription is not None else ""
-    if not subscription_str:
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            outcome="failure",
-            correlation_id=req_correlation_id,
-            latency_ms=_latency_ms(),
-            reason="invalid_envelope",
-            error="missing_subscription",
-            messageId=None,
-            publishTime=None,
-            subscription="",
-        )
+    subscription = str(body.get("subscription") or "").strip()
+    if not subscription:
         raise HTTPException(status_code=400, detail="missing_subscription")
 
-    # Validate X-Goog-* headers if present (best-effort).
-    try:
-        hdr = _validate_pubsub_headers(req=req, subscription_from_body=subscription_str)
-    except HTTPException as e:
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            outcome="failure",
-            correlation_id=req_correlation_id,
-            latency_ms=_latency_ms(),
-            reason="invalid_headers",
-            error=str(getattr(e, "detail", "")),
-            subscription=subscription_str,
-        )
-        raise
+    hdr = _validate_pubsub_headers(req=req, subscription_from_body=subscription)
 
     message = body.get("message")
     if not isinstance(message, dict):
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            outcome="failure",
-            correlation_id=req_correlation_id,
-            latency_ms=_latency_ms(),
-            reason="invalid_envelope",
-            error="missing_message",
-            messageId=None,
-            publishTime=None,
-            subscription=subscription_str,
-        )
-        raise HTTPException(status_code=400, detail="invalid_envelope")
+        raise HTTPException(status_code=400, detail="missing_message")
 
-    message_id = str(msg.get("messageId") or "").strip()
+    message_id = str(message.get("messageId") or "").strip()
     if not message_id:
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            outcome="failure",
-            correlation_id=req_correlation_id,
-            latency_ms=_latency_ms(),
-            reason="invalid_envelope",
-            error="missing_messageId",
-            messageId=None,
-            publishTime=str(message.get("publishTime") or "").strip() or None,
-            subscription=subscription_str,
-        )
         raise HTTPException(status_code=400, detail="missing_messageId")
 
-    publish_time_raw = str(message.get("publishTime") or "").strip() or None
-    event_id = message_id
-    correlation_id = req_correlation_id
+    publish_time_raw = str(message.get("publishTime") or "").strip()
+    publish_time = _parse_rfc3339(publish_time_raw) or _utc_now()
 
-    delivery_attempt_raw = message.get("deliveryAttempt")
     delivery_attempt: Optional[int] = None
-    if isinstance(delivery_attempt_raw, int):
-        delivery_attempt = delivery_attempt_raw
+    da_raw = message.get("deliveryAttempt")
+    if isinstance(da_raw, int):
+        delivery_attempt = da_raw
     else:
         try:
-            if delivery_attempt_raw is not None and str(delivery_attempt_raw).strip():
-                delivery_attempt = int(str(delivery_attempt_raw).strip())
+            if da_raw is not None and str(da_raw).strip():
+                delivery_attempt = int(str(da_raw).strip())
         except Exception:
             delivery_attempt = None
 
-    publish_time = _parse_rfc3339(message.get("publishTime")) or _utc_now()
-    attributes_raw = message.get("attributes") or {}
     attributes: dict[str, str] = {}
-    if isinstance(attributes_raw, dict):
-        for k, v in attributes_raw.items():
+    attrs_raw = message.get("attributes") or {}
+    if isinstance(attrs_raw, dict):
+        for k, v in attrs_raw.items():
             if k is None:
                 continue
             attributes[str(k)] = "" if v is None else str(v)
 
-    writer: FirestoreWriter = app.state.firestore_writer
-    dlq_sample_rate = float(os.getenv("DLQ_SAMPLE_RATE") or DLQ_SAMPLE_RATE_DEFAULT)
-    dlq_sample_ttl_hours = float(os.getenv("DLQ_SAMPLE_TTL_HOURS") or DLQ_SAMPLE_TTL_HOURS_DEFAULT)
-
-    def _ack_invalid(*, reason: str, error: str, handler: str, payload: dict[str, Any], errors: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
-        log(
-            "contract.invalid",
-            severity="ERROR",
-            outcome="failure",
-            correlation_id=correlation_id,
-            event_id=event_id,
-            latency_ms=_latency_ms(),
-            messageId=message_id,
-            subscription=subscription_str,
-            topic=topic or "",
-            handler=handler_name,
-            reason=reason,
-            error=error,
-            errors=errors[:10] if isinstance(errors, list) else None,
-            topic=topic,
-            subscription=subscription,
-            messageId=message_id,
-        )
-        writer.maybe_write_sampled_dlq_event(
-            message_id=message_id,
-            subscription=subscription,
-            topic=topic,
-            handler=handler,
-            http_status=200,
-            reason=reason,
-            error=error,
-            delivery_attempt=None,
-            attributes=attributes,
-            payload=payload,
-            sample_rate=dlq_sample_rate,
-            ttl_hours=dlq_sample_ttl_hours,
-        )
-        if wrote:
-            log(
-                "pubsub.dlq_sample_written",
-                severity="NOTICE",
-                outcome="success",
-                correlation_id=correlation_id,
-                event_id=event_id,
-                latency_ms=_latency_ms(),
-                messageId=message_id,
-                subscription=subscription_str,
-                handler=handler_name,
-                deliveryAttempt=delivery_attempt,
-            )
-
     data_b64 = message.get("data")
     if not isinstance(data_b64, str) or not data_b64.strip():
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            outcome="failure",
-            correlation_id=correlation_id,
-            event_id=event_id,
-            latency_ms=_latency_ms(),
-            reason="invalid_envelope",
-            error="missing_data",
-            messageId=message_id,
-            publishTime=publish_time_raw,
-            subscription=subscription_str,
-        )
         raise HTTPException(status_code=400, detail="missing_data")
 
     try:
         raw = base64.b64decode(data_b64, validate=True)
     except Exception as e:
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            outcome="failure",
-            correlation_id=correlation_id,
-            event_id=event_id,
-            latency_ms=_latency_ms(),
-            reason="invalid_envelope",
-            error=f"invalid_base64:{str(e)}",
-            messageId=message_id,
-            publishTime=publish_time_raw,
-            subscription=subscription_str,
-        )
-        return {"ok": True, "applied": False, "reason": reason}
+        raise HTTPException(status_code=400, detail="invalid_base64") from e
 
-    # Coerce/validate canonical envelope per topic.
-    envelope: dict[str, Any]
-    if _is_event_envelope_v1(decoded):
-        envelope = decoded
-    elif topic == "system-events":
-        envelope = _coerce_system_event_to_envelope(payload=decoded, message_id=message_id, published_at=publish_time)
-    else:
-        return _ack_invalid(reason="missing_event_envelope", error="expected_EventEnvelopeV1", handler="none", payload=decoded)
-
-    schema_errors = None
     try:
-        schema_errors = validate_topic_event(topic=topic, event=envelope)
+        decoded = json.loads(raw.decode("utf-8"))
     except Exception as e:
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            outcome="failure",
-            correlation_id=correlation_id,
-            event_id=event_id,
-            latency_ms=_latency_ms(),
-            reason="invalid_payload_json",
-            error=str(e),
-            messageId=message_id,
-            publishTime=publish_time_raw,
-            subscription=subscription_str,
-        )
         raise HTTPException(status_code=400, detail="invalid_payload_json") from e
 
-    if not isinstance(payload, dict):
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            outcome="failure",
-            correlation_id=correlation_id,
-            event_id=event_id,
-            latency_ms=_latency_ms(),
-            reason="payload_not_object",
-            payloadType=str(type(payload).__name__),
-            messageId=message_id,
-            publishTime=publish_time_raw,
-            subscription=subscription_str,
-        )
+    # Unwrap EventEnvelopeV1 when present.
+    envelope: Optional[dict[str, Any]] = decoded if isinstance(decoded, dict) else None
+    payload_any: Any = decoded
+    if isinstance(decoded, dict) and {"schemaVersion", "event_type", "agent_name", "git_sha", "ts", "trace_id", "payload"}.issubset(decoded.keys()):
+        payload_any = decoded.get("payload")
 
-    try:
-        payload, envelope = _maybe_unwrap_event_envelope(payload)
-    except ValueError as e:
-        log(
-            "pubsub.invalid_event_envelope",
-            severity="ERROR",
-            outcome="failure",
-            correlation_id=correlation_id,
-            event_id=event_id,
-            latency_ms=_latency_ms(),
-            error=str(e),
-            messageId=message_id,
-        )
-        raise HTTPException(status_code=400, detail="invalid_event_envelope") from e
+    if not isinstance(payload_any, dict):
+        raise HTTPException(status_code=400, detail="payload_not_object")
 
-    # Promote stable identifiers from the decoded payload (when present).
-    try:
-        payload_event_id = payload.get("eventId")
-        if payload_event_id is not None and str(payload_event_id).strip():
-            event_id = str(payload_event_id).strip()
-    except Exception:
-        pass
-    try:
-        for k in ("correlation_id", "correlationId", "request_id", "requestId"):
-            v = payload.get(k)
+    payload: dict[str, Any] = payload_any
+    correlation_id = req_correlation_id
+    for k in ("correlation_id", "correlationId", "request_id", "requestId"):
+        v = payload.get(k)
+        if v is not None and str(v).strip():
+            correlation_id = str(v).strip()
+            break
+    if envelope is not None:
+        for k in ("trace_id", "traceId", "correlation_id", "correlationId"):
+            v = envelope.get(k)
             if v is not None and str(v).strip():
                 correlation_id = str(v).strip()
                 break
-        if not correlation_id:
-            for k in ("correlation_id", "correlationId", "request_id", "requestId"):
-                v = attributes.get(k)
-                if v is not None and str(v).strip():
-                    correlation_id = str(v).strip()
-                    break
-        if envelope is not None and isinstance(envelope, dict):
-            for k in ("correlation_id", "correlationId", "request_id", "requestId"):
-                v = envelope.get(k)
-                if v is not None and str(v).strip():
-                    correlation_id = str(v).strip()
-                    break
-    except Exception:
-        pass
 
-    inferred_topic = infer_topic(attributes=attributes, payload=payload, subscription=subscription_str)
-    handler = route_payload(payload=payload, attributes=attributes, topic=inferred_topic)
-    if handler is None:
-        log(
-            "pubsub.rejected",
-            severity="ERROR",
-            outcome="failure",
-            correlation_id=correlation_id,
-            event_id=event_id,
-            latency_ms=_latency_ms(),
-            reason="unroutable_payload",
-            messageId=message_id,
-            publishTime=publish_time_raw,
-            subscription=subscription_str,
-            topic=inferred_topic or "",
-        )
+    inferred_topic = infer_topic(attributes=attributes, payload=payload, subscription=subscription)
+    routed = route_payload(payload=payload, attributes=attributes, topic=inferred_topic)
+    if routed is None:
         raise HTTPException(status_code=400, detail="unroutable_payload")
 
     env = os.getenv("ENV") or "unknown"
     default_region = os.getenv("DEFAULT_REGION") or "unknown"
-    if handler.name == "system_events":
-        # System events should be materializable even if SYSTEM_EVENTS_TOPIC isn't set,
-        # since producers may be absent/misconfigured and we still want the consumer healthy.
+
+    if routed.name == "system_events":
         source_topic = (
             (os.getenv("SYSTEM_EVENTS_TOPIC") or "").strip()
             or (inferred_topic or "").strip()
             or (attributes.get("topic") or "").strip()
             or ""
         )
-        if not source_topic:
-            log(
-                "config.missing_system_events_topic",
-                severity="WARNING",
-                outcome="degraded",
-                correlation_id=correlation_id,
-                event_id=event_id,
-                latency_ms=_latency_ms(),
-            )
     else:
-        # For non-system streams, prefer the inferred topic (from attributes/payload/subscription mapping).
-        source_topic = inferred_topic or ""
+        source_topic = (inferred_topic or "").strip()
 
-    writer: FirestoreWriter = app.state.firestore_writer
     replay_run_id = (os.getenv("REPLAY_RUN_ID") or "").strip() or None
     replay: ReplayContext | None = None
     if replay_run_id and source_topic:
         replay = ReplayContext(run_id=replay_run_id, consumer=SERVICE_NAME, topic=str(source_topic))
 
+    writer: FirestoreWriter = app.state.firestore_writer
+
     with bind_correlation_id(correlation_id=correlation_id):
         try:
-            # Visibility-only: detect duplicate deliveries (never gate processing).
-            is_dup = writer.observe_pubsub_delivery(
-                message_id=message_id,
-                topic=source_topic,
-                subscription=subscription_str,
-                handler=handler.name,
-                published_at=publish_time,
-                delivery_attempt=delivery_attempt,
-            )
-            if is_dup is True:
-                log(
-                    "pubsub.duplicate_delivery_detected",
-                    severity="WARNING",
-                    outcome="duplicate",
-                    correlation_id=correlation_id,
-                    event_id=event_id,
-                    latency_ms=_latency_ms(),
-                    handler=handler.name,
-                    messageId=message_id,
-                    topic=source_topic,
-                    subscription=subscription_str,
-                    deliveryAttempt=delivery_attempt,
-                    publishTime=publish_time.isoformat(),
-                )
-
-            result = handler.handler(
+            result = routed.handler(
                 payload=payload,
                 env=env,
                 default_region=default_region,
@@ -915,71 +650,18 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
                 firestore_writer=writer,
                 replay=replay,
             )
-            if replay is not None:
-                try:
-                    # Best-effort markers; never fail the message due to marker writes.
-                    write_replay_marker(
-                        db=writer._db,  # intentionally internal; minimal hook
-                        replay=replay,
-                        message_id=message_id,
-                        pubsub_published_at=publish_time,
-                        event_time=_parse_rfc3339(result.get("eventTime") or result.get("updatedAt")) or publish_time,
-                        handler=handler.name,
-                        applied=bool(result.get("applied")),
-                        reason=str(result.get("reason") or ""),
-                    )
-                except Exception:
-                    pass
-            log(
-                "materialize.ok",
-                severity="INFO",
-                outcome="success",
-                correlation_id=correlation_id,
-                event_id=event_id,
-                latency_ms=_latency_ms(),
-                handler=handler.name,
-                messageId=message_id,
-                **{"source.messageId": message_id},
-                topic=source_topic,
-                subscription=subscription_str,
-                deliveryAttempt=delivery_attempt,
-                serviceId=result.get("serviceId"),
-                applied=result.get("applied"),
-                reason=result.get("reason"),
-                header_subscription=hdr.get("header_subscription"),
-                header_topic=hdr.get("header_topic"),
-            )
-            if result.get("applied") is False and str(result.get("reason") or "") == "duplicate_message_noop":
-                log(
-                    "pubsub.duplicate_ignored",
-                    severity="WARNING",
-                    outcome="noop",
-                    correlation_id=correlation_id,
-                    event_id=event_id,
-                    latency_ms=_latency_ms(),
-                    handler=handler.name,
-                    messageId=message_id,
-                    topic=source_topic,
-                    subscription=subscription_str,
-                    deliveryAttempt=delivery_attempt,
-                    kind=result.get("kind"),
-                    entityId=result.get("serviceId") or result.get("docId"),
-                    reason=result.get("reason"),
-                )
-            return {"ok": True, **result}
         except ValueError as e:
-            # Treat as poison for this consumer; allow DLQ routing.
             log(
                 "materialize.bad_event",
                 severity="ERROR",
                 outcome="failure",
                 correlation_id=correlation_id,
-                event_id=event_id,
                 latency_ms=_latency_ms(),
-                error=str(e),
-                handler=handler.name,
+                handler=routed.name,
                 messageId=message_id,
-                **{"source.messageId": message_id},
+                topic=source_topic,
+                subscription=subscription,
+                error=str(e),
             )
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
@@ -988,14 +670,61 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
                 severity="ERROR",
                 outcome="failure",
                 correlation_id=correlation_id,
-                event_id=event_id,
                 latency_ms=_latency_ms(),
-                error=str(e),
-                handler=handler.name,
+                handler=routed.name,
                 messageId=message_id,
-                **{"source.messageId": message_id},
+                topic=source_topic,
+                subscription=subscription,
+                error=str(e),
             )
             raise HTTPException(status_code=500, detail="materialize_exception") from e
+
+        # Post-dedupe observability (best-effort) - no gating.
+        try:
+            writer.observe_pubsub_delivery(
+                message_id=message_id,
+                topic=source_topic,
+                subscription=subscription,
+                handler=routed.name,
+                published_at=publish_time,
+                delivery_attempt=delivery_attempt,
+            )
+        except Exception:
+            pass
+
+        if replay is not None:
+            try:
+                write_replay_marker(
+                    db=writer._db,  # intentionally internal; minimal hook
+                    replay=replay,
+                    message_id=message_id,
+                    pubsub_published_at=publish_time,
+                    event_time=_parse_rfc3339(result.get("eventTime") or result.get("updatedAt")) or publish_time,
+                    handler=routed.name,
+                    applied=bool(result.get("applied")),
+                    reason=str(result.get("reason") or ""),
+                )
+            except Exception:
+                pass
+
+        log(
+            "materialize.ok",
+            severity="INFO",
+            outcome="success",
+            correlation_id=correlation_id,
+            latency_ms=_latency_ms(),
+            handler=routed.name,
+            messageId=message_id,
+            topic=source_topic,
+            subscription=subscription,
+            deliveryAttempt=delivery_attempt,
+            header_subscription=hdr.get("header_subscription"),
+            header_topic=hdr.get("header_topic"),
+            applied=result.get("applied"),
+            reason=result.get("reason"),
+            **{"source.messageId": message_id},
+        )
+        return {"ok": True, **result}
 
 
 if __name__ == "__main__":  # pragma: no cover

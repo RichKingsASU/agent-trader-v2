@@ -134,6 +134,8 @@ def parse_pubsub_push(body: dict[str, Any]) -> IngestedEvent:
     event_type = extract_event_type(payload, attributes)
 
     publish_time_utc = _parse_rfc3339_best_effort(publish_time_raw)
+    if publish_time_utc is None:
+        raise ValueError("invalid message.publishTime")
 
     # Prefer Pub/Sub messageId for idempotency.
     event_id = str(message_id).strip() if message_id else uuid.uuid4().hex
@@ -164,9 +166,14 @@ class InMemoryEventStore(EventStore):
         self._count = 0
         self._last: Optional[datetime] = None
         self._latest_by_type: dict[str, Any] = {}
+        self._seen_event_ids: set[str] = set()
 
     def write_event(self, ev: IngestedEvent) -> None:
         with self._lock:
+            # Idempotency: don't double-count duplicates in dev/local mode.
+            if ev.event_id in self._seen_event_ids:
+                return
+            self._seen_event_ids.add(ev.event_id)
             self._count += 1
             self._last = ev.received_at_utc
             self._latest_by_type[ev.event_type] = ev.payload
@@ -211,7 +218,9 @@ class FirestoreEventStore(EventStore):
         self._FieldValue = admin_firestore.FieldValue
 
     def write_event(self, ev: IngestedEvent) -> None:
-        # Event record (best-effort; idempotent on message_id).
+        # Event record + summary are at-least-once safe:
+        # - Use a dedupe guard on the event document id (messageId).
+        # - Only increment the summary counters on first-seen events.
         event_doc = {
             "event_type": ev.event_type,
             "received_at": ev.received_at_utc,
@@ -221,7 +230,19 @@ class FirestoreEventStore(EventStore):
             "attributes": ev.attributes,
             "payload": ev.payload,
         }
-        self._db.collection(self._events_collection).document(ev.event_id).set(event_doc, merge=True)
+        event_ref = self._db.collection(self._events_collection).document(ev.event_id)
+
+        # Strong idempotency: "create" fails if the doc already exists.
+        try:
+            event_ref.create(event_doc)
+        except Exception as e:
+            try:
+                from google.api_core.exceptions import AlreadyExists  # type: ignore
+            except Exception:  # pragma: no cover
+                AlreadyExists = None  # type: ignore[assignment]
+            if AlreadyExists is not None and isinstance(e, AlreadyExists):  # type: ignore[arg-type]
+                return
+            raise
 
         # Summary doc (fast path for UI reads).
         summary_ref = self._db.collection(self._summary_collection).document(self._summary_doc_id)
