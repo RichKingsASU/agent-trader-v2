@@ -2035,6 +2035,23 @@ class ExecutionEngine:
             # Idempotency is best-effort; never break safety checks.
             logger.exception("exec.idempotency_guard_failed")
 
+        # Defense-in-depth (even on alternate/replay paths): enforce global authority + kill-switch
+        # immediately before any broker-side submission.
+        require_trading_live_mode(action="broker order placement")
+        try:
+            require_kill_switch_off(operation="broker order placement")
+        except ExecutionHaltedError:
+            enabled, source = get_kill_switch_state()
+            checks = list(getattr(risk, "checks", None) or [])
+            checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
+            halted_risk = RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
+            return ExecutionResult(
+                status="rejected",
+                risk=halted_risk,
+                routing=routing_decision,
+                message="kill_switch_enabled",
+            )
+
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None
         self._assert_post_trade_order_response(
@@ -2116,6 +2133,9 @@ class ExecutionEngine:
         )
         if self._dry_run:
             return {"id": broker_order_id, "status": "dry_run"}
+        # Broker-side action: enforce global authority + kill-switch before side effects.
+        require_trading_live_mode(action="broker cancel")
+        require_kill_switch_off(operation="broker cancel")
         fatal_if_execution_reached(
             operation="execution_engine.cancel_order",
             explicit_message=(
