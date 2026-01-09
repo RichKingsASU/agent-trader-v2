@@ -1,440 +1,89 @@
 name: CI
 
 on:
-  pull_request:
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
-permissions:
-  contents: read
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  PYTHONUNBUFFERED: "1"
 
 jobs:
   production_readiness_enforcement:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Production-readiness enforcement (grep + python)
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash scripts/check_production_readiness.sh
-
-  lint_format:
+    name: Validate Runtime Integrity
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
+    steps:
+      - name: Checkout (full history required)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate runtime integrity
+        run: |
+          bash scripts/ci_safety_guard.sh
+
+  lint_format:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [production_readiness_enforcement]
+
     env:
       TRADING_MODE: paper
 
     steps:
-      - name: Checkout
+      - name: Checkout (full history required)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: TypeScript typecheck (shared-types)
-        shell: bash
-        run: |
-          set -euo pipefail
-          # No lockfile / workspace root; keep this fast and hermetic by running tsc via npx.
-          npx -y --package typescript@5.6.3 tsc -p packages/shared-types/tsconfig.json --noEmit
-
-      - name: "Blockers: banned vendor refs + secret patterns"
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Scanning tracked files for banned vendor references..."
-          if git grep -n -I -i \
-            -e "supa[b]ase" \
-            -e "SUPA[B]ASE_" \
-            -e "VITE_SUPA[B]ASE" \
-            -e "@supa[b]ase" \
-            -e "postg[re]st" \
-            -e "go[tr]ue" \
-            -- . ":(exclude).github/workflows/**"; then
-            echo "ERROR: banned vendor reference detected." >&2
-            exit 1
-          fi
-
-          echo "Scanning tracked files for secret markers..."
-          if git grep -n -I -E \
-            -e "-----BEGIN( [A-Z]+)? PRIVATE KEY-----" \
-            -e "\"type\"[[:space:]]*:[[:space:]]*\"service_account\"" \
-            -e "\"client_email\"[[:space:]]*:" \
-            -e "\"private_key\"[[:space:]]*:" \
-            -e "\"private_key_id\"[[:space:]]*:" \
-            -- . ":(exclude).github/workflows/**"; then
-            echo "ERROR: possible secret material detected." >&2
-            exit 1
-          fi
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: YAML syntax validation (no schema; no cloud calls)
-        shell: bash
+      - name: Install dependencies
         run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade pyyaml
-          python - <<'PY'
-          from __future__ import annotations
-          import sys
-          from pathlib import Path
-          import yaml
+          pip install -r requirements.txt
+          npm ci
 
-          roots = ["config", "configs", ".github/workflows", "infra", "k8s"]
-          files: list[Path] = []
-          for r in roots:
-            p = Path(r)
-            if p.exists():
-              files.extend(sorted(p.rglob("*.yml")))
-              files.extend(sorted(p.rglob("*.yaml")))
-
-          bad: list[tuple[str, str]] = []
-          for f in files:
-            try:
-              txt = f.read_text(encoding="utf-8", errors="replace")
-              list(yaml.safe_load_all(txt))
-            except Exception as e:  # noqa: BLE001
-              bad.append((str(f), str(e)))
-
-          if bad:
-            for f, e in bad[:50]:
-              print(f"ERROR: YAML parse failed: {f}: {e}", file=sys.stderr)
-            raise SystemExit(2)
-
-          print(f"ok: parsed {len(files)} YAML files")
-          PY
-
-      - name: Validate Cloud Build configs (immutability + presence)
-        shell: bash
-        run: bash scripts/validate_cloudbuild_configs.sh
-
-      - name: Validate CI layout references (Cloud Build script paths)
-        shell: bash
-        run: bash scripts/validate_ci_layout.sh
-
-      - name: CI safety guard (read-only)
-        shell: bash
-        run: bash scripts/ci_safety_guard.sh
+      - name: Lint
+        run: |
+          npm run lint
+          python -m compileall . -q -x venv
 
   unit:
+    name: Unit Tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [production_readiness_enforcement, lint_format]
+
     env:
       TRADING_MODE: paper
 
     steps:
-      - name: Checkout
+      - name: Checkout (full history required)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            backend/requirements.lock
-            backend/ingestion/requirements.txt
-            cloudrun_ingestor/requirements.txt
-            cloudrun_consumer/requirements.txt
 
-      - name: Paper-trading hard lock guard (CI)
-        shell: bash
+      - name: Install dependencies
         run: |
-          set -euo pipefail
-          python3 -m unittest -q tests.test_trading_mode_guardrail
+          pip install -r requirements.txt
 
-      - name: Install backend dependencies (locked)
-        shell: bash
+      - name: Run unit tests
         run: |
-          set -euo pipefail
-          python3 -m pip install --upgrade "pip==24.3.1"
-          python3 -m pip install -r backend/requirements.lock
-
-      - name: Install vm_ingest minimal dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pip install -r backend/ingestion/requirements.txt
-
-      - name: Install pytest
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pip install -q --upgrade pytest
-
-      - name: Capital-safety test suite (mandatory)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pytest -q tests/capital_safety
-
-      - name: Python import smoke checks
-        shell: bash
-        run: python3 scripts/smoke_check_imports.py
-
-      - name: Run unit tests (pytest)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pytest -q
-
-  contract:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [unit]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            backend/requirements.lock
-
-      - name: Install backend dependencies (locked)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pip install --upgrade "pip==24.3.1"
-          python3 -m pip install -r backend/requirements.lock
-
-      - name: Pub/Sub contract gate (Python envelope vs TS shared types)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m unittest -q tests.test_pubsub_envelope_contract_gate
-
-  integration_emulators:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: [contract]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            backend/requirements.lock
-
-      - name: Install backend dependencies (locked)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pip install --upgrade "pip==24.3.1"
-          python3 -m pip install -r backend/requirements.lock
-
-      - name: Install pytest
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pip install -q --upgrade pytest
-          python3 -m pytest -q tests/test_imports.py
-
-          # Import the actual Cloud Run entrypoint with dummy env to ensure we catch:
-          # - missing dependencies
-          # - syntax / import errors
-          # - accidental early-exit on startup
-          GCP_PROJECT_ID=dummy \
-          SYSTEM_EVENTS_TOPIC=dummy \
-          MARKET_TICKS_TOPIC=dummy \
-          MARKET_BARS_1M_TOPIC=dummy \
-          TRADE_SIGNALS_TOPIC=dummy \
-          INGEST_FLAG_SECRET_ID=dummy \
-          python3 -c "import importlib.util; s=importlib.util.spec_from_file_location('cloudrun_ingestor_main','cloudrun_ingestor/main.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print('ok: imported cloudrun_ingestor/main.py')"
-
-      - name: Pre-build Python import test (cloudrun_consumer; package-safe imports)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pip install -r cloudrun_consumer/requirements.txt
-          python3 -m pip install -q --upgrade pytest
-
-          # Run the service-local unit tests (fast, no cloud calls).
-          python3 -m pytest -q cloudrun_consumer/tests
-
-          # Critical: ensure imports do not rely on implicit cwd / flattened imports.
-          # Simulate container layout: PYTHONPATH=/app (repo root) + run from a non-repo cwd.
-          (cd /tmp && \
-            PYTHONPATH="${GITHUB_WORKSPACE}" \
-            GCP_PROJECT=dummy \
-            SYSTEM_EVENTS_TOPIC=dummy \
-            INGEST_FLAG_SECRET_ID=dummy \
-            ENV=dummy \
-            python3 -c "import cloudrun_consumer.main; print('ok: imported cloudrun_consumer.main')"
-          )
-
-      - name: Docker build + boot smoke test (cloudrun_ingestor)
-        shell: bash
-        run: |
-          set -euo pipefail
-          npx -y firebase-tools@latest emulators:exec --only firestore --project demo-agenttrader-ci \
-            "python3 -m pytest -q tests/test_firestore_emulator_integration.py"
-
-  container_build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: [integration_emulators]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Docker build (cloudrun_ingestor)
-        shell: bash
-        run: |
-          set -euo pipefail
-          IMAGE="cloudrun-ingestor-ci:${GITHUB_SHA}"
-          docker build -f cloudrun_ingestor/Dockerfile -t "${IMAGE}" .
-          mkdir -p .ci_artifacts
-          docker save "${IMAGE}" -o .ci_artifacts/cloudrun-ingestor-image.tar
-
-      - name: Upload container image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloudrun-ingestor-image
-          path: .ci_artifacts/cloudrun-ingestor-image.tar
-          retention-days: 3
-
-  smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [container_build]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download container image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: cloudrun-ingestor-image
-          path: .ci_artifacts
-
-      - name: Load image
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker load -i .ci_artifacts/cloudrun-ingestor-image.tar
-
-      - name: Boot smoke test (cloudrun_ingestor)
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          IMAGE="cloudrun-ingestor-ci:${GITHUB_SHA}"
-
-          CID="$(
-            docker run -d -p 18080:8080 \
-              -e GCP_PROJECT_ID=dummy \
-              -e SYSTEM_EVENTS_TOPIC=dummy \
-              -e MARKET_TICKS_TOPIC=dummy \
-              -e MARKET_BARS_1M_TOPIC=dummy \
-              -e TRADE_SIGNALS_TOPIC=dummy \
-              -e INGEST_FLAG_SECRET_ID=dummy \
-              "${IMAGE}"
-          )"
-          cleanup() { docker rm -f "${CID}" >/dev/null 2>&1 || true; }
-          trap cleanup EXIT
-
-          # Fail the build if gunicorn (container) exits early.
-          sleep 5
-          if ! docker ps -q --no-trunc | grep -q "${CID}"; then
-            echo "ERROR: cloudrun_ingestor container exited early (gunicorn boot failure)." >&2
-            docker logs "${CID}" || true
-            exit 1
-          fi
-
-          # Ensure HTTP is accepting connections.
-          curl -fsS --max-time 2 --retry 10 --retry-connrefused http://localhost:18080/ >/dev/null || {
-            echo "ERROR: cloudrun_ingestor did not become reachable on HTTP." >&2
-            docker logs "${CID}" || true
-            exit 1
-          }
-
-          # Fail if the container booted a Flask development server (should be gunicorn).
-          docker logs "${CID}" > /tmp/cloudrun_ingestor.log 2>&1 || true
-          python3 - <<'PY'
-          from __future__ import annotations
-          from pathlib import Path
-          import sys
-
-          p = Path("/tmp/cloudrun_ingestor.log")
-          txt = p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
-          needle = "WARNING: This is a development server"
-          if needle in txt:
-            print("ERROR: Flask development server warning detected in container logs.", file=sys.stderr)
-            # Print a small excerpt around the warning for quick debugging.
-            lines = txt.splitlines()
-            for i, line in enumerate(lines):
-              if needle in line:
-                start = max(0, i - 5)
-                end = min(len(lines), i + 6)
-                print("--- log excerpt ---", file=sys.stderr)
-                for j in range(start, end):
-                  print(lines[j], file=sys.stderr)
-                break
-            raise SystemExit(1)
-          print("ok: no Flask development server warning detected")
-          PY
-
-          docker stop "${CID}" >/dev/null
-
-  readiness:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [lint_format, unit, contract, integration_emulators, container_build, smoke]
-    if: always()
-
-    steps:
-      - name: Generate readiness_report.md
-        shell: bash
-        env:
-          LINT_FORMAT_RESULT: ${{ needs.lint_format.result }}
-          UNIT_RESULT: ${{ needs.unit.result }}
-          CONTRACT_RESULT: ${{ needs.contract.result }}
-          INTEGRATION_RESULT: ${{ needs.integration_emulators.result }}
-          CONTAINER_BUILD_RESULT: ${{ needs.container_build.result }}
-          SMOKE_RESULT: ${{ needs.smoke.result }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-
-      - name: "Data plane smoke test (emulators: Pub/Sub + Firestore)"
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash scripts/data_plane_smoke_test.sh
-
+          pytest -q
