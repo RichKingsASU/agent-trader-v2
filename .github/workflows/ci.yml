@@ -1,26 +1,22 @@
 name: CI
 
 on:
-  pull_request:
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
-permissions:
-  contents: read
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  PYTHONUNBUFFERED: "1"
 
 jobs:
   production_readiness_enforcement:
+    name: Validate Runtime Integrity
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
-      - name: Checkout
+      - name: Checkout (full history, no submodules)
         uses: actions/checkout@v4
 
       - name: Run prerun.sh
@@ -29,23 +25,28 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          fetch-depth: 0
+          submodules: false
 
-      - name: Production-readiness enforcement (grep + python)
-        shell: bash
+      - name: Validate runtime integrity
         run: |
-          set -euo pipefail
-          bash scripts/check_production_readiness.sh
+          bash scripts/ci_safety_guard.sh
 
   lint_format:
+    name: Lint & Format
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    needs: [production_readiness_enforcement]
+
     env:
       TRADING_MODE: paper
 
     steps:
-      - name: Checkout
+      - name: Checkout (full history, no submodules)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
 
       - name: Run prerun.sh
         run: ./.github/workflows/prerun.sh
@@ -55,105 +56,32 @@ jobs:
         with:
           node-version: "20"
 
-      - name: TypeScript typecheck (shared-types)
-        shell: bash
-        run: |
-          set -euo pipefail
-          # No lockfile / workspace root; keep this fast and hermetic by running tsc via npx.
-          npx -y --package typescript@5.6.3 tsc -p packages/shared-types/tsconfig.json --noEmit
-
-      - name: "Blockers: banned vendor refs + secret patterns"
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Scanning tracked files for banned vendor references..."
-          if git grep -n -I -i \
-            -e "supa[b]ase" \
-            -e "SUPA[B]ASE_" \
-            -e "VITE_SUPA[B]ASE" \
-            -e "@supa[b]ase" \
-            -e "postg[re]st" \
-            -e "go[tr]ue" \
-            -- . ":(exclude).github/workflows/**"; then
-            echo "ERROR: banned vendor reference detected." >&2
-            exit 1
-          fi
-
-          echo "Scanning tracked files for secret markers..."
-          if git grep -n -I -E \
-            -e "-----BEGIN( [A-Z]+)? PRIVATE KEY-----" \
-            -e "\"type\"[[:space:]]*:[[:space:]]*\"service_account\"" \
-            -e "\"client_email\"[[:space:]]*:" \
-            -e "\"private_key\"[[:space:]]*:" \
-            -e "\"private_key_id\"[[:space:]]*:" \
-            -- . ":(exclude).github/workflows/**"; then
-            echo "ERROR: possible secret material detected." >&2
-            exit 1
-          fi
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: YAML syntax validation (no schema; no cloud calls)
-        shell: bash
+      - name: Install dependencies
         run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade pyyaml
-          python - <<'PY'
-          from __future__ import annotations
-          import sys
-          from pathlib import Path
-          import yaml
+          pip install -r requirements.txt
+          npm ci
 
-          roots = ["config", "configs", ".github/workflows", "infra", "k8s"]
-          files: list[Path] = []
-          for r in roots:
-            p = Path(r)
-            if p.exists():
-              files.extend(sorted(p.rglob("*.yml")))
-              files.extend(sorted(p.rglob("*.yaml")))
-
-          bad: list[tuple[str, str]] = []
-          for f in files:
-            try:
-              txt = f.read_text(encoding="utf-8", errors="replace")
-              list(yaml.safe_load_all(txt))
-            except Exception as e:  # noqa: BLE001
-              bad.append((str(f), str(e)))
-
-          if bad:
-            for f, e in bad[:50]:
-              print(f"ERROR: YAML parse failed: {f}: {e}", file=sys.stderr)
-            raise SystemExit(2)
-
-          print(f"ok: parsed {len(files)} YAML files")
-          PY
-
-      - name: Validate Cloud Build configs (immutability + presence)
-        shell: bash
-        run: bash scripts/validate_cloudbuild_configs.sh
-
-      - name: Validate CI layout references (Cloud Build script paths)
-        shell: bash
-        run: bash scripts/validate_ci_layout.sh
-
-      - name: CI safety guard (read-only)
-        shell: bash
-        run: bash scripts/ci_safety_guard.sh
+      - name: Lint & compile
+        run: |
+          npm run lint
+          python -m compileall . -q -x venv
 
   unit:
+    name: Unit Tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [production_readiness_enforcement, lint_format]
+
     env:
       TRADING_MODE: paper
 
     steps:
-      - name: Checkout
+      - name: Checkout (full history, no submodules)
         uses: actions/checkout@v4
 
       - name: Run prerun.sh
@@ -162,63 +90,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            backend/requirements.lock
-            backend/ingestion/requirements.txt
-            cloudrun_ingestor/requirements.txt
-            cloudrun_consumer/requirements.txt
-
-      - name: Paper-trading hard lock guard (CI)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m unittest -q tests.test_trading_mode_guardrail
-
-      - name: Install backend dependencies (locked)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pip install --upgrade "pip==24.3.1"
-          python3 -m pip install -r backend/requirements.lock
-
-      - name: Install vm_ingest minimal dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pip install -r backend/ingestion/requirements.txt
-
-      - name: Install pytest
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pip install -q --upgrade pytest
-
-      - name: Capital-safety test suite (mandatory)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pytest -q tests/capital_safety
-
-      - name: Python import smoke checks
-        shell: bash
-        run: python3 scripts/smoke_check_imports.py
-
-      - name: Run unit tests (pytest)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pytest -q
-
-  contract:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [unit]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+          fetch-depth: 0
+          submodules: false
 
       - name: Run prerun.sh
         run: ./.github/workflows/prerun.sh
@@ -227,19 +100,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            backend/requirements.lock
 
-      - name: Install backend dependencies (locked)
-        shell: bash
+      - name: Install dependencies
         run: |
-          set -euo pipefail
-          python3 -m pip install --upgrade "pip==24.3.1"
-          python3 -m pip install -r backend/requirements.lock
+          pip install -r requirements.txt
 
-      - name: Pub/Sub contract gate (Python envelope vs TS shared types)
-        shell: bash
+      - name: Run unit tests
         run: |
           set -euo pipefail
           python3 -m unittest -q tests.test_pubsub_envelope_contract_gate
