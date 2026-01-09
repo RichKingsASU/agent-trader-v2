@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, MutableMapping, Optional
 
 from backend.observability.correlation import get_or_create_correlation_id
+from backend.observability.execution_id import get_execution_id
 
 
 def _utc_ts() -> str:
@@ -108,6 +109,7 @@ def _base_fields(*, service: str | None, severity: str) -> dict[str, Any]:
         # Request/correlation
         "request_id": cid,
         "correlation_id": cid,
+        "execution_id": get_execution_id(),
     }
 
 

@@ -1,0 +1,144 @@
+# PRODUCTION READINESS (CHECKLIST ONLY)
+
+## Runtime invariants
+- [ ] All production workloads run with explicit version pin (`git_sha` / image tag) and are traceable in logs
+- [ ] Required env vars validated at startup (fail-fast on missing/empty)
+- [ ] Time is UTC everywhere (timestamps, logs, persisted records)
+- [ ] Money/size math uses `Decimal` or string-encoded decimals (no float for capital/risk)
+- [ ] Health endpoints exist and are wired to platform checks:
+  - [ ] Marketdata: `GET /healthz` (freshness) + `GET /health` (process)
+  - [ ] Pub/Sub consumers: `GET /healthz`/`readyz`/`livez` where implemented
+  - [ ] Execution service: `GET /health` + `GET /state`
+- [ ] Marketdata health contract enforced (`docs/MARKETDATA_HEALTH_CONTRACT.md`):
+  - [ ] `/healthz` returns **200** only when `ok=true`
+  - [ ] `/healthz` returns **503** when stale/forced stale/no tick
+  - [ ] Consumer timeout configured (`MARKETDATA_HEALTH_TIMEOUT_SECONDS`)
+  - [ ] Max age configured (`MARKETDATA_MAX_AGE_SECONDS`)
+- [ ] No infinite loops on failures:
+  - [ ] All external calls have timeouts
+  - [ ] All retries have bounded attempts/backoff
+  - [ ] CrashLoopBackOff treated as P0 for critical services
+- [ ] Structured logs emitted for all critical paths (publish/consume/execute) with correlation keys:
+  - [ ] `trace_id`
+  - [ ] `event_type`
+  - [ ] `git_sha` / version
+  - [ ] Pub/Sub `messageId`, `subscription`, `deliveryAttempt` (when available)
+
+## Event safety invariants
+- [ ] At-least-once delivery assumed everywhere (Pub/Sub, retries, restarts)
+- [ ] Consumers are safe under:
+  - [ ] redelivery (same message multiple times)
+  - [ ] out-of-order delivery
+  - [ ] partial failures (Firestore transient errors)
+- [ ] Pub/Sub subscription safety (per subscription; `docs/dlq_and_retries.md`):
+  - [ ] `deadLetterPolicy` configured
+  - [ ] `deadLetterPolicy.maxDeliveryAttempts` set (5–10)
+  - [ ] `retryPolicy.minimumBackoff` set (≥10s)
+  - [ ] `retryPolicy.maximumBackoff` set (≤600s)
+  - [ ] DLQ retention set (7–14 days or policy-defined)
+- [ ] Poison vs transient classification is deterministic:
+  - [ ] Poison (schema/parse/routing) does not cause unbounded retries
+  - [ ] Transient (quota/timeouts/unavailable) triggers retry with backoff
+  - [ ] Auth/permission failures treated as critical (page/stop)
+- [ ] Idempotency keys exist for all stateful consumers:
+  - [ ] `cloudrun_consumer`: transactional dedupe doc `ops_dedupe/{messageId}`
+  - [ ] `pubsub-event-ingestion`: transactional dedupe doc `ingest_pipelines_dedupe/{messageId}`
+- [ ] Dedupe retention is bounded:
+  - [ ] Firestore TTL configured for `ops_dedupe.createdAt`
+  - [ ] Firestore TTL configured for `ingest_pipelines_dedupe.createdAt`
+- [ ] Materializer write safety (`docs/consumer_safety_check.md`):
+  - [ ] No full-document clobbering of unrelated fields (merge/field update strategy defined)
+  - [ ] Stale protection has deterministic tie-breaker (equal timestamps)
+  - [ ] Hot-doc write rate per key is within Firestore limits (or sharded)
+- [ ] Envelope contract drift gated by tests:
+  - [ ] `tests/test_pubsub_envelope_contract_gate.py` passing
+  - [ ] `EventEnvelope` required keys match `packages/shared-types/src/envelope.ts`
+- [ ] Event envelope requirements enforced for all producers/consumers (`docs/event_contract_v1.md`):
+  - [ ] `schemaVersion`
+  - [ ] `event_type`
+  - [ ] `ts`
+  - [ ] `agent_name`
+  - [ ] `git_sha`
+  - [ ] `trace_id`
+  - [ ] `payload` is an object
+
+## Capital safety invariants
+- [ ] Default posture is non-executing:
+  - [ ] Execution agent/service is **OFF / scaled-to-zero**
+  - [ ] Strategy runtimes produce proposals only (no broker API calls)
+  - [ ] Shadow mode defaults to ON where supported (`is_shadow_mode=true`)
+- [ ] Kill-switch is present, reachable, and enforced (`docs/KILL_SWITCH.md`):
+  - [ ] `EXECUTION_HALTED=1` honored by execution paths
+  - [ ] `EXECUTION_HALTED_FILE` supported where deployed (k8s ConfigMap mount)
+  - [ ] Back-compat `EXEC_KILL_SWITCH=1` honored where referenced
+- [ ] Execution gating is enforced (`docs/EXECUTION_AGENT_STATE_MACHINE.md`):
+  - [ ] State machine denies live execution unless `state==READY`
+  - [ ] Live execution requires `AGENT_MODE==LIVE`
+  - [ ] Kill-switch ON forces `HALTED` and denies execution
+  - [ ] Marketdata stale forces `DEGRADED` and denies execution
+- [ ] Emergency liquidation path verified (broker close + cancel + halt):
+  - [ ] `close_all_positions(cancel_orders=True)` executes successfully in the target broker environment
+  - [ ] Trading gate is locked to halt posture after liquidation (`systemStatus/trading_gate`)
+- [ ] Risk circuit breakers enforced and test-covered:
+  - [ ] Daily loss limit breaker (−2%) (`tests/test_circuit_breakers.py`)
+  - [ ] VIX guard reduces allocation when VIX > 30 (`tests/test_circuit_breakers.py`)
+  - [ ] Concentration guard blocks BUY when position > 20% (`tests/test_circuit_breakers.py`)
+  - [ ] High-water-mark + drawdown breaker (5%) (`PHASE3_RISK_MANAGEMENT_VERIFICATION.md`)
+- [ ] Capital limits are explicit and environment-scoped:
+  - [ ] Max notional per order
+  - [ ] Max gross exposure
+  - [ ] Max symbol concentration
+  - [ ] Max daily loss
+  - [ ] Max drawdown from HWM
+- [ ] Fail-safe behavior is conservative:
+  - [ ] Any missing risk inputs ⇒ HOLD / deny execution
+  - [ ] Any stale marketdata ⇒ HOLD / deny execution
+  - [ ] Any permission/identity error on risk store ⇒ deny execution
+
+## Agent platform invariants
+- [ ] Production identity and IAM are least-privilege:
+  - [ ] Pub/Sub publishers have publish-only role on required topics
+  - [ ] Pub/Sub push auth uses OIDC + Cloud Run IAM invoker (no unauthenticated push)
+  - [ ] Consumers have only required Firestore permissions
+  - [ ] Secret Manager access limited to required secret IDs
+- [ ] Secrets hygiene:
+  - [ ] No secrets committed in repo
+  - [ ] No secrets logged
+  - [ ] Secrets injected via Secret Manager / Firebase Functions secrets
+- [ ] Observability and alertability:
+  - [ ] Alerts exist for DLQ > 0 (critical subscriptions)
+  - [ ] Alerts exist for push consumer 4xx rate (poison) and 5xx rate (transient)
+  - [ ] Alerts exist for subscription backlog oldest age and undelivered growth
+  - [ ] Alerts exist for Firestore PermissionDenied/Unauthenticated
+- [ ] Runbooks exist and are linked from ops docs:
+  - [ ] Pub/Sub backlog / consumer failure runbook (`RUNBOOK.md`)
+  - [ ] Kill-switch drill (`docs/KILL_SWITCH.md`)
+  - [ ] Agent mesh operational posture (`docs/ops/agent_mesh.md`)
+- [ ] Production-only invariants are enforced by config, not humans:
+  - [ ] Execution remains OFF unless a human-only enablement process is followed
+  - [ ] Kill-switch defaults to halted in cluster config
+  - [ ] Marketdata freshness gate is mandatory for strategy + execution
+
+## Explicit GO / NO-GO gates
+### GO (ALL REQUIRED)
+- [ ] GO: Kill-switch state is known and controllable (file/env) and defaults to HALTED
+- [ ] GO: Execution agent/service is OFF (scaled-to-zero) in the target environment
+- [ ] GO: Marketdata `/healthz` is green (200) and `age_seconds <= max_age_seconds`
+- [ ] GO: Pub/Sub subscriptions feeding production consumers have DLQ + retry policy configured
+- [ ] GO: Idempotency dedupe collections have TTL (bounded retention) configured
+- [ ] GO: Circuit breaker tests pass (`tests/test_circuit_breakers.py`)
+- [ ] GO: Envelope contract gate passes (`tests/test_pubsub_envelope_contract_gate.py`)
+- [ ] GO: Emergency liquidation path is deployed and callable by authorized operators
+- [ ] GO: Firestore security rules prevent unauthorized writes to execution gates/config
+- [ ] GO: Monitoring and paging configured for backlog/DLQ/5xx/permission errors
+
+### NO-GO (ANY TRIGGERS)
+- [ ] NO-GO: Any path can place broker orders while `EXECUTION_HALTED=1`
+- [ ] NO-GO: Execution agent/service is running by default (non-zero replicas) without a human enablement record
+- [ ] NO-GO: Marketdata freshness gate can be bypassed (strategy or execution proceeds while stale/unreachable)
+- [ ] NO-GO: Any production Pub/Sub subscription lacks `deadLetterPolicy`
+- [ ] NO-GO: Poison messages cause infinite retries (non-2xx without DLQ) on any consumer
+- [ ] NO-GO: Idempotency/dedupe stores have unbounded growth (no TTL/cleanup)
+- [ ] NO-GO: Firestore permission/identity errors are observed in critical pipelines
+- [ ] NO-GO: Emergency liquidation cannot be executed end-to-end in the target environment
+- [ ] NO-GO: Risk breakers are disabled/unenforced (drawdown/daily loss/concentration/VIX)

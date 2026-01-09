@@ -42,6 +42,7 @@ from backend.common.app_heartbeat_writer import install_app_heartbeat
 from backend.common.vertex_ai import init_vertex_ai_or_log
 from backend.execution.marketdata_health import check_market_ingest_heartbeat
 from backend.observability.build_fingerprint import get_build_fingerprint
+from backend.observability.execution_id import bind_execution_id
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 from backend.persistence.firebase_client import get_firestore_client
 from backend.persistence.firestore_retry import with_firestore_retry
@@ -195,6 +196,13 @@ def _startup() -> None:
     app.state.risk = risk
     app.state.agent_sm = AgentStateMachine(agent_id=str(os.getenv("EXEC_AGENT_ID") or "execution_engine"))
     app.state.shutting_down = False
+    # If kill-switch is active at boot, make it visible immediately.
+    try:
+        enabled, source = get_kill_switch_state()
+        if enabled:
+            logger.warning("kill_switch_active enabled=true source=%s", source)
+    except Exception:
+        pass
     try:
         app.state.ops_logger.readiness(ready=True)  # type: ignore[attr-defined]
     except Exception:
@@ -318,7 +326,8 @@ def state(request: Request) -> dict[str, Any]:
     tenant_id = str(os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip() or None
     stale_s = _int_env("MARKETDATA_STALE_THRESHOLD_S", 120)
     hb = check_market_ingest_heartbeat(tenant_id=tenant_id, stale_threshold_seconds=stale_s)
-    kill = risk.kill_switch_enabled()
+    kill_enabled, kill_source = get_kill_switch_state()
+    kill = bool(kill_enabled)
 
     # Update state based on latest signals (no-op if unchanged).
     sm.on_kill_switch(enabled=kill, meta={"source": "state_endpoint"})
@@ -345,6 +354,7 @@ def state(request: Request) -> dict[str, Any]:
         "agent_mode": agent_mode,
         "engine_dry_run": bool(getattr(app.state.engine, "dry_run", True)),
         "kill_switch_enabled": kill,
+        "kill_switch_source": kill_source,
         "marketdata_heartbeat": {
             "path": hb.path,
             "exists": hb.exists,
@@ -462,7 +472,8 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
     tenant_id = str(req.metadata.get("tenant_id") or os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip() or None
     stale_s = _int_env("MARKETDATA_STALE_THRESHOLD_S", 120)
     hb = check_market_ingest_heartbeat(tenant_id=tenant_id, stale_threshold_seconds=stale_s)
-    kill = risk.kill_switch_enabled()
+    kill_enabled, kill_source = get_kill_switch_state()
+    kill = bool(kill_enabled)
 
     sm.on_kill_switch(enabled=kill, meta={"source": "execute_endpoint"})
     if not kill:
@@ -566,6 +577,7 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
                         "state": sm.state.value,
                         "agent_mode": agent_mode,
                         "kill_switch_enabled": kill,
+                        "kill_switch_source": kill_source,
                         "reason": reason,
                         "marketdata_is_stale": hb.is_stale,
                         "marketdata_age_seconds": hb.age_seconds,
@@ -631,91 +643,123 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
             broker_order=None,
             message="duplicate_in_progress",
         )
-
-    try:
-        result: ExecutionResult = engine.execute_intent(intent=intent)
-    except AgentModeError as e:
-        logger.warning("exec_service.trading_refused: %s", e)
-        try:
-            idem.complete(
-                tenant_id=tenant_id_for_idem,
-                scope="execution.execute_intent",
-                key=idempotency_key,
-                status="failed",
-                outcome={"status": "failed", "risk": {"allowed": False, "reason": "trading_refused", "checks": []}, "message": str(e)},
+        if not acquired:
+            if record.outcome:
+                # Replay-safe: return the original outcome without performing side effects.
+                return ExecuteIntentResponse(**record.outcome)
+            # Conservatively refuse to execute again: prevents duplicate orders even if a prior attempt crashed.
+            return ExecuteIntentResponse(
+                status="duplicate_in_progress",
+                risk={"allowed": False, "reason": "duplicate_in_progress", "checks": []},
+                broker_order_id=None,
+                broker_order=None,
+                message="duplicate_in_progress",
             )
-        except Exception:
-            pass
-        raise HTTPException(status_code=409, detail={"error": "trading_refused", "reason": str(e)}) from e
-    except Exception as e:
-        logger.exception("exec_service.execute_failed: %s", e)
+
         try:
-            logger.error(
-                "%s",
-                dumps_replay_event(
-                    build_replay_event(
-                        event="state_transition",
-                        component="backend.services.execution_service.app",
-                        data={
-                            "from_state": "intent_received",
-                            "to_state": "execute_failed",
-                            "strategy_id": req.strategy_id,
-                            "symbol": req.symbol,
-                            "client_intent_id": req.client_intent_id,
-                            "error": str(e),
+            result: ExecutionResult = engine.execute_intent(intent=intent)
+        except AgentModeError as e:
+            logger.warning("exec_service.trading_refused: %s", e)
+            try:
+                idem.complete(
+                    tenant_id=tenant_id_for_idem,
+                    scope="execution.execute_intent",
+                    key=idempotency_key,
+                    status="failed",
+                    outcome={
+                        "status": "failed",
+                        "risk": {"allowed": False, "reason": "trading_refused", "checks": []},
+                        "message": str(e),
+                    },
+                )
+            except Exception:
+                pass
+            raise HTTPException(status_code=409, detail={"error": "trading_refused", "reason": str(e)}) from e
+        except Exception as e:
+            logger.exception("exec_service.execute_failed: %s", e)
+            try:
+                logger.error(
+                    "%s",
+                    dumps_replay_event(
+                        build_replay_event(
+                            event="state_transition",
+                            component="backend.services.execution_service.app",
+                            data={
+                                "from_state": "intent_received",
+                                "to_state": "execute_failed",
+                                "strategy_id": req.strategy_id,
+                                "symbol": req.symbol,
+                                "client_intent_id": req.client_intent_id,
+                                "error": str(e),
+                            },
+                            trace_id=trace_id,
+                            agent_name=os.getenv("AGENT_NAME") or "execution-engine",
+                        )
+                    ),
+                )
+            except Exception:
+                pass
+            try:
+                idem.complete(
+                    tenant_id=tenant_id_for_idem,
+                    scope="execution.execute_intent",
+                    key=idempotency_key,
+                    status="failed",
+                    outcome={
+                        "status": "failed",
+                        "risk": {"allowed": False, "reason": "execution_failed", "checks": []},
+                        "message": "execution_failed",
+                    },
+                )
+            except Exception:
+                pass
+            raise HTTPException(status_code=500, detail="execution_failed") from e
+
+        # Always log an audit event (safe JSON; broker_order may contain ids, not secrets).
+        try:
+            logger.info(
+                "exec_service.execute_result %s",
+                json.dumps(
+                    {
+                        "status": result.status,
+                        "risk": {
+                            "allowed": result.risk.allowed,
+                            "reason": result.risk.reason,
+                            "checks": result.risk.checks,
                         },
-                        trace_id=trace_id,
-                        agent_name=os.getenv("AGENT_NAME") or "execution-engine",
-                    )
+                        "broker_order_id": result.broker_order_id,
+                    }
                 ),
             )
         except Exception:
             pass
-        try:
-            idem.complete(
-                tenant_id=tenant_id_for_idem,
-                scope="execution.execute_intent",
-                key=idempotency_key,
-                status="failed",
-                outcome={"status": "failed", "risk": {"allowed": False, "reason": "execution_failed", "checks": []}, "message": "execution_failed"},
-            )
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail="execution_failed") from e
 
-    # Always log an audit event (safe JSON; broker_order may contain ids, not secrets).
-    try:
-        logger.info(
-            "exec_service.execute_result %s",
-            json.dumps(
-                {
-                    "status": result.status,
-                    "risk": {
-                        "allowed": result.risk.allowed,
-                        "reason": result.risk.reason,
-                        "checks": result.risk.checks,
-                    },
-                    "broker_order_id": result.broker_order_id,
-                }
-            ),
+        resp = ExecuteIntentResponse(
+            status=result.status,
+            risk={
+                "allowed": result.risk.allowed,
+                "reason": result.risk.reason,
+                "checks": result.risk.checks,
+            },
+            broker_order_id=result.broker_order_id,
+            broker_order=result.broker_order,
+            message=result.message,
         )
-    except Exception:
-        pass
 
-    resp = ExecuteIntentResponse(
-        status=result.status,
-        risk={
-            "allowed": result.risk.allowed,
-            "reason": result.risk.reason,
-            "checks": result.risk.checks,
-        },
-        broker_order_id=result.broker_order_id,
-        broker_order=result.broker_order,
-        message=result.message,
-    )
+        # Reject intents via HTTP 409 for easy callers.
+        if result.status == "rejected":
+            try:
+                idem.complete(
+                    tenant_id=tenant_id_for_idem,
+                    scope="execution.execute_intent",
+                    key=idempotency_key,
+                    outcome=resp.model_dump(),
+                    status="completed",
+                )
+            except Exception:
+                pass
+            raise HTTPException(status_code=409, detail=resp.model_dump())
 
-    # Reject intents via HTTP 409 for easy callers.
-    if result.status == "rejected":
         try:
             idem.complete(
                 tenant_id=tenant_id_for_idem,
@@ -726,18 +770,6 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
             )
         except Exception:
             pass
-        raise HTTPException(status_code=409, detail=resp.model_dump())
-
-    try:
-        idem.complete(
-            tenant_id=tenant_id_for_idem,
-            scope="execution.execute_intent",
-            key=idempotency_key,
-            outcome=resp.model_dump(),
-            status="completed",
-        )
-    except Exception:
-        pass
-    return resp
+        return resp
 
 
