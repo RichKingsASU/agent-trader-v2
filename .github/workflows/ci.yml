@@ -398,7 +398,7 @@ jobs:
         run: |
           set -euo pipefail
 
-      - name: Data plane smoke test (emulators: Pub/Sub + Firestore)
+      - name: "Data plane smoke test (emulators: Pub/Sub + Firestore)"
         shell: bash
         run: |
           set -euo pipefail
