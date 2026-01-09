@@ -304,7 +304,27 @@ def run() -> int:
         stop.set()
 
     for s in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(s, _handle_signal)
+        try:
+            prev = signal.getsignal(s)
+
+            def _chained(signum: int, frame: Any | None = None, _prev: Any = prev) -> None:
+                _handle_signal(signum, frame)
+                try:
+                    if _prev == signal.SIG_IGN:
+                        return
+                    if _prev == signal.SIG_DFL:
+                        raise SystemExit(128 + int(signum))
+                    if callable(_prev):
+                        _prev(signum, frame)
+                except SystemExit:
+                    raise
+                except Exception:
+                    return
+
+            signal.signal(s, _chained)
+        except Exception:
+            # Never fail startup due to signal limitations.
+            pass
 
     log_event(
         logger,
@@ -384,7 +404,7 @@ def run() -> int:
 
     try:
         while not stop.is_set():
-            time.sleep(0.25)
+            stop.wait(timeout=0.25)
         future.cancel()
         try:
             future.result(timeout=10)
@@ -436,6 +456,10 @@ def run() -> int:
         ts=_utcnow_iso(),
         status="ok",
     )
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
     return 0
 
 

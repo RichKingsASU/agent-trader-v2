@@ -14,8 +14,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from backend.common.a2a_sdk import RiskAgentClient
-
 logger = logging.getLogger(__name__)
 
 
@@ -185,7 +183,6 @@ async def make_decision(
     symbol: str,
     sentiment_threshold: float = 0.7,
     confidence_threshold: float = 0.8,
-    risk_agent_client: Optional[RiskAgentClient] = None
 ) -> Dict:
     """
     Make trading decision based on LLM sentiment analysis and risk check.
@@ -200,8 +197,7 @@ async def make_decision(
         symbol: Stock symbol to trade
         sentiment_threshold: Minimum absolute sentiment score (default 0.7)
         confidence_threshold: Minimum confidence level (default 0.8)
-        risk_agent_client: Optional client for the Risk Agent service.
-    
+
     Returns:
         Decision dict with action, reason, and signal_payload
     """
@@ -266,47 +262,8 @@ async def make_decision(
             f"Reasoning: {analysis.reasoning}"
         )
 
-    # Perform risk check if client is provided
-    if risk_agent_client:
-        try:
-            RISK_SERVICE_URL = os.getenv("RISK_SERVICE_URL", "http://localhost:8002")
-            risk_agent_client = RiskAgentClient(RISK_SERVICE_URL)
-
-            risk_check_payload = {
-                "tenant_id": "default_tenant",  # Placeholder, replace with actual tenant_id
-                "broker_account_id": "default_broker", # Placeholder
-                "strategy_id": "llm_sentiment_alpha",
-                "symbol": symbol,
-                "trade_type": action,
-                "requested_size": 1, # Placeholder
-                "sentiment_score": analysis.sentiment_score,
-                "confidence": analysis.confidence
-            }
-            risk_result = await risk_agent_client.check_trade(risk_check_payload)
-
-            if not risk_result.get("allowed"):
-                action = "flat"
-                reason = f"Trade blocked by Risk Agent: {risk_result.get('reason', 'Unknown reason')}"
-                logger.warning(f"Risk Agent blocked trade for {symbol}: {risk_result.get('reason')}")
-            else:
-                logger.info(f"Risk Agent approved trade for {symbol}.")
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error during risk check: {e}")
-            reason = f"Risk check failed (HTTP error): {e.response.status_code} - {e.response.text}"
-            action = "flat" # Fail safe
-        except httpx.RequestError as e:
-            logger.error(f"Network error during risk check: {e}")
-            reason = f"Risk check failed (network error): {e}"
-            action = "flat" # Fail safe
-        except Exception as e:
-            logger.exception(f"Unexpected error during risk check: {e}")
-            reason = f"Risk check failed (unexpected error): {e}"
-            action = "flat" # Fail safe
-    
     return {
         "action": action,
-        "size": 1,  # Default position size
         "reason": reason,
         "signal_payload": {
             "news_count": len(news_items),
@@ -318,7 +275,7 @@ async def make_decision(
             "target_symbols": analysis.target_symbols,
             "analyzed_at": datetime.now(timezone.utc).isoformat(),
             "model_id": "gemini-1.5-flash",
-            "risk_checked": True,
-            "risk_approved": action != "flat" # If action is not flat, it means risk approved
+            # Risk allocation happens centrally; strategies never self-authorize capital.
+            "risk_checked": False,
         }
     }

@@ -32,7 +32,6 @@ def make_decision(bars: List[Bar], flow_events: List[FlowEvent]) -> Dict:
 
     return {
         "action": action,
-        "size": 1,
         "reason": reason,
         "signal_payload": {
             "sma": sma,

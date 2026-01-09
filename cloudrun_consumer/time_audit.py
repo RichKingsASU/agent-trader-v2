@@ -13,6 +13,8 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+import logging
+
 _LOCK = threading.Lock()
 _COUNTS: dict[tuple[str, str, str], int] = {}
 
@@ -55,16 +57,28 @@ def _should_log(*, kind: str, source: str, field: str) -> bool:
 
 
 def _emit(event_type: str, *, severity: str = "WARNING", **fields: Any) -> None:
-    payload: dict[str, Any] = {
-        "timestamp": _utc_now_iso(),
-        "severity": str(severity).upper(),
-        "event_type": str(event_type),
-    }
-    payload.update(fields)
+    # Prefer the repo-wide structured logger when available.
     try:
-        print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+        from backend.common.logging import log_standard_event  # noqa: WPS433
+
+        log_standard_event(
+            logging.getLogger("cloudrun_consumer.time_audit"),
+            str(event_type),
+            severity=str(severity).upper(),
+            outcome="corrected",
+            **fields,
+        )
     except Exception:
-        return
+        payload: dict[str, Any] = {
+            "timestamp": _utc_now_iso(),
+            "severity": str(severity).upper(),
+            "event_type": str(event_type),
+        }
+        payload.update(fields)
+        try:
+            print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False), flush=True)
+        except Exception:
+            return
 
 
 def ensure_utc(

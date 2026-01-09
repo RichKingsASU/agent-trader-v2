@@ -7,6 +7,7 @@ _enforce_agent_mode_guard()
 import json
 import logging
 import os
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -33,6 +34,7 @@ from backend.execution.engine import (
     OrderIntent,
     RiskManager,
 )
+from backend.persistence.idempotency_store import FirestoreIdempotencyStore
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.agent_boot import configure_startup_logging
@@ -41,6 +43,10 @@ from backend.common.vertex_ai import init_vertex_ai_or_log
 from backend.execution.marketdata_health import check_market_ingest_heartbeat
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
+from backend.persistence.firebase_client import get_firestore_client
+from backend.persistence.firestore_retry import with_firestore_retry
+from backend.risk.daily_capital_snapshot import DailyCapitalSnapshotError, DailyCapitalSnapshotStore
+from backend.time.nyse_time import to_nyse
 from backend.safety.startup_validation import (
     validate_agent_mode_or_exit,
     validate_flag_exact_false_or_exit,
@@ -107,6 +113,44 @@ def _build_engine_from_env() -> tuple[ExecutionEngine, RiskManager]:
     return (ExecutionEngine(broker=broker, broker_name="alpaca", dry_run=dry_run, risk=risk), risk)
 
 
+def _resolve_idempotency_key(req: ExecuteIntentRequest) -> str:
+    """
+    Resolve a replay-stable idempotency key for execution.
+
+    Preference order:
+    - explicit request field: client_intent_id
+    - metadata-derived keys commonly present in event envelopes
+    - fallback: random (cannot be replay-safe)
+    """
+    candidates = [
+        req.client_intent_id,
+        (req.metadata or {}).get("idempotency_key"),
+        (req.metadata or {}).get("client_intent_id"),
+        (req.metadata or {}).get("intent_id"),
+        (req.metadata or {}).get("event_id"),
+        (req.metadata or {}).get("message_id"),
+        (req.metadata or {}).get("trace_id"),
+        (req.metadata or {}).get("run_id"),
+        (req.metadata or {}).get("correlation_id"),
+    ]
+    for c in candidates:
+        if c is None:
+            continue
+        s = str(c).strip()
+        if s:
+            return s
+
+    # Fallback is NOT replay-safe. Keep it explicit in logs.
+    import uuid
+
+    fallback = f"intent_{uuid.uuid4().hex}"
+    logger.warning(
+        "exec_service.missing_idempotency_key generating_fallback client_intent_id=%s",
+        fallback,
+    )
+    return fallback
+
+
 app = FastAPI(title="AgentTrader Execution Engine")
 install_fastapi_request_id_middleware(app, service="execution-engine")
 install_app_heartbeat(app, service_name="execution-engine")
@@ -146,15 +190,33 @@ def _startup() -> None:
     app.state.engine = engine
     app.state.risk = risk
     app.state.agent_sm = AgentStateMachine(agent_id=str(os.getenv("EXEC_AGENT_ID") or "execution_engine"))
+    app.state.shutting_down = False
     try:
         app.state.ops_logger.readiness(ready=True)  # type: ignore[attr-defined]
     except Exception:
         pass
 
 @app.on_event("shutdown")
-def _shutdown() -> None:
+async def _shutdown() -> None:
+    # Prevent new /execute calls and refuse starting new broker submissions.
+    try:
+        app.state.shutting_down = True
+    except Exception:
+        pass
+    try:
+        _request_shutdown(reason="fastapi_shutdown")
+    except Exception:
+        pass
     try:
         app.state.ops_logger.shutdown(phase="initiated")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    # Best-effort: wait briefly for any in-flight broker submissions to finish.
+    try:
+        timeout_s = float(os.getenv("EXEC_SHUTDOWN_DRAIN_TIMEOUT_S") or "8")
+        drained = await asyncio.to_thread(_wait_for_inflight_zero, timeout_s=timeout_s)
+        if not drained:
+            logger.warning("exec_service.shutdown_drain_timeout timeout_s=%s", timeout_s)
     except Exception:
         pass
 
@@ -229,10 +291,23 @@ def ops_metrics() -> Response:
 
 
 @app.get("/state")
-def state() -> dict[str, Any]:
+def state(request: Request) -> dict[str, Any]:
     """
     Inspect execution-agent state machine and gating inputs.
+
+    Security/contract rule:
+    - This endpoint exposes INTERNAL state intended only for on-call debugging.
+    - Other agents/services MUST NOT depend on it.
+    - It is disabled unless `EXEC_AGENT_ADMIN_KEY` is explicitly configured.
     """
+    required = str(os.getenv("EXEC_AGENT_ADMIN_KEY") or "").strip()
+    if not required:
+        # Hide the endpoint unless explicitly enabled.
+        raise HTTPException(status_code=404, detail="not_found")
+    provided = str(request.headers.get("X-Exec-Agent-Key") or "").strip()
+    if provided != required:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
     sm: AgentStateMachine = app.state.agent_sm
     risk: RiskManager = app.state.risk
 
@@ -300,7 +375,10 @@ def recover(request: Request) -> dict[str, Any]:
 
 
 @app.post("/execute", response_model=ExecuteIntentResponse)
-def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
+def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentResponse:
+    if bool(getattr(app.state, "shutting_down", False)):
+        # Graceful shutdown contract: refuse new executions (prevents partial submissions).
+        raise HTTPException(status_code=503, detail="shutting_down")
     engine: ExecutionEngine = app.state.engine
     risk: RiskManager = app.state.risk
     sm: AgentStateMachine = app.state.agent_sm
@@ -308,6 +386,7 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
     trace_id = str(req.metadata.get("trace_id") or req.client_intent_id or "").strip() or None
     if trace_id:
         set_replay_context(trace_id=trace_id)
+    idempotency_key = _resolve_idempotency_key(req)
     intent = OrderIntent(
         strategy_id=req.strategy_id,
         broker_account_id=req.broker_account_id,
@@ -317,9 +396,62 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
         order_type=req.order_type,
         time_in_force=req.time_in_force,
         limit_price=req.limit_price,
-        client_intent_id=req.client_intent_id or None,
+        client_intent_id=idempotency_key,
         metadata=req.metadata,
     )
+
+    # --- Daily capital snapshot guard (no trade before/after window; no date drift) ---
+    try:
+        tenant_for_snapshot = str(
+            req.metadata.get("tenant_id")
+            or os.getenv("TENANT_ID")
+            or os.getenv("EXEC_TENANT_ID")
+            or ""
+        ).strip()
+        uid_for_snapshot = str(req.metadata.get("uid") or req.metadata.get("user_id") or "").strip()
+        if not tenant_for_snapshot or not uid_for_snapshot:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_tenant_or_uid",
+                    "message": "Execution requires metadata.tenant_id and metadata.uid (or metadata.user_id) to enforce DailyCapitalSnapshot.",
+                },
+            )
+        db = get_firestore_client()
+        acct_doc = with_firestore_retry(
+            lambda: db.collection("users")
+            .document(uid_for_snapshot)
+            .collection("alpacaAccounts")
+            .document("snapshot")
+            .get()
+        )
+        if not acct_doc.exists:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "missing_account_snapshot",
+                    "message": f"Missing warm-cache account snapshot at users/{uid_for_snapshot}/alpacaAccounts/snapshot",
+                },
+            )
+        acct = acct_doc.to_dict() or {}
+        now = datetime.now(timezone.utc)
+        trading_date_ny = to_nyse(now).date()
+        store = DailyCapitalSnapshotStore(db=db)
+        snap = store.get_or_create_once(
+            tenant_id=tenant_for_snapshot,
+            uid=uid_for_snapshot,
+            trading_date_ny=trading_date_ny,
+            account_snapshot=acct,
+            now_utc=now,
+            source="execution_service.execute",
+        )
+        snap.assert_date_match(trading_date_ny=trading_date_ny)
+        snap.assert_trade_window(now_utc=now)
+    except DailyCapitalSnapshotError as e:
+        msg = str(e)
+        if "fingerprint mismatch" in msg or "Trading day mismatch" in msg:
+            raise HTTPException(status_code=500, detail={"error": "daily_capital_snapshot_invalid", "message": msg})
+        raise HTTPException(status_code=409, detail={"error": "daily_capital_snapshot_blocked", "message": msg})
 
     # --- Update state machine inputs for this request ---
     agent_mode = read_agent_mode()
@@ -363,6 +495,63 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
     # Enforce the "refuse live trading unless READY + LIVE + kill-switch off" policy.
     # Note: dry-run execution (no broker routing) is allowed even when not LIVE.
     if not engine.dry_run:
+        # --- Per-strategy circuit breaker: consecutive losses (operator-configured, default disabled) ---
+        max_consec = _int_env("EXEC_CB_MAX_CONSECUTIVE_LOSSES", 0)
+        if max_consec > 0 and tenant_id:
+            uid = str(req.metadata.get("uid") or os.getenv("EXEC_UID") or "").strip() or None
+            if uid:
+                try:
+                    from backend.persistence.firebase_client import get_firestore_client  # noqa: WPS433
+
+                    db = get_firestore_client()
+                    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                    q = (
+                        db.collection("tenants")
+                        .document(str(tenant_id))
+                        .collection("ledger_trades")
+                        .where("uid", "==", str(uid))
+                        .where("strategy_id", "==", str(req.strategy_id))
+                        .where("ts", ">=", today_start)
+                    )
+                    trades: list[dict[str, Any]] = []
+                    for doc in q.stream():
+                        d = doc.to_dict() or {}
+                        d["trade_id"] = doc.id
+                        trades.append(d)
+                    cb = check_consecutive_losses_from_ledger_trades(trades=trades, max_consecutive_losses=max_consec)
+                    if cb.triggered:
+                        logger.warning(
+                            "exec_service.circuit_breaker_triggered %s",
+                            json.dumps(
+                                {
+                                    "breaker_type": "consecutive_losses",
+                                    "reason_code": cb.reason_code,
+                                    "strategy_id": req.strategy_id,
+                                    "tenant_id": tenant_id,
+                                    "uid": uid,
+                                    "details": cb.details,
+                                }
+                            ),
+                        )
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "refused": True,
+                                "reason": "circuit_breaker_consecutive_losses",
+                                "breaker": {
+                                    "type": "consecutive_losses",
+                                    "reason_code": cb.reason_code,
+                                    "message": cb.message,
+                                    "details": cb.details,
+                                },
+                            },
+                        )
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    # Safety posture here is best-effort: do not crash request path due to breaker telemetry.
+                    logger.exception("exec_service.circuit_breaker_eval_failed: %s", e)
+
         allowed, reason = trading_allowed(state=sm.state, agent_mode=agent_mode, kill_switch_enabled=kill)
         if not allowed:
             logger.warning(
@@ -381,10 +570,52 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
             )
             raise HTTPException(status_code=409, detail={"refused": True, "reason": reason, "state": sm.state.value})
 
+    # ---- Idempotency guard (prevents duplicate broker orders on replay) ----
+    tenant_id_for_idem = (
+        str(req.metadata.get("tenant_id") or os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip()
+        if isinstance(req.metadata, dict)
+        else str(os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip()
+    ) or "default"
+    idem = FirestoreIdempotencyStore(project_id=os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or None)
+    acquired, record = idem.begin(
+        tenant_id=tenant_id_for_idem,
+        scope="execution.execute_intent",
+        key=idempotency_key,
+        payload={
+            "strategy_id": req.strategy_id,
+            "broker_account_id": req.broker_account_id,
+            "symbol": req.symbol,
+            "side": req.side,
+            "qty": req.qty,
+        },
+    )
+    if not acquired:
+        if record.outcome:
+            # Replay-safe: return the original outcome without performing side effects.
+            return ExecuteIntentResponse(**record.outcome)
+        # Conservatively refuse to execute again: prevents duplicate orders even if a prior attempt crashed.
+        return ExecuteIntentResponse(
+            status="duplicate_in_progress",
+            risk={"allowed": False, "reason": "duplicate_in_progress", "checks": []},
+            broker_order_id=None,
+            broker_order=None,
+            message="duplicate_in_progress",
+        )
+
     try:
         result: ExecutionResult = engine.execute_intent(intent=intent)
     except AgentModeError as e:
         logger.warning("exec_service.trading_refused: %s", e)
+        try:
+            idem.complete(
+                tenant_id=tenant_id_for_idem,
+                scope="execution.execute_intent",
+                key=idempotency_key,
+                status="failed",
+                outcome={"status": "failed", "risk": {"allowed": False, "reason": "trading_refused", "checks": []}, "message": str(e)},
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=409, detail={"error": "trading_refused", "reason": str(e)}) from e
     except Exception as e:
         logger.exception("exec_service.execute_failed: %s", e)
@@ -407,6 +638,16 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
                         agent_name=os.getenv("AGENT_NAME") or "execution-engine",
                     )
                 ),
+            )
+        except Exception:
+            pass
+        try:
+            idem.complete(
+                tenant_id=tenant_id_for_idem,
+                scope="execution.execute_intent",
+                key=idempotency_key,
+                status="failed",
+                outcome={"status": "failed", "risk": {"allowed": False, "reason": "execution_failed", "checks": []}, "message": "execution_failed"},
             )
         except Exception:
             pass
@@ -445,8 +686,28 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
 
     # Reject intents via HTTP 409 for easy callers.
     if result.status == "rejected":
+        try:
+            idem.complete(
+                tenant_id=tenant_id_for_idem,
+                scope="execution.execute_intent",
+                key=idempotency_key,
+                outcome=resp.model_dump(),
+                status="completed",
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=409, detail=resp.model_dump())
 
+    try:
+        idem.complete(
+            tenant_id=tenant_id_for_idem,
+            scope="execution.execute_intent",
+            key=idempotency_key,
+            outcome=resp.model_dump(),
+            status="completed",
+        )
+    except Exception:
+        pass
     return resp
 
 

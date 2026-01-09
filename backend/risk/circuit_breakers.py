@@ -88,6 +88,8 @@ class CircuitBreakerManager:
         strategy_id: str,
         trades: List[LedgerTrade],
         starting_equity: float,
+        session_start_utc: Optional[datetime] = None,
+        session_end_utc: Optional[datetime] = None,
     ) -> Tuple[bool, Optional[CircuitBreakerEvent]]:
         """
         Check if daily PnL has dropped below -2% threshold.
@@ -108,11 +110,14 @@ class CircuitBreakerManager:
             return False, None
         
         try:
-            # Get current day's trades only
-            today_start = datetime.now(timezone.utc).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
-            today_trades = [t for t in trades if t.ts >= today_start]
+            # Get current session's trades only.
+            # Back-compat fallback: UTC midnight.
+            start = session_start_utc or datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            end = session_end_utc
+            if end is None:
+                today_trades = [t for t in trades if t.ts >= start]
+            else:
+                today_trades = [t for t in trades if t.ts >= start and t.ts < end]
             
             if not today_trades:
                 return False, None

@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Tuple
 
-from handlers.system_events import handle_system_event
-from handlers.market_ticks import handle_market_tick
-from handlers.market_bars_1m import handle_market_bar_1m
-from handlers.trade_signals import handle_trade_signal
-from handlers.ingest_pipelines import handle_ingest_pipeline
+from cloudrun_consumer.handlers.system_events import handle_system_event
+from cloudrun_consumer.handlers.market_ticks import handle_market_tick
+from cloudrun_consumer.handlers.market_bars_1m import handle_market_bar_1m
+from cloudrun_consumer.handlers.trade_signals import handle_trade_signal
+from cloudrun_consumer.handlers.ingest_pipelines import handle_ingest_pipeline
 
 
 @dataclass(frozen=True)

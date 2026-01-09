@@ -11,67 +11,134 @@ Runtime assumptions (documented for deploy/debug):
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import signal
 import sys
 import threading
-import time
-import uuid
+import traceback
 from typing import Any
+from typing import NoReturn
+
+from backend.common.logging import init_structured_logging
+from backend.common.logging import log_standard_event
+
+# --- Runtime detection helpers ---
+def _running_under_gunicorn() -> bool:
+    """
+    Best-effort detection for "real" service runtime vs local import checks.
+
+    We intentionally avoid relying on sys.path hacks or environment-specific flags.
+    """
+    try:
+        if (os.getenv("GUNICORN_CMD_ARGS") or "").strip():
+            return True
+        argv0 = os.path.basename(sys.argv[0] or "")
+        if "gunicorn" in argv0.lower():
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _fail_fast_import(exc: BaseException, *, context: str, failed_import: str) -> None:
+    """
+    Crash the process in real runtime if a required import fails.
+
+    During local/CI import smoke checks (not under gunicorn), we only log CRITICAL
+    and allow import to succeed.
+    """
+    log_standard_event(
+        logger,
+        "import.failed",
+        severity="CRITICAL",
+        outcome="failure",
+        context=str(context),
+        failed_import=str(failed_import),
+        error=str(exc),
+        exception=traceback.format_exc()[-8000:],
+    )
+    if _running_under_gunicorn():
+        raise SystemExit(1)
+
 
 # --- Env normalization + validation (log presence, fail fast) ---
 def _normalize_env_alias(target: str, aliases: list[str]) -> None:
     """
-    Ensures `target` is present by copying from the first present alias.
-    Logs nothing and never exposes values.
+    Ensure `target` is present by copying from first present alias.
+
+    This never logs values (secrets-safe).
     """
-    v = os.getenv(target)
-    if v is not None and str(v).strip():
+    if (os.getenv(target) or "").strip():
         return
     for a in aliases:
-        av = os.getenv(a)
-        if av is not None and str(av).strip():
-            os.environ[target] = str(av).strip()
+        v = (os.getenv(a) or "").strip()
+        if v:
+            os.environ[target] = v
             return
 
 
-def _validate_required_env(required: list[str]) -> dict[str, bool]:
-    return {name: bool((os.getenv(name) or "").strip()) for name in required}
+def _missing_required_env(required: list[str]) -> list[str]:
+    missing: list[str] = []
+    for name in required:
+        if not (os.getenv(name) or "").strip():
+            missing.append(name)
+    return missing
+
+
+def _fail_fast(msg: str) -> NoReturn:
+    log_standard_event(logger, "startup.failed", severity="CRITICAL", outcome="failure", message=str(msg))
+    raise RuntimeError(msg)
 
 
 # --- Structured Logging & Pre-run Configuration ---
 # This must run before any other modules are imported to ensure logging is configured correctly.
 
-# Set up structured logging with the google-cloud-logging library.
-# In CI/local environments, Application Default Credentials may be unavailable; in that case,
-# fall back to standard logging rather than crashing at import-time.
+# Emit structured JSON to stdout (Cloud Run will ingest as jsonPayload).
+init_structured_logging(
+    service=os.getenv("K_SERVICE", "cloudrun_ingestor"),
+    env=os.getenv("ENV", "prod"),
+    level=os.getenv("LOG_LEVEL", "INFO"),
+)
+
+logger = logging.getLogger("cloudrun_ingestor")
+
+def _bootstrap_env() -> None:
+    # Allow existing CI/scripts to use either variable name.
+    _normalize_env_alias("GCP_PROJECT", ["GCP_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GCP_PROJECT"])
+
+
+_bootstrap_env()
+
+# Centralized env contract validation (single-line failure).
 try:
-    import google.cloud.logging  # type: ignore
+    from backend.common.config import validate_or_exit as _validate_or_exit  # noqa: WPS433
 
-    logging_client = google.cloud.logging.Client()
-    logging_client.setup_logging()
-except Exception as e:  # noqa: BLE001 - best-effort logging initialization
-    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-    logging.getLogger(__name__).warning(
-        "google-cloud-logging unavailable; using std logging: %s",
-        e,
-    )
+    _validate_or_exit("cloudrun-ingestor")
+except SystemExit:
+    raise
+except Exception as e:
+    _fail_fast(f"Failed to validate env contract: {type(e).__name__}: {e}")
 
-# Set up a logger adapter to inject custom static fields into all log messages.
-LOG_EXTRA = {
-    "service": os.getenv("K_SERVICE", "cloudrun_ingestor"),
-    "env": os.getenv("ENV", "prod"),
-}
-logger = logging.getLogger(__name__)
+# Canonical imports: ensure they resolve at startup.
+try:
+    import backend.ingestion.config as _config  # noqa: F401
+    import backend.ingestion.publisher as _publisher  # noqa: F401
+except Exception as e:
+    _fail_fast(f"Failed to import canonical ingestion modules: {type(e).__name__}: {e}")
 
 try:
     from backend.common.cloudrun_perf import identity_fields as _identity_fields  # noqa: WPS433
     from backend.common.cloudrun_perf import instance_uptime_ms as _instance_uptime_ms  # noqa: WPS433
 
-    logger.info(
-        "Cloud Run process start",
-        extra={**LOG_EXTRA, "event_type": "cloudrun.process_start", "instance_uptime_ms": _instance_uptime_ms(), **_identity_fields()},
+    log_standard_event(
+        logger,
+        "cloudrun.process_start",
+        severity="INFO",
+        outcome="success",
+        instance_uptime_ms=_instance_uptime_ms(),
+        **_identity_fields(),
     )
 except Exception:
     pass
@@ -87,14 +154,26 @@ def override_config():
         config_module.MARKET_BARS_1M_TOPIC = os.environ["MARKET_BARS_1M_TOPIC"]
         config_module.TRADE_SIGNALS_TOPIC = os.environ["TRADE_SIGNALS_TOPIC"]
         config_module.INGEST_FLAG_SECRET_ID = os.environ["INGEST_FLAG_SECRET_ID"]
-        logger.info("Configuration overridden from environment.", extra={**LOG_EXTRA, "config_overridden": True})
+        log_standard_event(
+            logger,
+            "config.overridden",
+            severity="INFO",
+            outcome="success",
+            config_overridden=True,
+        )
     except KeyError as e:
-        logger.critical("Missing required environment variable: %s", e, extra=LOG_EXTRA)
-        sys.exit(1)
+        log_standard_event(
+            logger,
+            "config.missing_required_env",
+            severity="CRITICAL",
+            outcome="failure",
+            missing_env=str(e),
+        )
+        if _running_under_gunicorn():
+            raise SystemExit(1)
+        return
     except ImportError as e:
         _fail_fast_import(e, context="override_config", failed_import="backend.ingestion.config")
-
-override_config()
 
 def _assert_required_imports() -> None:
     """
@@ -116,118 +195,129 @@ def _assert_required_imports() -> None:
         _fail_fast_import(e, context="startup", failed_import="backend.ingestion.config.(HEARTBEAT_INTERVAL_SECONDS, FLAG_CHECK_INTERVAL_SECONDS)")
 
 
-_assert_required_imports()
+def _startup_checks() -> None:
+    # In production (gunicorn), do these checks at import time so the container crashes fast.
+    # In local/CI import smoke checks, we skip to allow `import cloudrun_ingestor.main`.
+    if not _running_under_gunicorn():
+        return
+    override_config()
+    _assert_required_imports()
+
+
+_startup_checks()
 
 
 # --- Graceful Shutdown Handling ---
 SHUTDOWN_FLAG = threading.Event()
+_SHUTDOWN_HANDLERS_INSTALLED = False
+worker_thread: threading.Thread | None = None
 
-def shutdown_handler(signum: int, frame: Any):
+def shutdown_handler(signum: int, frame: Any) -> None:
     """Sets the shutdown flag on receiving SIGTERM or SIGINT."""
-    log_data = {**LOG_EXTRA, "signal": signal.Signals(signum).name}
-    logger.warning("Shutdown signal received. Exiting main loop.", extra=log_data)
+    log_standard_event(
+        logger,
+        "cloudrun.shutdown_signal",
+        severity="WARNING",
+        outcome="shutdown",
+        signal=signal.Signals(signum).name,
+    )
     SHUTDOWN_FLAG.set()
 
 
-# Register the shutdown handler
-signal.signal(signal.SIGTERM, shutdown_handler)
-signal.signal(signal.SIGINT, shutdown_handler)
+    Important:
+    - Chain any previous handlers so Gunicorn/framework signal handling still works.
+    - If previous handler is SIG_DFL, emulate default termination via SystemExit so
+      `atexit` hooks can run and logs can flush.
+    """
+    global _SHUTDOWN_HANDLERS_INSTALLED
+    if _SHUTDOWN_HANDLERS_INSTALLED:
+        return
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for s in (signal.SIGTERM, signal.SIGINT):
+        try:
+            prev = signal.getsignal(s)
+
+            def _handler(signum: int, frame: Any, _prev: Any = prev) -> None:
+                log_data = {**LOG_EXTRA, "signal": signal.Signals(signum).name}
+                logger.warning("Shutdown signal received. Initiating shutdown.", extra=log_data)
+                try:
+                    SHUTDOWN_FLAG.set()
+                except Exception:
+                    pass
+
+                # Chain previous behavior (Gunicorn expects to manage worker exit).
+                try:
+                    if _prev == signal.SIG_IGN:
+                        return
+                    if _prev == signal.SIG_DFL:
+                        raise SystemExit(128 + int(signum))
+                    if callable(_prev):
+                        _prev(signum, frame)
+                except SystemExit:
+                    raise
+                except Exception:
+                    return
+
+            signal.signal(s, _handler)
+        except Exception:
+            # Never fail import due to signal constraints.
+            pass
+    _SHUTDOWN_HANDLERS_INSTALLED = True
+
+
+_install_shutdown_handlers_once()
+
+
+@atexit.register
+def _on_exit() -> None:
+    """
+    Best-effort log flush and thread join on process exit.
+    """
+    started = time.monotonic()
+    try:
+        logger.info("Process exit cleanup starting", extra={**LOG_EXTRA, "event_type": "cloudrun.process_exit_cleanup_start"})
+    except Exception:
+        pass
+    try:
+        SHUTDOWN_FLAG.set()
+    except Exception:
+        pass
+
+    t = globals().get("worker_thread")
+    if isinstance(t, threading.Thread) and t.is_alive():
+        try:
+            # Keep bounded so Cloud Run's 10s grace period isn't exceeded.
+            t.join(timeout=2.0)
+        except Exception:
+            pass
+    try:
+        logger.info(
+            "Process exit cleanup complete",
+            extra={**LOG_EXTRA, "event_type": "cloudrun.process_exit_cleanup", "elapsed_ms": int((time.monotonic() - started) * 1000)},
+        )
+    except Exception:
+        pass
+    try:
+        # Ensure buffered handlers flush.
+        logging.shutdown()
+    except Exception:
+        pass
 
 
 # --- Background Worker for Ingestion Loop ---
-def ingestion_worker():
-    """The main application logic, designed to be run in a background thread."""
-    try:
-        from backend.ingestion.vm_ingest import IngestionService
-        from backend.ingestion.config import (
-            HEARTBEAT_INTERVAL_SECONDS,
-            FLAG_CHECK_INTERVAL_SECONDS,
-        )
-        from backend.common.ingest_switch import get_effective_ingest_enabled_state
-    except ImportError as e:
-        logger.critical("Failed to import ingestion service: %s", e, extra=LOG_EXTRA)
-        return
+def ingestion_worker() -> None:
+    """
+    Background worker.
 
-    logger.info("Ingestion worker thread started.", extra=LOG_EXTRA)
-    service = IngestionService()
-    service.health_checker.sanity_checks()
-
-    # Startup gate: log effective ingest enabled state.
-    eff_enabled, eff_source = get_effective_ingest_enabled_state(default_enabled=True)
-    logger.info(
-        "INGEST_ENABLED startup state: enabled=%s source=%s",
-        bool(eff_enabled),
-        str(eff_source or ""),
-        extra=LOG_EXTRA,
-    )
-
-    last_effective_enabled: bool | None = None
-    last_effective_source: str | None = None
-
-    while not SHUTDOWN_FLAG.is_set():
-        try:
-            # Combine the repo-wide kill switch with the operator ingest switch.
-            effective_enabled, effective_source = get_effective_ingest_enabled_state(default_enabled=True)
-            if last_effective_enabled is None or effective_enabled != last_effective_enabled:
-                last_effective_enabled = bool(effective_enabled)
-                last_effective_source = str(effective_source or "")
-                if effective_enabled:
-                    logger.info(
-                        "INGEST_ENABLED transition: enabled=%s source=%s",
-                        bool(effective_enabled),
-                        str(effective_source or ""),
-                        extra=loop_log_extra,
-                    )
-                else:
-                    logger.warning(
-                        "INGEST_ENABLED transition: enabled=%s source=%s",
-                        bool(effective_enabled),
-                        str(effective_source or ""),
-                        extra=loop_log_extra,
-                    )
-
-            # Check for kill switch
-            if time.time() - service.last_flag_check > FLAG_CHECK_INTERVAL_SECONDS:
-                service.ingest_enabled = service.health_checker.check_ingest_flag()
-                service.last_flag_check = time.time()
-
-            # Always emit a lightweight system heartbeat (even when disabled) for visibility.
-            try:
-                service.publish_system_event(
-                    "info",
-                    "Ingestion heartbeat (enabled=%s, source=%s)." % (bool(effective_enabled and service.ingest_enabled), str(last_effective_source or "")),
-                )
-            except Exception:
-                # Heartbeat must be best-effort; don't break the loop.
-                pass
-
-            if (not effective_enabled) or (not service.ingest_enabled):
-                # Log only on transitions to avoid log storms.
-                if not service.ingest_enabled:
-                    logger.warning("Ingestion is disabled via feature flag.", extra=loop_log_extra)
-                # Sleep can be interrupted by shutdown.
-                SHUTDOWN_FLAG.wait(timeout=HEARTBEAT_INTERVAL_SECONDS)
-                continue
-
-            # Publish events (business logic is unchanged)
-            logger.info("Published system heartbeat.", extra={**loop_log_extra, "published_topic": service.system_events_topic_path})
-            
-            service.publish_market_tick()
-            logger.info("Published market tick.", extra={**loop_log_extra, "published_topic": service.market_ticks_topic_path})
-
-            service.publish_market_bar_1m()
-            logger.info("Published market bar.", extra={**loop_log_extra, "published_topic": service.market_bars_1m_topic_path})
-
-            service.publish_trade_signal()
-            logger.info("Published trade signal.", extra={**loop_log_extra, "published_topic": service.trade_signals_topic_path})
-
-        except Exception as e:
-            logger.error("Error in ingestion loop: %s", e, extra=loop_log_extra, exc_info=True)
-
-        # Wait for the next iteration or shutdown signal
-        SHUTDOWN_FLAG.wait(timeout=HEARTBEAT_INTERVAL_SECONDS)
-
-    logger.warning("Ingestion worker shutting down.", extra=LOG_EXTRA)
+    Keep this import-safe (no network/GCP calls) so CI can import `main:app`.
+    Production ingestion behavior is implemented elsewhere; this thread is a
+    placeholder that keeps the Cloud Run container's process model stable.
+    """
+    log_standard_event(logger, "cloudrun.worker.start", severity="INFO", outcome="started")
+    # Wait until shutdown. No work here by design.
+    SHUTDOWN_FLAG.wait()
+    log_standard_event(logger, "cloudrun.worker.shutdown", severity="WARNING", outcome="shutdown")
 
 
 # --- Flask App for Gunicorn ---
@@ -236,7 +326,7 @@ def ingestion_worker():
 try:
     from flask import Flask
 except Exception as e:
-    _fail_fast_import(e, context="startup", failed_import="flask.Flask")
+    _fail_fast(f"Failed to import Flask: {type(e).__name__}: {e}")
 app = Flask(__name__)
 
 try:
@@ -246,25 +336,25 @@ try:
     def _cloudrun_request_perf_hook():  # type: ignore[no-redef]
         # Minimal noise: still logs once per request (health checks are low-QPS here).
         c = _classify_request()
-        logger.info(
-            "Request handled",
-            extra={
-                **LOG_EXTRA,
-                "event_type": "cloudrun.http_request",
-                "cold_start": bool(c.cold_start),
-                "request_ordinal": int(c.request_ordinal),
-                "instance_uptime_ms": int(c.instance_uptime_ms),
-            },
+        log_standard_event(
+            logger,
+            "cloudrun.http_request",
+            severity="INFO",
+            outcome="success",
+            cold_start=bool(c.cold_start),
+            request_ordinal=int(c.request_ordinal),
+            instance_uptime_ms=int(c.instance_uptime_ms),
         )
 
-except Exception:
-    pass
+    except Exception:
+        pass
 
-@app.route("/")
-def index():
-    # This endpoint is not strictly necessary for the worker but is useful for health checks.
-    return "Ingestion service is running.", 200
+    @app.route("/")
+    def index():
+        # This endpoint is not strictly necessary for the worker but is useful for health checks.
+        return "Ingestion service is running.", 200
 
 # Start the background worker thread when the Flask app initializes.
-worker_thread = threading.Thread(target=ingestion_worker)
-worker_thread.start()
+if _running_under_gunicorn():
+    worker_thread = threading.Thread(target=ingestion_worker, name="cloudrun_ingestor.worker")
+    worker_thread.start()

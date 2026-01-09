@@ -1,7 +1,16 @@
 """
 Runtime safety guard for agent mode.
 
-Goal: hard-prevent any runtime from starting with AGENT_MODE=EXECUTE.
+Goal: hard-prevent unsafe runtime modes from starting.
+
+This module enforces two independent, non-bypassable guardrails:
+
+1) Agent authority guard:
+   - Hard-prevent any runtime from starting with AGENT_MODE=EXECUTE.
+
+2) Paper-trading hard lock (zero-regression safety):
+   - Hard-require TRADING_MODE=paper at startup; otherwise exit with a clear error.
+   - Live trading is code-disabled by default and requires an explicit code change.
 """
 
 from __future__ import annotations
@@ -12,6 +21,17 @@ import sys
 
 _ALLOWED = {"OFF", "OBSERVE", "EVAL", "PAPER"}
 _logged_startup = False
+
+# --- Paper-trading hard lock ---
+#
+# IMPORTANT:
+# - This repository is intentionally paper-only by default.
+# - Enabling live trading must require a code change + explicit runtime confirmation.
+#
+# If you intentionally want to add live trading later:
+# - Flip this constant to True in a reviewed change.
+# - Add a second reviewed change to remove/relax other execution-prevention guards.
+_ALLOW_LIVE_TRADING_CODE_CHANGE = False
 
 
 def enforce_agent_mode_guard() -> str:
@@ -72,6 +92,46 @@ def enforce_agent_mode_guard() -> str:
     if mode not in _ALLOWED:
         logger.error("AGENT_MODE=%s not allowed (allowed=%s); refusing to start", mode, sorted(_ALLOWED))
         raise SystemExit(1)
+
+    # --- Paper trading hard lock (non-bypassable by env/config alone) ---
+    raw_tm = os.getenv("TRADING_MODE")
+    trading_mode = str(raw_tm).strip().lower() if raw_tm is not None else ""
+    if raw_tm is None or trading_mode == "":
+        # Print a stable, explicit message (in addition to logging) for container logs / CI.
+        msg = (
+            "FATAL: TRADING_MODE is missing/empty. This repo is paper-trading locked. "
+            "Set TRADING_MODE=paper to start."
+        )
+        try:
+            sys.stderr.write(msg + "\n")
+            try:
+                sys.stderr.flush()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        logger.critical("%s", msg)
+        raise SystemExit(13)
+
+    if trading_mode != "paper":
+        if not _ALLOW_LIVE_TRADING_CODE_CHANGE:
+            msg = (
+                f"FATAL: TRADING_MODE must be 'paper' (paper-trading hard lock). "
+                f"Got TRADING_MODE={raw_tm!r}. "
+                "Live trading is code-disabled; enabling it requires changing "
+                "`backend/common/agent_mode_guard.py` (_ALLOW_LIVE_TRADING_CODE_CHANGE) "
+                "and adding an explicit execution confirmation mechanism."
+            )
+            try:
+                sys.stderr.write(msg + "\n")
+                try:
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            logger.critical("%s", msg)
+            raise SystemExit(13)
 
     return mode
 

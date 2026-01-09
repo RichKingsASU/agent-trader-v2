@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional, Tuple
 
-from idempotency import ensure_doc_once
+from cloudrun_consumer.idempotency import ensure_doc_once
 
 
 APPLIED_EVENTS_COLLECTION = "ops_applied_events"

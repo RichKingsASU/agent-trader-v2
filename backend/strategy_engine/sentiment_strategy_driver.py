@@ -35,21 +35,24 @@ from backend.strategy_engine.news_fetcher import (
     filter_news_by_relevance
 )
 from backend.strategy_engine.strategies.llm_sentiment_alpha import make_decision
-from backend.common.a2a_sdk import RiskAgentClient
+from backend.risk_allocator import RiskAllocator
+from backend.trading.agent_intent.emitter import emit_agent_intent
+from backend.trading.agent_intent.models import (
+    AgentIntent,
+    AgentIntentConstraints,
+    AgentIntentRationale,
+    IntentAssetType,
+    IntentKind,
+    IntentSide,
+)
 from backend.strategy_engine.risk import (
     get_or_create_strategy_definition,
     log_decision,
 )
 from backend.strategy_engine.signal_writer import write_trading_signal
 from backend.common.vertex_ai import init_vertex_ai_or_log
+from backend.trading.decision_flow import intent_to_order_proposal
 from backend.trading.proposals.emitter import emit_proposal
-from backend.trading.proposals.models import (
-    OrderProposal,
-    ProposalAssetType,
-    ProposalConstraints,
-    ProposalRationale,
-    ProposalSide,
-)
 
 # Configure logging
 logging.basicConfig(
@@ -97,10 +100,7 @@ async def run_sentiment_strategy(
         logger.error("Failed to initialize Vertex AI. Strategy cannot proceed.")
         return
     
-    # Initialize Risk Agent Client
-    RISK_SERVICE_URL = os.getenv("RISK_SERVICE_URL", "http://localhost:8002")
-    risk_agent_client = RiskAgentClient(RISK_SERVICE_URL)
-    logger.info(f"Initialized RiskAgentClient for URL: {RISK_SERVICE_URL}")
+    allocator = RiskAllocator()
     
     # Get or create strategy definition
     strategy_id = await get_or_create_strategy_definition(strategy_name)
@@ -159,7 +159,6 @@ async def run_sentiment_strategy(
                 symbol=symbol,
                 sentiment_threshold=sentiment_threshold,
                 confidence_threshold=confidence_threshold,
-                risk_agent_client=risk_agent_client
             )
             
             action = decision.get("action")
@@ -187,6 +186,7 @@ async def run_sentiment_strategy(
                 action=action,
                 reason=reason,
                 signal_payload=signal_payload,
+                correlation_id=correlation_id,
                 did_trade=False  # Will update if trade is executed
             )
             
@@ -208,17 +208,15 @@ async def run_sentiment_strategy(
                 )
                 continue
             
-            # Calculate notional (simple implementation - could be enhanced)
-            # For now, assume a fixed position size
-            notional = 1000.0  # $1000 per position
-            
-            # The risk check is now handled within make_decision
-            # We only proceed if action is not 'flat' (i.e., approved by risk)
-            
-            # Emit a non-executing, auditable proposal at the "would trade" decision point.
-            side = ProposalSide.BUY if str(action).lower() == "buy" else ProposalSide.SELL
             created_at_utc = datetime.now(timezone.utc)
-            proposal = OrderProposal(
+            side = (
+                IntentSide.BUY
+                if str(action).lower() == "buy"
+                else IntentSide.SELL
+                if str(action).lower() == "sell"
+                else IntentSide.FLAT
+            )
+            intent = AgentIntent(
                 created_at_utc=created_at_utc,
                 repo_id=repo_id,
                 agent_name="strategy-engine",
@@ -226,21 +224,31 @@ async def run_sentiment_strategy(
                 strategy_version=os.getenv("STRATEGY_VERSION") or None,
                 correlation_id=correlation_id,
                 symbol=symbol,
-                asset_type=ProposalAssetType.EQUITY,
+                asset_type=IntentAssetType.EQUITY,
                 option=None,
+                kind=IntentKind.DIRECTIONAL,
                 side=side,
-                quantity=1,
-                limit_price=None,
-                rationale=ProposalRationale(
+                confidence=float(signal_payload.get("confidence")) if signal_payload.get("confidence") is not None else None,
+                rationale=AgentIntentRationale(
                     short_reason=str(reason or "").strip() or "Strategy decision",
                     indicators=signal_payload or {},
                 ),
-                constraints=ProposalConstraints(
+                constraints=AgentIntentConstraints(
                     valid_until_utc=(created_at_utc + timedelta(minutes=max(1, proposal_ttl_minutes))),
                     requires_human_approval=True,
+                    order_type="market",
+                    time_in_force="day",
+                    limit_price=None,
+                    delta_to_hedge=None,
                 ),
             )
-            emit_proposal(proposal)
+            emit_agent_intent(intent)
+
+            # Allocator owns sizing (qty/notional). This driver never picks quantity.
+            allocation = allocator.allocate_without_gates(intent=intent, last_price=0.0)
+            proposal = intent_to_order_proposal(intent=intent, quantity=int(allocation.qty))
+            if proposal is not None:
+                emit_proposal(proposal)
 
             # Step 5: Execute trade (if enabled)
             if execute:
@@ -251,7 +259,7 @@ async def run_sentiment_strategy(
                 # TODO: Implement actual trade execution via Alpaca API
                 # For now, just log the intent
                 logger.info(f"Trade execution not yet implemented")
-                logger.info(f"Would execute: {action.upper()} {symbol} (${notional:.2f})")
+                logger.info(f"Would execute: {action.upper()} {symbol}")
                 
                 await log_decision(
                     strategy_id,

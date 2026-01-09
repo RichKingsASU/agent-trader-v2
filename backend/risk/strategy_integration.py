@@ -11,6 +11,14 @@ import logging
 from typing import Any, Dict, Optional, List
 from datetime import datetime, timezone
 
+from backend.common.logging import log_event
+from backend.observability.risk_signals import (
+    compute_capital_utilization,
+    compute_drawdown_velocity,
+    compute_risk_per_strategy,
+    risk_correlation_id,
+)
+
 from .circuit_breakers import CircuitBreakerManager, CircuitBreakerEvent
 from .notifications import NotificationService
 
@@ -50,6 +58,8 @@ class StrategyCircuitBreakerWrapper:
         account_snapshot: Dict[str, Any],
         trades_today: List[Any],
         starting_equity: float,
+        session_start_utc: Optional[datetime] = None,
+        session_end_utc: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """
         Evaluate a trading signal with circuit breaker protections.
@@ -73,6 +83,11 @@ class StrategyCircuitBreakerWrapper:
         """
         # Make a copy to avoid mutating the original
         adjusted_signal = signal.copy()
+        corr = risk_correlation_id(correlation_id=adjusted_signal.get("correlation_id") or adjusted_signal.get("corr_id"))
+        allocation_id = adjusted_signal.get("allocation_id")
+        adjusted_signal["correlation_id"] = corr
+        if allocation_id:
+            adjusted_signal["allocation_id"] = allocation_id
         
         # Extract signal components
         action = adjusted_signal.get("action", "HOLD")
@@ -91,6 +106,8 @@ class StrategyCircuitBreakerWrapper:
             strategy_id=strategy_id,
             trades=trades_today,
             starting_equity=starting_equity,
+            session_start_utc=session_start_utc,
+            session_end_utc=session_end_utc,
         )
         
         if should_trigger and loss_event:
@@ -98,6 +115,34 @@ class StrategyCircuitBreakerWrapper:
                 f"🚨 DAILY LOSS LIMIT BREACHED for user {user_id}! "
                 f"Switching all strategies to SHADOW_MODE"
             )
+
+            try:
+                cap = compute_capital_utilization(account_snapshot)
+                strat_risk = compute_risk_per_strategy(proposed_allocation_usd=0.0, equity_usd=cap.equity_usd)
+                dd = compute_drawdown_velocity(
+                    key=f"{tenant_id}:{user_id}:{strategy_id}",
+                    starting_equity_usd=float(starting_equity or 0.0) if starting_equity else None,
+                    current_equity_usd=cap.equity_usd,
+                )
+                log_event(
+                    logger,
+                    "risk.circuit_breaker_triggered",
+                    severity="CRITICAL",
+                    correlation_id=corr,
+                    tenant_id=tenant_id,
+                    uid=user_id,
+                    strategy_id=strategy_id,
+                    breaker_type=loss_event.breaker_type.value,
+                    breaker_severity=loss_event.severity,
+                    breaker_message=loss_event.message,
+                    capital_utilization_pct=cap.capital_utilization_pct,
+                    risk_per_strategy_usd=strat_risk.risk_per_strategy_usd,
+                    risk_per_strategy_pct_equity=strat_risk.risk_per_strategy_pct_equity,
+                    drawdown_pct=dd.drawdown_pct,
+                    drawdown_velocity_pct_per_min=dd.drawdown_velocity_pct_per_min,
+                )
+            except Exception:
+                pass
             
             # Switch all strategies to shadow mode
             await self.cb_manager.switch_strategies_to_shadow_mode(
@@ -158,6 +203,39 @@ class StrategyCircuitBreakerWrapper:
                 adjusted_signal["original_allocation"] = allocation
                 circuit_breaker_triggered = True
                 circuit_breaker_messages.append(vix_event.message)
+
+                try:
+                    cap = compute_capital_utilization(account_snapshot)
+                    pre = compute_risk_per_strategy(proposed_allocation_usd=allocation, equity_usd=cap.equity_usd)
+                    post = compute_risk_per_strategy(proposed_allocation_usd=adjusted_allocation, equity_usd=cap.equity_usd)
+                    dd = compute_drawdown_velocity(
+                        key=f"{tenant_id}:{user_id}:{strategy_id}",
+                        starting_equity_usd=float(starting_equity or 0.0) if starting_equity else None,
+                        current_equity_usd=cap.equity_usd,
+                    )
+                    log_event(
+                        logger,
+                        "risk.allocation_adjusted",
+                        severity="WARNING",
+                        correlation_id=corr,
+                        tenant_id=tenant_id,
+                        uid=user_id,
+                        strategy_id=strategy_id,
+                        allocation_id=adjusted_signal.get("allocation_id"),
+                        reason="vix_guard",
+                        original_allocation_usd=allocation,
+                        adjusted_allocation_usd=adjusted_allocation,
+                        capital_utilization_pct=cap.capital_utilization_pct,
+                        risk_per_strategy_usd=post.risk_per_strategy_usd,
+                        risk_per_strategy_pct_equity=post.risk_per_strategy_pct_equity,
+                        drawdown_pct=dd.drawdown_pct,
+                        drawdown_velocity_pct_per_min=dd.drawdown_velocity_pct_per_min,
+                        pre_risk_per_strategy_usd=pre.risk_per_strategy_usd,
+                        pre_risk_per_strategy_pct_equity=pre.risk_per_strategy_pct_equity,
+                        vix_value=vix_event.metadata.get("vix_value"),
+                    )
+                except Exception:
+                    pass
                 
                 # Send notification
                 await self.notification_service.send_vix_guard_alert(
@@ -216,6 +294,37 @@ class StrategyCircuitBreakerWrapper:
                 adjusted_signal["original_action"] = action
                 circuit_breaker_triggered = True
                 circuit_breaker_messages.append(concentration_event.message)
+
+                try:
+                    cap = compute_capital_utilization(account_snapshot)
+                    strat_risk = compute_risk_per_strategy(proposed_allocation_usd=adjusted_signal.get("allocation"), equity_usd=cap.equity_usd)
+                    dd = compute_drawdown_velocity(
+                        key=f"{tenant_id}:{user_id}:{strategy_id}",
+                        starting_equity_usd=float(starting_equity or 0.0) if starting_equity else None,
+                        current_equity_usd=cap.equity_usd,
+                    )
+                    log_event(
+                        logger,
+                        "risk.signal_downgraded",
+                        severity="WARNING",
+                        correlation_id=corr,
+                        tenant_id=tenant_id,
+                        uid=user_id,
+                        strategy_id=strategy_id,
+                        allocation_id=adjusted_signal.get("allocation_id"),
+                        reason="concentration_check",
+                        ticker=ticker,
+                        original_action=action,
+                        adjusted_action=adjusted_action,
+                        capital_utilization_pct=cap.capital_utilization_pct,
+                        risk_per_strategy_usd=strat_risk.risk_per_strategy_usd,
+                        risk_per_strategy_pct_equity=strat_risk.risk_per_strategy_pct_equity,
+                        drawdown_pct=dd.drawdown_pct,
+                        drawdown_velocity_pct_per_min=dd.drawdown_velocity_pct_per_min,
+                        concentration=concentration_event.metadata.get("concentration"),
+                    )
+                except Exception:
+                    pass
                 
                 # Send notification
                 await self.notification_service.send_concentration_alert(

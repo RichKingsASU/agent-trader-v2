@@ -21,12 +21,23 @@ Usage in functions/main.py:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+from backend.common.logging import log_event
+from backend.observability.risk_signals import (
+    compute_capital_utilization,
+    compute_drawdown_velocity,
+    compute_risk_per_strategy,
+    risk_correlation_id,
+)
 
 from .circuit_breakers import CircuitBreakerManager
 from .notifications import NotificationService
 from .strategy_integration import StrategyCircuitBreakerWrapper
+from .daily_capital_snapshot import DailyCapitalSnapshotError, DailyCapitalSnapshotStore
+from backend.time.nyse_time import to_nyse
 
 logger = logging.getLogger(__name__)
 
@@ -110,13 +121,29 @@ async def evaluate_strategy_with_circuit_breakers(
             strategy_id=strategy_id,
         )
     
+    # Daily bankroll must be explicit and stable for the trading day.
+    # If caller didn't provide a starting_equity, materialize (and persist) a DailyCapitalSnapshot.
+    session_start_utc: Optional[datetime] = None
+    session_end_utc: Optional[datetime] = None
     if starting_equity is None:
-        # Use current equity as a fallback
-        equity_str = account_snapshot.get("equity", "0")
         try:
-            starting_equity = float(equity_str)
-        except (ValueError, TypeError):
-            starting_equity = 0.0
+            trading_date_ny = to_nyse(datetime.now(timezone.utc)).date()
+            store = DailyCapitalSnapshotStore(db=db)
+            snap = store.get_or_create_once(
+                tenant_id=tenant_id,
+                uid=user_id,
+                trading_date_ny=trading_date_ny,
+                account_snapshot=account_snapshot,
+                now_utc=datetime.now(timezone.utc),
+                source="evaluate_strategy_with_circuit_breakers.account_snapshot",
+            )
+            snap.assert_date_match(trading_date_ny=trading_date_ny)
+            starting_equity = float(snap.starting_equity_usd)
+            session_start_utc = snap.valid_from_utc
+            session_end_utc = snap.expires_at_utc
+        except DailyCapitalSnapshotError:
+            # Fail hard on mismatch/corruption; do not silently fall back to current equity.
+            raise
     
     # Step 3: Apply circuit breakers
     try:
@@ -136,6 +163,8 @@ async def evaluate_strategy_with_circuit_breakers(
             account_snapshot=account_snapshot,
             trades_today=trades_today,
             starting_equity=starting_equity,
+            session_start_utc=session_start_utc,
+            session_end_utc=session_end_utc,
         )
         
         return adjusted_signal
