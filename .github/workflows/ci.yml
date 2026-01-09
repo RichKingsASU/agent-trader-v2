@@ -184,6 +184,12 @@ jobs:
           set -euo pipefail
           python3 -m pip install -q --upgrade pytest
 
+      - name: Capital-safety test suite (mandatory)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q tests/capital_safety
+
       - name: Python import smoke checks
         shell: bash
         run: python3 scripts/smoke_check_imports.py

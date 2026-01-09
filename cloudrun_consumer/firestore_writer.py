@@ -10,28 +10,67 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
-try:
-    # Preferred imports when used as a package (`cloudrun_consumer.*`).
-    from cloudrun_consumer.time_audit import ensure_utc
-    from cloudrun_consumer.idempotency import ensure_message_once
-    from cloudrun_consumer.replay_support import ReplayContext, ensure_event_not_applied
-except Exception:  # pragma: no cover
-    # Back-compat for older tests that insert `cloudrun_consumer/` into sys.path.
-    from time_audit import ensure_utc  # type: ignore
-    from idempotency import ensure_message_once  # type: ignore
-    from replay_support import ReplayContext, ensure_event_not_applied  # type: ignore
+from cloudrun_consumer.idempotency import ensure_doc_once, ensure_message_once
+from cloudrun_consumer.replay_support import ReplayContext, ensure_event_not_applied
+from cloudrun_consumer.time_audit import ensure_utc
 
 
-def _dedupe_doc_id(*, kind: str, topic: str, message_id: str) -> str:
+def _trade_signal_business_dedupe_basis(*, doc: dict[str, Any], event_time: datetime) -> dict[str, Any]:
     """
-    Build a Firestore-safe, reasonably short doc id for dedupe documents.
+    Stable business-level dedupe basis for trade_signals that does not depend on Pub/Sub messageId
+    and does not require replay context.
+
+    Notes:
+    - Intentionally uses event_time rounded to second to avoid microsecond nondeterminism.
+    - Pulls fields from both top-level and `data` (original payload).
     """
-    k = str(kind or "").strip() or "unknown"
-    t = str(topic or "").strip() or "unknown"
-    mid = str(message_id or "").strip() or "unknown"
-    # Firestore doc ids cannot contain '/'.
-    raw = f"{k}__{t}__{mid}".replace("/", "_")
-    return raw[:256] if len(raw) > 256 else raw
+    payload: dict[str, Any] = doc.get("data") if isinstance(doc.get("data"), dict) else {}
+
+    def _s(v: Any) -> str:
+        return str(v).strip() if v is not None and str(v).strip() else ""
+
+    def _sym(v: Any) -> str:
+        return _s(v).upper()
+
+    def _action(v: Any) -> str:
+        return _s(v).upper()
+
+    def _iso_sec(dt: datetime) -> str:
+        dtu = ensure_utc(dt, source="cloudrun_consumer.firestore_writer._trade_signal_business_dedupe_basis", field="event_time")
+        dtu = dtu.replace(microsecond=0)
+        return dtu.isoformat()
+
+    # Prefer explicit strategy ids if present; otherwise fall back to `strategy`.
+    strategy = _s(payload.get("strategyId") or payload.get("strategy_id") or doc.get("strategy") or payload.get("strategy") or payload.get("source") or "")
+    symbol = _sym(payload.get("symbol") or doc.get("symbol") or "")
+    action = _action(payload.get("side") or payload.get("action") or doc.get("action") or "")
+    signal_type = _s(payload.get("signalType") or payload.get("signal_type") or payload.get("type") or "")
+
+    # Optional option-ish fields (included only if present).
+    strike = payload.get("strike") if "strike" in payload else payload.get("optionStrike")
+    expiry = payload.get("expiry") if "expiry" in payload else payload.get("expiration")
+    option_type = payload.get("optionType") if "optionType" in payload else payload.get("right")
+
+    basis: dict[str, Any] = {
+        "strategy": strategy,
+        "symbol": symbol,
+        "action": action,
+        "signalType": signal_type,
+        "eventTimeSec": _iso_sec(event_time),
+    }
+    if strike is not None and _s(strike):
+        basis["strike"] = _s(strike)
+    if expiry is not None and _s(expiry):
+        basis["expiry"] = _s(expiry)
+    if option_type is not None and _s(option_type):
+        basis["optionType"] = _s(option_type)
+    return basis
+
+
+def _trade_signal_business_dedupe_hash(*, doc: dict[str, Any], event_time: datetime) -> tuple[str, dict[str, Any]]:
+    basis = _trade_signal_business_dedupe_basis(doc=doc, event_time=event_time)
+    raw = json.dumps(basis, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest(), basis
 
 
 def _lww_key(*, published_at: datetime, message_id: str) -> tuple[float, str]:
@@ -686,15 +725,89 @@ class FirestoreWriter:
             "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
         }
         doc = {k: v for k, v in doc.items() if v is not None}
-        return self._upsert_event_doc(
-            collection="trade_signals",
-            doc_id=str(doc_id),
-            event_time=event_time,
-            source=source,
-            doc=doc,
-            replay=replay,
-            replay_dedupe_key=event_id or doc_id,
-        )
+        ref = self._db.collection(self._col("trade_signals")).document(str(doc_id))
+        message_id = str(source.message_id or "").strip()
+        incoming_event_time = _as_utc(event_time)
+
+        # Business-level dedupe: stable across different messageIds and does not require replay context.
+        business_hash, business_basis = _trade_signal_business_dedupe_hash(doc=doc, event_time=event_time)
+        business_ref = self._db.collection(self._col("ops_trade_signal_dedupe_business")).document(str(business_hash))
+
+        # Pub/Sub-level dedupe (messageId); preserve existing ops_dedupe convention.
+        dedupe_ref = self._db.collection(self._col("ops_dedupe")).document(message_id) if message_id else None
+
+        def _txn(txn: Any) -> Tuple[bool, str]:
+            # MessageId idempotency (read-first): duplicates are a no-op and must not rewrite trade_signals.
+            if dedupe_ref is not None:
+                ds = dedupe_ref.get(transaction=txn)
+                if ds.exists:
+                    return False, "duplicate_message_noop"
+
+            # Replay-mode idempotency (eventId preferred): must remain.
+            if replay is not None:
+                ok, why = ensure_event_not_applied(
+                    txn=txn,
+                    db=self._db,
+                    replay=replay,
+                    dedupe_key=str(event_id or doc_id),
+                    event_time=incoming_event_time,
+                    message_id=str(source.message_id),
+                )
+                if not ok:
+                    return False, why
+
+            # LWW by event_time (required): if stored.eventTime >= incoming.eventTime => NOOP and do not write anything else.
+            snap = ref.get(transaction=txn)
+            if snap.exists:
+                existing = snap.to_dict() if snap is not None else None
+                existing_event_time = None
+                if isinstance(existing, dict):
+                    existing_event_time = _parse_rfc3339(existing.get("eventTime"))
+                if isinstance(existing_event_time, datetime) and existing_event_time >= incoming_event_time:
+                    return False, "stale_event_ignored"
+
+            # Business-level dedupe (required): dedupe same logical signal even when replay is None.
+            bs = business_ref.get(transaction=txn)
+            if bs.exists:
+                return False, "duplicate_business_noop"
+
+            # Create messageId dedupe marker only when we're going to apply (keeps LWW NOOP path write-free).
+            if dedupe_ref is not None:
+                first, _ = ensure_message_once(
+                    txn=txn,
+                    dedupe_ref=dedupe_ref,
+                    message_id=message_id,
+                    doc={
+                        "kind": "trade_signals",
+                        "targetDoc": f"trade_signals/{doc_id}",
+                        "businessDedupe": str(business_hash),
+                    },
+                )
+                if not first:
+                    return False, "duplicate_message_noop"
+
+            first_business, _ = ensure_doc_once(
+                txn=txn,
+                dedupe_ref=business_ref,
+                key=str(business_hash),
+                doc={
+                    "createdAt": incoming_event_time,
+                    "kind": "trade_signals",
+                    "hash": str(business_hash),
+                    "basis": dict(business_basis),
+                    "targetDoc": f"trade_signals/{doc_id}",
+                    "eventTime": incoming_event_time,
+                    "messageId": message_id,
+                },
+            )
+            if not first_business:
+                return False, "duplicate_business_noop"
+
+            txn.set(ref, doc)
+            return True, "applied"
+
+        txn = self._db.transaction()
+        return self._firestore.transactional(_txn)(txn)
 
     def dedupe_and_upsert_ops_service(
         self,
