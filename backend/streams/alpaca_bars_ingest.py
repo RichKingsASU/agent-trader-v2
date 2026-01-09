@@ -43,7 +43,10 @@ def _retry(fn: Callable[[], T], *, attempts: int = 5, base_sleep_s: float = 1.0)
         except Exception as e:
             last_err = e
             sleep_s = min(base_sleep_s * (2**i), 10.0)
-            time.sleep(sleep_s)
+            # Interruptible wait so SIGTERM/SIGINT can stop promptly.
+            _SHUTDOWN_EVENT.wait(timeout=float(sleep_s))
+            if _SHUTDOWN_EVENT.is_set():
+                break
     assert last_err is not None
     raise last_err
 
@@ -185,6 +188,7 @@ def _run_synthetic_mode() -> None:
         agent_name=agent_name,
         git_sha=os.getenv("GIT_SHA") or None,
         validate_credentials=not _env_bool("PUBSUB_SKIP_CREDENTIALS_VALIDATION", default=False),
+        shutdown_event=_SHUTDOWN_EVENT,
     )
 
     # Best-effort: allow SIGTERM/SIGINT to interrupt the loop promptly.
@@ -198,7 +202,17 @@ def _run_synthetic_mode() -> None:
     if threading.current_thread() is threading.main_thread():
         for s in (signal.SIGINT, signal.SIGTERM):
             try:
-                signal.signal(s, _handle_signal)
+                prev = signal.getsignal(s)
+
+                def _chained(signum: int, frame: Any | None = None, _prev: Any = prev) -> None:
+                    _handle_signal(signum, frame)
+                    try:
+                        if callable(_prev):
+                            _prev(signum, frame)
+                    except Exception:
+                        pass
+
+                signal.signal(s, _chained)
             except Exception:
                 pass
     try:

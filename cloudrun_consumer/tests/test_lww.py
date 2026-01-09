@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import os
-import sys
 import unittest
 from datetime import datetime, timezone
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from firestore_writer import _existing_pubsub_lww, _lww_key  # noqa: E402
+from cloudrun_consumer.firestore_writer import _existing_pubsub_lww, _lww_key
 
 
 def _dt(s: str) -> datetime:

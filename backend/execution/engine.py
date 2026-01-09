@@ -9,7 +9,6 @@ import uuid
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal
 from typing import Any, Optional, Protocol, runtime_checkable
 
 import requests
@@ -1918,10 +1917,123 @@ class ExecutionEngine:
                     message="dry_run_enabled",
                 )
 
-        # --- Pre-trade assertions (fatal; do not swallow) ---
-        # These are intentionally AFTER agent mode + kill switch checks so tests and
-        # non-live modes don't trigger external IO / config requirements.
-        pre = self._assert_pre_trade(intent=intent, trace_id=trace_id)
+            # Defense-in-depth: do not place broker orders unless explicitly authorized.
+            require_trading_live_mode(action="broker order placement")
+            try:
+                require_kill_switch_off(operation="broker order placement")
+            except ExecutionHaltedError:
+                enabled, source = get_kill_switch_state()
+                checks = list(risk.checks or [])
+                checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
+                halted_risk = RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
+                outcome = "rejected"
+                return ExecutionResult(
+                    status="rejected",
+                    risk=halted_risk,
+                    routing=routing_decision,
+                    message="kill_switch_enabled",
+                )
+
+            broker_order = self._broker.place_order(intent=intent)
+            broker_order_id = str(broker_order.get("id") or "").strip() or None
+            logger.info(
+                "exec.order_placed %s",
+                json.dumps(
+                    _to_jsonable(
+                        {"broker": self._broker_name, "broker_order_id": broker_order_id, "order": broker_order}
+                    )
+                ),
+            )
+            try:
+                logger.info(
+                    "%s",
+                    dumps_replay_event(
+                        build_replay_event(
+                            event="order_intent",
+                            component="backend.execution.engine",
+                            data={
+                                "stage": "broker_placed",
+                                "broker": self._broker_name,
+                                "broker_order_id": broker_order_id,
+                                "client_intent_id": intent.client_intent_id,
+                                "symbol": intent.symbol,
+                                "side": intent.side,
+                                "qty": intent.qty,
+                                "order_type": intent.order_type,
+                            },
+                            trace_id=trace_id,
+                            agent_name=os.getenv("AGENT_NAME") or "execution-engine",
+                            run_id=str(intent.metadata.get("run_id") or "").strip() or None,
+                        )
+                    ),
+                )
+            except Exception:
+                logger.exception("exec.replay_broker_placed_log_failed")
+
+            # If immediately filled (or partially filled), write to ledger AND portfolio history.
+            try:
+                status = str(broker_order.get("status") or "").lower()
+                filled_qty = float(broker_order.get("filled_qty") or 0.0)
+                if status in {"filled", "partially_filled"} or filled_qty > 0:
+                    self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
+                    self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
+            except Exception as e:
+                logger.exception("exec.ledger_write_failed: %s", e)
+
+            outcome = "placed"
+            return ExecutionResult(
+                status="placed",
+                risk=risk,
+                routing=routing_decision,
+                broker_order_id=broker_order_id,
+                broker_order=broker_order,
+            )
+
+        # ---- Idempotency guard (engine-level, replay-safe) ----
+        # This prevents duplicate broker submissions if the same intent is processed twice.
+        try:
+            tenant_id = None
+            try:
+                # Reuse the ledger's tenant resolution rules (metadata/env).
+                tenant_id = _FirestoreLedger()._resolve_tenant_id(intent=intent)  # type: ignore[attr-defined]
+            except Exception:
+                tenant_id = str(os.getenv("EXEC_TENANT_ID") or os.getenv("TENANT_ID") or "").strip() or None
+
+            if tenant_id:
+                from backend.persistence.idempotency_store import FirestoreIdempotencyStore
+
+                idem = FirestoreIdempotencyStore(
+                    project_id=os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or None
+                )
+                acquired, rec = idem.begin(
+                    tenant_id=tenant_id,
+                    scope="execution.broker_place_order",
+                    key=str(intent.client_intent_id),
+                    payload={"symbol": intent.symbol, "side": intent.side, "qty": intent.qty},
+                )
+                if not acquired:
+                    if rec.outcome and isinstance(rec.outcome.get("broker_order"), dict):
+                        broker_order = rec.outcome.get("broker_order")
+                        broker_order_id = str(broker_order.get("id") or "").strip() or None
+                        return ExecutionResult(
+                            status=str(rec.outcome.get("status") or "placed"),
+                            risk=risk,
+                            routing=routing_decision,
+                            broker_order_id=broker_order_id,
+                            broker_order=broker_order,
+                            message="duplicate_intent_idempotent_return",
+                        )
+                    return ExecutionResult(
+                        status="accepted",
+                        risk=risk,
+                        routing=routing_decision,
+                        message="duplicate_intent_in_progress",
+                    )
+            else:
+                logger.warning("exec.idempotency_disabled missing_tenant_id client_intent_id=%s", intent.client_intent_id)
+        except Exception:
+            # Idempotency is best-effort; never break safety checks.
+            logger.exception("exec.idempotency_guard_failed")
 
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None
@@ -1932,6 +2044,20 @@ class ExecutionEngine:
             "exec.order_placed %s",
             json.dumps(_to_jsonable({"broker": self._broker_name, "broker_order_id": broker_order_id, "order": broker_order})),
         )
+        try:
+            # Persist idempotency outcome for replay-safe responses.
+            _idem = locals().get("idem")
+            _tenant_id = locals().get("tenant_id")
+            if _idem is not None and _tenant_id:
+                _idem.complete(
+                    tenant_id=str(_tenant_id),
+                    scope="execution.broker_place_order",
+                    key=str(intent.client_intent_id),
+                    outcome={"status": "placed", "broker_order_id": broker_order_id, "broker_order": broker_order},
+                    status="completed",
+                )
+        except Exception:
+            logger.exception("exec.idempotency_complete_failed")
         try:
             logger.info(
                 "%s",
@@ -2536,7 +2662,94 @@ class ExecutionEngine:
             .document(history_id)
         )
         try:
-            doc_ref.set(history_entry)
+            from backend.persistence.firebase_client import get_firestore_client
+            
+            db = get_firestore_client()
+            
+            # Resolve UID from intent metadata
+            uid = str(intent.metadata.get("uid") or "").strip()
+            if not uid:
+                uid = str(os.getenv("EXEC_UID") or "").strip()
+            if not uid or uid == "system":
+                logger.warning("Skipping portfolio history write: no valid uid for %s", intent.symbol)
+                return
+            
+            # Extract fill data
+            broker_order_id = str(broker_order.get("id") or "").strip()
+            filled_qty_raw = fill.get("filled_qty") or broker_order.get("filled_qty") or 0.0
+            filled_avg_price_raw = fill.get("filled_avg_price") or broker_order.get("filled_avg_price") or None
+            filled_at_raw = fill.get("filled_at") or broker_order.get("filled_at") or None
+            
+            filled_qty = float(filled_qty_raw or 0.0)
+            if filled_qty <= 0:
+                return
+            
+            filled_avg_price = float(filled_avg_price_raw) if filled_avg_price_raw else 0.0
+            
+            # Use fill timestamp when available; fall back to now
+            ts = _utc_now()
+            if isinstance(filled_at_raw, datetime):
+                ts = filled_at_raw.astimezone(timezone.utc)
+            
+            # Create a deterministic history id so reprocessing does not duplicate entries.
+            # Note: we intentionally include filled fields to separate partial fills.
+            filled_at_key = (
+                filled_at_raw.astimezone(timezone.utc).isoformat()
+                if isinstance(filled_at_raw, datetime)
+                else str(filled_at_raw or "")
+            )
+            fp = f"{broker_order_id}|{filled_qty}|{filled_avg_price}|{filled_at_key}|{intent.symbol}|{intent.side}"
+            history_id = hashlib.sha1(fp.encode("utf-8")).hexdigest()
+            
+            history_entry = {
+                # Core trade data
+                "symbol": intent.symbol,
+                "asset_class": intent.asset_class,
+                "side": intent.side,
+                "qty": filled_qty,
+                "price": filled_avg_price,
+                "notional": filled_qty * filled_avg_price,
+                "timestamp": ts,
+                "trading_date": _iso_date_utc(ts),
+                
+                # Strategy and execution context
+                "strategy_id": intent.strategy_id,
+                "broker": self._broker_name,
+                "broker_order_id": broker_order_id,
+                "client_order_id": intent.client_intent_id,
+                
+                # Cost analysis
+                "estimated_slippage": intent.estimated_slippage,
+                "fees": 0.0,  # Update if broker provides fee data
+                
+                # Metadata
+                "order_type": intent.order_type,
+                "time_in_force": intent.time_in_force,
+                "created_at": _utc_now(),
+                
+                # Tax tracking fields
+                "tax_lot_method": "FIFO",  # Default to FIFO for tax purposes
+                "cost_basis": filled_qty * filled_avg_price if intent.side == "buy" else None,
+            }
+            
+            # Write to users/{uid}/portfolio/history/trades/{history_id}
+            # Note: Using subcollection for scalability and tax year queries
+            doc_ref = (
+                db.collection("users")
+                .document(uid)
+                .collection("portfolio")
+                .document("history")
+                .collection("trades")
+                .document(history_id)
+            )
+            # Idempotent write (same doc id + overwrite/merge).
+            doc_ref.set(history_entry, merge=True)
+            
+            logger.info(
+                "exec.portfolio_history_written uid=%s symbol=%s qty=%s price=%s",
+                uid, intent.symbol, filled_qty, filled_avg_price
+            )
+            
         except Exception as e:
             self._critical(
                 "exec.portfolio_history_write_failed",

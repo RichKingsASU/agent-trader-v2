@@ -1,9 +1,11 @@
 """
-Cloud Run Pub/Sub → Firestore materializer (push subscription).
+cloudrun_consumer entrypoint diagnostics
 
-Contract Unification Gate:
-- Validate topic-specific canonical schemas from `contracts/` before processing.
-- If invalid: record (DLQ sample / ops alert), log structured error, and ACK (2xx).
+Runtime assumptions (documented for deploy/debug):
+- Containers should follow the canonical repo layout:
+  - COPY . /app
+  - PYTHONPATH=/app
+  - use absolute imports (e.g. `from cloudrun_consumer...`)
 """
 
 from __future__ import annotations
@@ -15,19 +17,14 @@ import traceback
 import os
 import sys
 import time
-import traceback
+import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
-from backend.contracts.ops_alerts import try_write_contract_violation_alert
-from backend.contracts.registry import validate_topic_event
-from event_utils import infer_topic
-from firestore_writer import FirestoreWriter
-from schema_router import route_payload
-from time_audit import ensure_utc
+from fastapi import FastAPI, HTTPException, Request, Response
 
 def _startup_diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
     """
@@ -49,6 +46,20 @@ def _startup_diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> 
         return
 
 
+def _startup_diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
+    """Print a structured JSON diagnostic log."""
+    payload: dict[str, Any] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "severity": str(severity).upper(),
+        "service": "cloudrun-pubsub-firestore-materializer",
+        "event_type": str(event_type),
+    }
+    payload.update(fields)
+    try:
+        sys.stdout.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except Exception:
+        return
 SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"
 DLQ_SAMPLE_RATE_DEFAULT = "0.01"
 DLQ_SAMPLE_TTL_HOURS_DEFAULT = "72"
@@ -157,9 +168,19 @@ app = FastAPI(title="Cloud Run Pub/Sub → Firestore Materializer", version="0.2
 
 @app.on_event("startup")
 async def _startup() -> None:
-    project_id = (os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
-    if not project_id:
-        raise RuntimeError("Missing required env var: GCP_PROJECT (or GOOGLE_CLOUD_PROJECT)")
+    _normalize_env_alias("GCP_PROJECT", ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT_ID", "PROJECT_ID"])
+    # Centralized env contract validation (single-line failure).
+    try:
+        from backend.common.config import validate_or_exit as _validate_or_exit  # noqa: WPS433
+
+        _validate_or_exit("cloudrun-consumer")
+    except SystemExit:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"CONFIG_FAIL service=cloudrun-consumer action=\"config_validation_import_failed:{type(e).__name__}:{e}\"") from e
+
+    project_id = _require_env("GCP_PROJECT")
+
     database = os.getenv("FIRESTORE_DATABASE") or "(default)"
     collection_prefix = os.getenv("FIRESTORE_COLLECTION_PREFIX") or ""
     app.state.firestore_writer = FirestoreWriter(project_id=project_id, database=database, collection_prefix=collection_prefix)
@@ -201,36 +222,71 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="invalid_envelope")
 
-    subscription = str(body.get("subscription") or "").strip()
-    msg = body.get("message")
-    if not subscription or not isinstance(msg, dict):
+    subscription = body.get("subscription")
+    subscription_str = str(subscription).strip() if subscription is not None else ""
+    if not subscription_str:
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_envelope",
+            error="missing_subscription",
+            messageId=None,
+            publishTime=None,
+            subscription="",
+        )
+        raise HTTPException(status_code=400, detail="missing_subscription")
+
+    try:
+        hdr = _validate_pubsub_headers(req=req, subscription_from_body=subscription_str)
+    except HTTPException as e:
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_headers",
+            error=str(getattr(e, "detail", "")),
+            messageId=None,
+            publishTime=None,
+            subscription=subscription_str,
+        )
+        raise
+
+    message = body.get("message")
+    if not isinstance(message, dict):
+        log(
+            "pubsub.rejected",
+            severity="ERROR",
+            reason="invalid_envelope",
+            error="missing_message",
+            messageId=None,
+            publishTime=None,
+            subscription=subscription_str,
+        )
         raise HTTPException(status_code=400, detail="invalid_envelope")
 
     message_id = str(msg.get("messageId") or "").strip()
     if not message_id:
         raise HTTPException(status_code=400, detail="missing_messageId")
 
-    publish_time = _parse_rfc3339(msg.get("publishTime")) or _utc_now()
-    attrs_raw = msg.get("attributes") if isinstance(msg.get("attributes"), dict) else {}
-    attributes = {str(k): ("" if v is None else str(v)) for k, v in (attrs_raw or {}).items()}
+    delivery_attempt_raw = message.get("deliveryAttempt")
+    delivery_attempt: Optional[int] = None
+    if isinstance(delivery_attempt_raw, int):
+        delivery_attempt = delivery_attempt_raw
+    else:
+        try:
+            if delivery_attempt_raw is not None and str(delivery_attempt_raw).strip():
+                delivery_attempt = int(str(delivery_attempt_raw).strip())
+        except Exception:
+            delivery_attempt = None
 
-    data_b64 = msg.get("data")
-    if not isinstance(data_b64, str) or not data_b64.strip():
-        raise HTTPException(status_code=400, detail="missing_data")
-    try:
-        raw = base64.b64decode(data_b64, validate=True)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail="invalid_base64") from e
-    try:
-        decoded = json.loads(raw.decode("utf-8"))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail="invalid_payload_json") from e
-    if not isinstance(decoded, dict):
-        raise HTTPException(status_code=400, detail="payload_not_object")
-
-    # Infer topic (push payload doesn't include topic).
-    inferred = infer_topic(attributes=attributes, payload=decoded, subscription=subscription) or ""
-    topic = inferred.strip() or (os.getenv("SYSTEM_EVENTS_TOPIC") or "system-events").strip() or "system-events"
+    publish_time_raw = str(message.get("publishTime") or "").strip() or None
+    publish_time = _parse_rfc3339(message.get("publishTime")) or _utc_now()
+    attributes_raw = message.get("attributes") or {}
+    attributes: dict[str, str] = {}
+    if isinstance(attributes_raw, dict):
+        for k, v in attributes_raw.items():
+            if k is None:
+                continue
+            attributes[str(k)] = "" if v is None else str(v)
 
     writer: FirestoreWriter = app.state.firestore_writer
     dlq_sample_rate = float(os.getenv("DLQ_SAMPLE_RATE") or DLQ_SAMPLE_RATE_DEFAULT)
@@ -350,5 +406,5 @@ if __name__ == "__main__":  # pragma: no cover
     import uvicorn
 
     port = int(os.getenv("PORT") or "8080")
-    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="warning", access_log=False)
+    uvicorn.run("cloudrun_consumer.main:app", host="0.0.0.0", port=port, log_level="warning", access_log=False)
 

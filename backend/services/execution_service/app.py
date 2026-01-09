@@ -34,6 +34,7 @@ from backend.execution.engine import (
     OrderIntent,
     RiskManager,
 )
+from backend.persistence.idempotency_store import FirestoreIdempotencyStore
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.agent_boot import configure_startup_logging
@@ -43,6 +44,7 @@ from backend.execution.marketdata_health import check_market_ingest_heartbeat
 from backend.observability.build_fingerprint import get_build_fingerprint
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
 from backend.safety.shutdown_gate import request_shutdown as _request_shutdown, wait_for_inflight_zero as _wait_for_inflight_zero
+from backend.common.execution_confirm import ExecutionConfirmTokenError, require_confirm_token_for_live_execution
 from backend.safety.strategy_breakers import check_consecutive_losses_from_ledger_trades
 from backend.safety.startup_validation import (
     validate_agent_mode_or_exit,
@@ -108,6 +110,44 @@ def _build_engine_from_env() -> tuple[ExecutionEngine, RiskManager]:
     risk = RiskManager()
     broker = DryRunBroker() if dry_run else AlpacaBroker()
     return (ExecutionEngine(broker=broker, broker_name="alpaca", dry_run=dry_run, risk=risk), risk)
+
+
+def _resolve_idempotency_key(req: ExecuteIntentRequest) -> str:
+    """
+    Resolve a replay-stable idempotency key for execution.
+
+    Preference order:
+    - explicit request field: client_intent_id
+    - metadata-derived keys commonly present in event envelopes
+    - fallback: random (cannot be replay-safe)
+    """
+    candidates = [
+        req.client_intent_id,
+        (req.metadata or {}).get("idempotency_key"),
+        (req.metadata or {}).get("client_intent_id"),
+        (req.metadata or {}).get("intent_id"),
+        (req.metadata or {}).get("event_id"),
+        (req.metadata or {}).get("message_id"),
+        (req.metadata or {}).get("trace_id"),
+        (req.metadata or {}).get("run_id"),
+        (req.metadata or {}).get("correlation_id"),
+    ]
+    for c in candidates:
+        if c is None:
+            continue
+        s = str(c).strip()
+        if s:
+            return s
+
+    # Fallback is NOT replay-safe. Keep it explicit in logs.
+    import uuid
+
+    fallback = f"intent_{uuid.uuid4().hex}"
+    logger.warning(
+        "exec_service.missing_idempotency_key generating_fallback client_intent_id=%s",
+        fallback,
+    )
+    return fallback
 
 
 app = FastAPI(title="AgentTrader Execution Engine")
@@ -334,7 +374,7 @@ def recover(request: Request) -> dict[str, Any]:
 
 
 @app.post("/execute", response_model=ExecuteIntentResponse)
-def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
+def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentResponse:
     if bool(getattr(app.state, "shutting_down", False)):
         # Graceful shutdown contract: refuse new executions (prevents partial submissions).
         raise HTTPException(status_code=503, detail="shutting_down")
@@ -345,6 +385,7 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
     trace_id = str(req.metadata.get("trace_id") or req.client_intent_id or "").strip() or None
     if trace_id:
         set_replay_context(trace_id=trace_id)
+    idempotency_key = _resolve_idempotency_key(req)
     intent = OrderIntent(
         strategy_id=req.strategy_id,
         broker_account_id=req.broker_account_id,
@@ -354,9 +395,26 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
         order_type=req.order_type,
         time_in_force=req.time_in_force,
         limit_price=req.limit_price,
-        client_intent_id=req.client_intent_id or None,
+        client_intent_id=idempotency_key,
         metadata=req.metadata,
     )
+
+    # Future-proof live mode: require an explicit confirmation token for any
+    # non-dry-run broker routing when TRADING_MODE=live.
+    #
+    # NOTE: Live trading is code-disabled by default via the startup hard lock
+    # in `backend.common.agent_mode_guard`. This remains here to ensure that if
+    # live mode is ever enabled, execution still requires an explicit operator
+    # confirmation step beyond env/config.
+    trading_mode = str(os.getenv("TRADING_MODE") or "").strip().lower()
+    if not bool(getattr(app.state.engine, "dry_run", True)) and trading_mode == "live":
+        provided = str(request.headers.get("X-Exec-Confirm-Token") or "").strip() or str(
+            req.metadata.get("confirm_token") or ""
+        ).strip()
+        try:
+            require_confirm_token_for_live_execution(provided_token=provided)
+        except ExecutionConfirmTokenError as e:
+            raise HTTPException(status_code=409, detail={"refused": True, "reason": "confirm_token_required", "message": str(e)}) from e
 
     # --- Update state machine inputs for this request ---
     agent_mode = read_agent_mode()
@@ -475,10 +533,52 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
             )
             raise HTTPException(status_code=409, detail={"refused": True, "reason": reason, "state": sm.state.value})
 
+    # ---- Idempotency guard (prevents duplicate broker orders on replay) ----
+    tenant_id_for_idem = (
+        str(req.metadata.get("tenant_id") or os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip()
+        if isinstance(req.metadata, dict)
+        else str(os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip()
+    ) or "default"
+    idem = FirestoreIdempotencyStore(project_id=os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or None)
+    acquired, record = idem.begin(
+        tenant_id=tenant_id_for_idem,
+        scope="execution.execute_intent",
+        key=idempotency_key,
+        payload={
+            "strategy_id": req.strategy_id,
+            "broker_account_id": req.broker_account_id,
+            "symbol": req.symbol,
+            "side": req.side,
+            "qty": req.qty,
+        },
+    )
+    if not acquired:
+        if record.outcome:
+            # Replay-safe: return the original outcome without performing side effects.
+            return ExecuteIntentResponse(**record.outcome)
+        # Conservatively refuse to execute again: prevents duplicate orders even if a prior attempt crashed.
+        return ExecuteIntentResponse(
+            status="duplicate_in_progress",
+            risk={"allowed": False, "reason": "duplicate_in_progress", "checks": []},
+            broker_order_id=None,
+            broker_order=None,
+            message="duplicate_in_progress",
+        )
+
     try:
         result: ExecutionResult = engine.execute_intent(intent=intent)
     except AgentModeError as e:
         logger.warning("exec_service.trading_refused: %s", e)
+        try:
+            idem.complete(
+                tenant_id=tenant_id_for_idem,
+                scope="execution.execute_intent",
+                key=idempotency_key,
+                status="failed",
+                outcome={"status": "failed", "risk": {"allowed": False, "reason": "trading_refused", "checks": []}, "message": str(e)},
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=409, detail={"error": "trading_refused", "reason": str(e)}) from e
     except Exception as e:
         logger.exception("exec_service.execute_failed: %s", e)
@@ -501,6 +601,16 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
                         agent_name=os.getenv("AGENT_NAME") or "execution-engine",
                     )
                 ),
+            )
+        except Exception:
+            pass
+        try:
+            idem.complete(
+                tenant_id=tenant_id_for_idem,
+                scope="execution.execute_intent",
+                key=idempotency_key,
+                status="failed",
+                outcome={"status": "failed", "risk": {"allowed": False, "reason": "execution_failed", "checks": []}, "message": "execution_failed"},
             )
         except Exception:
             pass
@@ -539,8 +649,28 @@ def execute(req: ExecuteIntentRequest) -> ExecuteIntentResponse:
 
     # Reject intents via HTTP 409 for easy callers.
     if result.status == "rejected":
+        try:
+            idem.complete(
+                tenant_id=tenant_id_for_idem,
+                scope="execution.execute_intent",
+                key=idempotency_key,
+                outcome=resp.model_dump(),
+                status="completed",
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=409, detail=resp.model_dump())
 
+    try:
+        idem.complete(
+            tenant_id=tenant_id_for_idem,
+            scope="execution.execute_intent",
+            key=idempotency_key,
+            outcome=resp.model_dump(),
+            status="completed",
+        )
+    except Exception:
+        pass
     return resp
 
 

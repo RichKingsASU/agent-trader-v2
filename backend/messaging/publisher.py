@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import threading
 import time
 from typing import Any, Mapping, Optional
 
@@ -37,11 +38,21 @@ class PubSubPublisher:
         git_sha: Optional[str] = None,
         publisher_client: Any = None,
         validate_credentials: bool = True,
+        shutdown_event: threading.Event | None = None,
     ) -> None:
         self.project_id = str(project_id)
         self.topic_id = str(topic_id)
         self.agent_name = str(agent_name)
         self.git_sha = git_sha
+        if shutdown_event is None:
+            # Default: wire up process SIGTERM/SIGINT to make backoff waits interruptible
+            # even when callers don't explicitly pass a shutdown event.
+            from backend.common.shutdown import SHUTDOWN_EVENT, install_signal_handlers_once  # noqa: WPS433
+
+            install_signal_handlers_once()
+            self._shutdown_event = SHUTDOWN_EVENT
+        else:
+            self._shutdown_event = shutdown_event
 
         if publisher_client is None:
             try:
@@ -155,6 +166,9 @@ class PubSubPublisher:
             return ""
 
     def _is_retryable_publish_error(self, exc: BaseException) -> bool:
+        # Allow callers to interrupt long backoffs during shutdown.
+        if isinstance(exc, InterruptedError):
+            return False
         # Never retry programming/validation errors.
         if isinstance(exc, (ValueError, TypeError, AttributeError)):
             return False
@@ -204,7 +218,11 @@ class PubSubPublisher:
         backoff = min(max_backoff_s, base)
         # Full jitter (avoid thundering herd).
         sleep_s = backoff * random.uniform(0.5, 1.5)
-        time.sleep(max(0.0, sleep_s))
+        if self._shutdown_event is not None and self._shutdown_event.is_set():
+            raise InterruptedError("shutdown requested")
+        self._shutdown_event.wait(timeout=max(0.0, float(sleep_s)))
+        if self._shutdown_event.is_set():
+            raise InterruptedError("shutdown requested")
         return sleep_s
 
     def publish_envelope(self, envelope: EventEnvelope) -> str:
