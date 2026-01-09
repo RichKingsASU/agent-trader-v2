@@ -10,6 +10,19 @@ def main():
     """
     Places a single 'SPY buy 1' market order using the Alpaca paper trading account.
     """
+    # Global kill-switch guard: never place even paper orders while halted.
+    try:
+        from backend.common.kill_switch import get_kill_switch_state  # type: ignore
+
+        enabled, source = get_kill_switch_state()
+        if enabled:
+            print(f"REFUSED: kill switch is active (source={source}). Set EXECUTION_HALTED=0 to proceed.")
+            exit(2)
+    except Exception:
+        # Best-effort safety: if we cannot evaluate the kill-switch module, do not block the script.
+        # (The runtime execution engine has its own defenses.)
+        pass
+
     dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env.local')
     load_dotenv(dotenv_path=dotenv_path)
 
