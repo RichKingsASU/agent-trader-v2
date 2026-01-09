@@ -732,6 +732,56 @@ class _FirestoreLedger:
         return sum(1 for _ in q.stream())
 
 
+class _FirestoreRiskLimitsProvider:
+    """
+    Best-effort read of Firestore-backed risk limits (tenant-scoped).
+
+    Collection:
+      tenants/{tenant_id}/risk_limits/{doc}
+
+    Notes:
+    - The risk service uses these docs for /risk/check-trade.
+    - Execution engine reads them to enforce limits *before* broker placement.
+    """
+
+    _COLLECTION = "risk_limits"
+
+    def __init__(self):
+        from backend.persistence.firebase_client import get_firestore_client
+
+        self._db = get_firestore_client()
+
+    def get_enabled_limits(
+        self,
+        *,
+        tenant_id: str,
+        uid: str,
+        broker_account_id: str,
+        scope: str,
+        strategy_id: str | None,
+    ) -> dict[str, Any] | None:
+        if not tenant_id or not uid or not broker_account_id:
+            return None
+        q = (
+            self._db.collection("tenants")
+            .document(str(tenant_id))
+            .collection(self._COLLECTION)
+            .where("uid", "==", str(uid))
+            .where("broker_account_id", "==", str(broker_account_id))
+            .where("scope", "==", str(scope))
+            .where("enabled", "==", True)
+        )
+        if scope == "strategy":
+            q = q.where("strategy_id", "==", str(strategy_id or ""))
+        docs = list(q.limit(1).stream())
+        if not docs:
+            return None
+        d = docs[0].to_dict() or {}
+        # Helpful for audit/debugging.
+        d["id"] = docs[0].id
+        return d
+
+
 class _PostgresPositions:
     """
     Optional position source from Postgres table `public.broker_positions`.
@@ -1691,6 +1741,7 @@ class ExecutionEngine:
         )
         self._enable_smart_routing = enable_smart_routing
         self._capital_provider: _FirestoreCapitalProvider | None = None
+        self._risk_limits_provider: _FirestoreRiskLimitsProvider | None = None
 
         # Replay marker: engine constructed (startup-ish for this component).
         try:
@@ -1934,61 +1985,6 @@ class ExecutionEngine:
                     message="kill_switch_enabled",
                 )
 
-            broker_order = self._broker.place_order(intent=intent)
-            broker_order_id = str(broker_order.get("id") or "").strip() or None
-            logger.info(
-                "exec.order_placed %s",
-                json.dumps(
-                    _to_jsonable(
-                        {"broker": self._broker_name, "broker_order_id": broker_order_id, "order": broker_order}
-                    )
-                ),
-            )
-            try:
-                logger.info(
-                    "%s",
-                    dumps_replay_event(
-                        build_replay_event(
-                            event="order_intent",
-                            component="backend.execution.engine",
-                            data={
-                                "stage": "broker_placed",
-                                "broker": self._broker_name,
-                                "broker_order_id": broker_order_id,
-                                "client_intent_id": intent.client_intent_id,
-                                "symbol": intent.symbol,
-                                "side": intent.side,
-                                "qty": intent.qty,
-                                "order_type": intent.order_type,
-                            },
-                            trace_id=trace_id,
-                            agent_name=os.getenv("AGENT_NAME") or "execution-engine",
-                            run_id=str(intent.metadata.get("run_id") or "").strip() or None,
-                        )
-                    ),
-                )
-            except Exception:
-                logger.exception("exec.replay_broker_placed_log_failed")
-
-            # If immediately filled (or partially filled), write to ledger AND portfolio history.
-            try:
-                status = str(broker_order.get("status") or "").lower()
-                filled_qty = float(broker_order.get("filled_qty") or 0.0)
-                if status in {"filled", "partially_filled"} or filled_qty > 0:
-                    self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
-                    self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
-            except Exception as e:
-                logger.exception("exec.ledger_write_failed: %s", e)
-
-            outcome = "placed"
-            return ExecutionResult(
-                status="placed",
-                risk=risk,
-                routing=routing_decision,
-                broker_order_id=broker_order_id,
-                broker_order=broker_order,
-            )
-
         # ---- Idempotency guard (engine-level, replay-safe) ----
         # This prevents duplicate broker submissions if the same intent is processed twice.
         try:
@@ -2034,6 +2030,10 @@ class ExecutionEngine:
         except Exception:
             # Idempotency is best-effort; never break safety checks.
             logger.exception("exec.idempotency_guard_failed")
+
+        # ---- Pre-trade assertions (fatal) ----
+        # Must run *before* broker placement. Includes deterministic risk guard checks.
+        pre = self._assert_pre_trade(intent=intent, trace_id=trace_id)
 
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None
@@ -2320,10 +2320,11 @@ class ExecutionEngine:
         # Enforces: max daily loss, max order notional, max trades/day, max per-symbol exposure.
         # Inputs are strict/explicit; missing required state fails closed (when limits are enabled).
         try:
-            max_daily_loss = self._env_float("EXEC_MAX_DAILY_LOSS_USD", None)
+            # Baseline (env) limits (existing behavior).
+            max_daily_loss_env = self._env_float("EXEC_MAX_DAILY_LOSS_USD", None)
             max_order_notional = self._env_float("EXEC_MAX_ORDER_NOTIONAL", None)
             max_trades_per_day = _as_int_or_none(os.getenv("EXEC_MAX_DAILY_TRADES"))
-            max_per_symbol_exposure = self._env_float("EXEC_MAX_PER_SYMBOL_EXPOSURE_USD", None)
+            max_per_symbol_exposure_env = self._env_float("EXEC_MAX_PER_SYMBOL_EXPOSURE_USD", None)
 
             # Provided by earlier risk validation when available (see execute_intent()).
             trades_today = _as_int_or_none(intent.metadata.get("_risk_trades_today"))
@@ -2340,30 +2341,148 @@ class ExecutionEngine:
                 )
             )
 
-            decision = evaluate_risk_guard(
-                trade=RiskGuardTrade(
-                    symbol=intent.symbol,
-                    side=intent.side,
-                    qty=float(intent.qty),
-                    estimated_price_usd=float(est_price),
-                    estimated_notional_usd=float(est_notional),
-                ),
-                state=RiskGuardState(
-                    trading_date=_iso_date_utc(),
-                    daily_pnl_usd=daily_pnl,
-                    trades_today=trades_today,
-                    current_position_qty=current_qty,
-                ),
-                limits=RiskGuardLimits(
-                    max_daily_loss_usd=max_daily_loss,
-                    max_order_notional_usd=max_order_notional,
-                    max_trades_per_day=max_trades_per_day,
-                    max_per_symbol_exposure_usd=max_per_symbol_exposure,
-                ),
+            # Firestore (per-strategy / per-account) limits: enforce these *before execution*.
+            # We only consume existing keys; missing keys mean "disabled".
+            tenant_for_limits = str(tenant_id or "").strip() or str(os.getenv("EXEC_TENANT_ID") or "").strip() or None
+            uid_for_limits = (
+                str(intent.metadata.get("uid") or intent.metadata.get("user_id") or os.getenv("EXEC_UID") or "").strip()
+                or None
             )
+            strat_doc: dict[str, Any] | None = None
+            acct_doc: dict[str, Any] | None = None
+            try:
+                if self._risk_limits_provider is None:
+                    self._risk_limits_provider = _FirestoreRiskLimitsProvider()
+                if tenant_for_limits and uid_for_limits:
+                    if str(intent.strategy_id or "").strip():
+                        strat_doc = self._risk_limits_provider.get_enabled_limits(
+                            tenant_id=str(tenant_for_limits),
+                            uid=str(uid_for_limits),
+                            broker_account_id=str(intent.broker_account_id),
+                            scope="strategy",
+                            strategy_id=str(intent.strategy_id),
+                        )
+                    acct_doc = self._risk_limits_provider.get_enabled_limits(
+                        tenant_id=str(tenant_for_limits),
+                        uid=str(uid_for_limits),
+                        broker_account_id=str(intent.broker_account_id),
+                        scope="account",
+                        strategy_id=None,
+                    )
+            except Exception as e:
+                # Firestore failures should not silently allow a limit breach; we keep the env-based
+                # safety net and log the read failure for operators.
+                logger.warning(
+                    "exec.risk_limits_firestore_read_failed %s",
+                    json.dumps(
+                        _to_jsonable(
+                            {
+                                "error_type": type(e).__name__,
+                                "error": str(e),
+                                "tenant_id": tenant_for_limits,
+                                "uid": uid_for_limits,
+                                "broker_account_id": intent.broker_account_id,
+                                "strategy_id": intent.strategy_id,
+                                "trace_id": trace_id,
+                            }
+                        )
+                    ),
+                )
+                strat_doc = None
+                acct_doc = None
+
+            def _min_or_none(a: float | None, b: float | None) -> float | None:
+                if a is None:
+                    return b
+                if b is None:
+                    return a
+                return float(min(float(a), float(b)))
+
+            def _extract_max_loss_per_day(doc: dict[str, Any] | None) -> float | None:
+                if not isinstance(doc, dict):
+                    return None
+                return _as_float_or_none(doc.get("max_loss_per_day"))
+
+            def _extract_max_position_per_symbol(doc: dict[str, Any] | None) -> float | None:
+                if not isinstance(doc, dict):
+                    return None
+                return _as_float_or_none(doc.get("max_position_per_symbol"))
+
+            # Base limits (env). Firestore limits constrain further (min), and apply per-scope.
+            base_limits = RiskGuardLimits(
+                max_daily_loss_usd=max_daily_loss_env,
+                max_order_notional_usd=max_order_notional,
+                max_trades_per_day=max_trades_per_day,
+                max_per_symbol_exposure_usd=max_per_symbol_exposure_env,
+            )
+
+            trade = RiskGuardTrade(
+                symbol=intent.symbol,
+                side=intent.side,
+                qty=float(intent.qty),
+                estimated_price_usd=float(est_price),
+                estimated_notional_usd=float(est_notional),
+            )
+            state = RiskGuardState(
+                trading_date=_iso_date_utc(),
+                daily_pnl_usd=daily_pnl,
+                trades_today=trades_today,
+                current_position_qty=current_qty,
+            )
+
+            # 1) Strategy-scoped risk limits (if configured)
+            if strat_doc is not None:
+                strat_limits = RiskGuardLimits(
+                    max_daily_loss_usd=_min_or_none(base_limits.max_daily_loss_usd, _extract_max_loss_per_day(strat_doc)),
+                    max_order_notional_usd=base_limits.max_order_notional_usd,
+                    max_trades_per_day=base_limits.max_trades_per_day,
+                    max_per_symbol_exposure_usd=_min_or_none(
+                        base_limits.max_per_symbol_exposure_usd, _extract_max_position_per_symbol(strat_doc)
+                    ),
+                )
+                decision = evaluate_risk_guard(trade=trade, state=state, limits=strat_limits)
+                if not decision.allowed:
+                    payload = {
+                        "reason": "risk_guard_blocked",
+                        "limits_scope": "strategy",
+                        "limits_id": strat_doc.get("id"),
+                        "risk_guard": decision.to_dict(),
+                        "intent": _to_jsonable(intent),
+                        "trace_id": trace_id,
+                    }
+                    self._critical("exec.pretrade_assertion_failed", payload=payload)
+                    raise PreTradeAssertionError("risk_guard_blocked")
+
+            # 2) Account-scoped risk limits (if configured)
+            if acct_doc is not None:
+                acct_limits = RiskGuardLimits(
+                    max_daily_loss_usd=_min_or_none(base_limits.max_daily_loss_usd, _extract_max_loss_per_day(acct_doc)),
+                    max_order_notional_usd=base_limits.max_order_notional_usd,
+                    max_trades_per_day=base_limits.max_trades_per_day,
+                    max_per_symbol_exposure_usd=_min_or_none(
+                        base_limits.max_per_symbol_exposure_usd, _extract_max_position_per_symbol(acct_doc)
+                    ),
+                )
+                decision = evaluate_risk_guard(trade=trade, state=state, limits=acct_limits)
+                if not decision.allowed:
+                    payload = {
+                        "reason": "risk_guard_blocked",
+                        "limits_scope": "account",
+                        "limits_id": acct_doc.get("id"),
+                        "risk_guard": decision.to_dict(),
+                        "intent": _to_jsonable(intent),
+                        "trace_id": trace_id,
+                    }
+                    self._critical("exec.pretrade_assertion_failed", payload=payload)
+                    raise PreTradeAssertionError("risk_guard_blocked")
+
+            # 3) Env-only baseline risk guard (when Firestore limits not present for the required keys)
+            # (Still useful for CI and simple deployments.)
+            decision = evaluate_risk_guard(trade=trade, state=state, limits=base_limits)
             if not decision.allowed:
                 payload = {
                     "reason": "risk_guard_blocked",
+                    "limits_scope": "engine",
                     "risk_guard": decision.to_dict(),
                     "intent": _to_jsonable(intent),
                     "trace_id": trace_id,

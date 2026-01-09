@@ -144,7 +144,7 @@ def _read_user_account_snapshot(*, db, uid: str) -> dict:
     return snap.to_dict() or {}
 
 
-def _require_daily_capital_snapshot(*, db, tenant_id: str, uid: str) -> None:
+def _require_daily_capital_snapshot(*, db, tenant_id: str, uid: str) -> object:
     """
     Enforce:
     - no trades before daily snapshot exists
@@ -165,6 +165,7 @@ def _require_daily_capital_snapshot(*, db, tenant_id: str, uid: str) -> None:
     )
     snap.assert_date_match(trading_date_ny=trading_date_ny)
     snap.assert_trade_window(now_utc=now)
+    return snap
 
 
 def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict:
@@ -271,7 +272,7 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     # Safety gate: daily bankroll snapshot must exist + be in-window.
     try:
         db = get_firestore_client()
-        _require_daily_capital_snapshot(db=db, tenant_id=ctx.tenant_id, uid=ctx.uid)
+        daily_snap = _require_daily_capital_snapshot(db=db, tenant_id=ctx.tenant_id, uid=ctx.uid)
     except DailyCapitalSnapshotError as e:
         msg = str(e)
         # Treat corruption/mismatch as hard failure (500) for immediate operator attention.
@@ -317,6 +318,17 @@ def execute_trade(trade_request: TradeRequest, request: Request):
         )
     
     # Risk check (always performed regardless of mode)
+    # Populate `current_day_loss` from (current equity - starting equity), so max_loss_per_day can be enforced.
+    # If we can't compute it, fall back to 0 (risk service may still enforce other limits).
+    current_day_loss = Decimal("0.0")
+    try:
+        acct_now = _read_user_account_snapshot(db=db, uid=ctx.uid)
+        current_equity = Decimal(str(acct_now.get("equity") or "0"))
+        starting_equity = Decimal(str(getattr(daily_snap, "starting_equity_usd", 0.0) or 0.0))
+        pnl = current_equity - starting_equity
+        current_day_loss = pnl if pnl < 0 else Decimal("0.0")
+    except Exception:
+        current_day_loss = Decimal("0.0")
     try:
         risk_req = TradeCheckRequest(
             broker_account_id=trade_request.broker_account_id,
@@ -326,7 +338,7 @@ def execute_trade(trade_request: TradeRequest, request: Request):
             side=trade_request.side,
             current_open_positions=0,
             current_trades_today=0,
-            current_day_loss="0.0",
+            current_day_loss=str(current_day_loss),
             current_day_drawdown="0.0",
         )
         risk_client = RiskAgentSyncClient(RISK_SERVICE_URL)
