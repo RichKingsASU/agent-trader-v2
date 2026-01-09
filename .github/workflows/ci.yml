@@ -16,10 +16,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Checkout (full history required)
+      - name: Checkout (full history, no submodules)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: false
 
       - name: Validate runtime integrity
         run: |
@@ -35,10 +36,11 @@ jobs:
       TRADING_MODE: paper
 
     steps:
-      - name: Checkout (full history required)
+      - name: Checkout (full history, no submodules)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: false
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -55,7 +57,7 @@ jobs:
           pip install -r requirements.txt
           npm ci
 
-      - name: Lint
+      - name: Lint & compile
         run: |
           npm run lint
           python -m compileall . -q -x venv
@@ -70,10 +72,11 @@ jobs:
       TRADING_MODE: paper
 
     steps:
-      - name: Checkout (full history required)
+      - name: Checkout (full history, no submodules)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
