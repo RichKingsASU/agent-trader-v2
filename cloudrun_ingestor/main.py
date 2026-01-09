@@ -17,9 +17,12 @@ import os
 import signal
 import sys
 import threading
-import time
+import traceback
 from typing import Any
 from typing import NoReturn
+
+from backend.common.logging import init_structured_logging
+from backend.common.logging import log_standard_event
 
 # --- Runtime detection helpers ---
 def _running_under_gunicorn() -> bool:
@@ -46,13 +49,15 @@ def _fail_fast_import(exc: BaseException, *, context: str, failed_import: str) -
     During local/CI import smoke checks (not under gunicorn), we only log CRITICAL
     and allow import to succeed.
     """
-    logger.critical(
-        "Import failed (%s): %s: %s",
-        str(context),
-        str(failed_import),
-        str(exc),
-        extra={**LOG_EXTRA, "context": str(context), "failed_import": str(failed_import)},
-        exc_info=True,
+    log_standard_event(
+        logger,
+        "import.failed",
+        severity="CRITICAL",
+        outcome="failure",
+        context=str(context),
+        failed_import=str(failed_import),
+        error=str(exc),
+        exception=traceback.format_exc()[-8000:],
     )
     if _running_under_gunicorn():
         raise SystemExit(1)
@@ -83,36 +88,21 @@ def _missing_required_env(required: list[str]) -> list[str]:
 
 
 def _fail_fast(msg: str) -> NoReturn:
-    logger.critical(msg, extra=LOG_EXTRA)
+    log_standard_event(logger, "startup.failed", severity="CRITICAL", outcome="failure", message=str(msg))
     raise RuntimeError(msg)
 
 
 # --- Structured Logging & Pre-run Configuration ---
 # This must run before any other modules are imported to ensure logging is configured correctly.
 
-# Always initialize stdlib logging first.
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+# Emit structured JSON to stdout (Cloud Run will ingest as jsonPayload).
+init_structured_logging(
+    service=os.getenv("K_SERVICE", "cloudrun_ingestor"),
+    env=os.getenv("ENV", "prod"),
+    level=os.getenv("LOG_LEVEL", "INFO"),
+)
 
-# Only attempt google-cloud-logging setup on Cloud Run (avoid any GCP/ADC/network
-# lookups during local runs and CI import checks).
-if (os.getenv("K_SERVICE") or "").strip():
-    try:
-        import google.cloud.logging  # type: ignore
-
-        logging_client = google.cloud.logging.Client()
-        logging_client.setup_logging()
-    except Exception as e:  # noqa: BLE001 - best-effort logging initialization
-        logging.getLogger(__name__).warning(
-            "google-cloud-logging unavailable; using std logging: %s",
-            e,
-        )
-
-# Set up a logger adapter to inject custom static fields into all log messages.
-LOG_EXTRA = {
-    "service": os.getenv("K_SERVICE", "cloudrun_ingestor"),
-    "env": os.getenv("ENV", "prod"),
-}
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("cloudrun_ingestor")
 
 def _bootstrap_env() -> None:
     # Allow existing CI/scripts to use either variable name.
@@ -142,14 +132,13 @@ try:
     from backend.common.cloudrun_perf import identity_fields as _identity_fields  # noqa: WPS433
     from backend.common.cloudrun_perf import instance_uptime_ms as _instance_uptime_ms  # noqa: WPS433
 
-    logger.info(
-        "Cloud Run process start",
-        extra={
-            **LOG_EXTRA,
-            "event_type": "cloudrun.process_start",
-            "instance_uptime_ms": _instance_uptime_ms(),
-            **_identity_fields(),
-        },
+    log_standard_event(
+        logger,
+        "cloudrun.process_start",
+        severity="INFO",
+        outcome="success",
+        instance_uptime_ms=_instance_uptime_ms(),
+        **_identity_fields(),
     )
 except Exception:
     pass
@@ -165,9 +154,21 @@ def override_config():
         config_module.MARKET_BARS_1M_TOPIC = os.environ["MARKET_BARS_1M_TOPIC"]
         config_module.TRADE_SIGNALS_TOPIC = os.environ["TRADE_SIGNALS_TOPIC"]
         config_module.INGEST_FLAG_SECRET_ID = os.environ["INGEST_FLAG_SECRET_ID"]
-        logger.info("Configuration overridden from environment.", extra={**LOG_EXTRA, "config_overridden": True})
+        log_standard_event(
+            logger,
+            "config.overridden",
+            severity="INFO",
+            outcome="success",
+            config_overridden=True,
+        )
     except KeyError as e:
-        logger.critical("Missing required environment variable: %s", e, extra=LOG_EXTRA)
+        log_standard_event(
+            logger,
+            "config.missing_required_env",
+            severity="CRITICAL",
+            outcome="failure",
+            missing_env=str(e),
+        )
         if _running_under_gunicorn():
             raise SystemExit(1)
         return
@@ -211,9 +212,17 @@ SHUTDOWN_FLAG = threading.Event()
 _SHUTDOWN_HANDLERS_INSTALLED = False
 worker_thread: threading.Thread | None = None
 
-def _install_shutdown_handlers_once() -> None:
-    """
-    Install SIGTERM/SIGINT handlers (best-effort).
+def shutdown_handler(signum: int, frame: Any) -> None:
+    """Sets the shutdown flag on receiving SIGTERM or SIGINT."""
+    log_standard_event(
+        logger,
+        "cloudrun.shutdown_signal",
+        severity="WARNING",
+        outcome="shutdown",
+        signal=signal.Signals(signum).name,
+    )
+    SHUTDOWN_FLAG.set()
+
 
     Important:
     - Chain any previous handlers so Gunicorn/framework signal handling still works.
@@ -305,10 +314,10 @@ def ingestion_worker() -> None:
     Production ingestion behavior is implemented elsewhere; this thread is a
     placeholder that keeps the Cloud Run container's process model stable.
     """
-    logger.info("Ingestion worker thread started.", extra={**LOG_EXTRA, "event_type": "cloudrun.worker.start"})
+    log_standard_event(logger, "cloudrun.worker.start", severity="INFO", outcome="started")
     # Wait until shutdown. No work here by design.
     SHUTDOWN_FLAG.wait()
-    logger.warning("Ingestion worker shutting down.", extra={**LOG_EXTRA, "event_type": "cloudrun.worker.shutdown"})
+    log_standard_event(logger, "cloudrun.worker.shutdown", severity="WARNING", outcome="shutdown")
 
 
 # --- Flask App for Gunicorn ---
@@ -317,32 +326,25 @@ def ingestion_worker() -> None:
 try:
     from flask import Flask
 except Exception as e:
-    # In real runtime (gunicorn), fail fast so the container doesn't come up "healthy"
-    # without the required WSGI framework. In local/CI import checks, allow import.
-    _fail_fast_import(e, context="startup", failed_import="flask.Flask")
-    Flask = None  # type: ignore[assignment]
-    app = None  # type: ignore[assignment]
-else:
-    app = Flask(__name__)
+    _fail_fast(f"Failed to import Flask: {type(e).__name__}: {e}")
+app = Flask(__name__)
 
-if app is not None:
-    try:
-        from backend.common.cloudrun_perf import classify_request as _classify_request  # noqa: WPS433
+try:
+    from backend.common.cloudrun_perf import classify_request as _classify_request  # noqa: WPS433
 
-        @app.before_request
-        def _cloudrun_request_perf_hook():  # type: ignore[no-redef]
-            # Minimal noise: still logs once per request (health checks are low-QPS here).
-            c = _classify_request()
-            logger.info(
-                "Request handled",
-                extra={
-                    **LOG_EXTRA,
-                    "event_type": "cloudrun.http_request",
-                    "cold_start": bool(c.cold_start),
-                    "request_ordinal": int(c.request_ordinal),
-                    "instance_uptime_ms": int(c.instance_uptime_ms),
-                },
-            )
+    @app.before_request
+    def _cloudrun_request_perf_hook():  # type: ignore[no-redef]
+        # Minimal noise: still logs once per request (health checks are low-QPS here).
+        c = _classify_request()
+        log_standard_event(
+            logger,
+            "cloudrun.http_request",
+            severity="INFO",
+            outcome="success",
+            cold_start=bool(c.cold_start),
+            request_ordinal=int(c.request_ordinal),
+            instance_uptime_ms=int(c.instance_uptime_ms),
+        )
 
     except Exception:
         pass

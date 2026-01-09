@@ -17,6 +17,60 @@ from replay_support import ReplayContext, ensure_event_not_applied
 from time_audit import ensure_utc
 
 
+def _lww_key(*, published_at: datetime, message_id: str) -> tuple[float, str]:
+    """
+    Last-write-wins ordering key for Pub/Sub-derived writes.
+
+    Ordering:
+    - primary: published_at (UTC)
+    - tie-break: message_id lexicographic (stable)
+    """
+    pub = ensure_utc(published_at, source="cloudrun_consumer.firestore_writer._lww_key", field="published_at")
+    return (pub.timestamp(), str(message_id or ""))
+
+
+def _existing_pubsub_lww(existing: dict[str, Any]) -> tuple[Optional[datetime], Optional[str]]:
+    """
+    Best-effort extractor for existing Pub/Sub ordering fields across historical shapes.
+
+    Returns: (published_at_utc, message_id)
+    """
+    if not isinstance(existing, dict):
+        return None, None
+
+    pub: Optional[datetime] = None
+    mid: Optional[str] = None
+
+    # snake_case
+    v = existing.get("published_at")
+    if isinstance(v, datetime):
+        pub = ensure_utc(v, source="cloudrun_consumer.firestore_writer._existing_pubsub_lww", field="published_at")
+
+    src = existing.get("source")
+    if isinstance(src, dict):
+        mid_v = src.get("message_id")
+        if mid_v is not None and str(mid_v).strip():
+            mid = str(mid_v).strip()
+
+        # camelCase
+        if pub is None:
+            pv = src.get("publishedAt")
+            if isinstance(pv, str) and pv.strip():
+                s = pv.strip()
+                if s.endswith("Z"):
+                    s = s[:-1] + "+00:00"
+                try:
+                    pub = ensure_utc(datetime.fromisoformat(s), source="cloudrun_consumer.firestore_writer._existing_pubsub_lww", field="publishedAt")
+                except Exception:
+                    pub = None
+        if mid is None:
+            mv = src.get("messageId")
+            if mv is not None and str(mv).strip():
+                mid = str(mv).strip()
+
+    return pub, mid
+
+
 def _as_utc(dt: datetime) -> datetime:
     return ensure_utc(dt, source="cloudrun_consumer.firestore_writer._as_utc", field="dt")
 
