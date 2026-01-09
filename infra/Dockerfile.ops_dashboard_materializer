@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # Install python deps first for better layer caching
 COPY backend/requirements.lock /app/backend/requirements.lock
 RUN python -m pip install --no-cache-dir -r /app/backend/requirements.lock
+RUN python -m pip install --no-cache-dir gunicorn
 
 # Copy the repo after deps are installed
 COPY . /app
@@ -28,5 +29,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz').read()" || exit 1
 
-CMD ["uvicorn", "backend.ops_dashboard_materializer.service:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "-k", "uvicorn.workers.UvicornWorker", "backend.ops_dashboard_materializer.service:app"]
 
