@@ -16,15 +16,9 @@ from dataclasses import dataclass
 import json
 import os
 import logging
-import sys
 import time
-import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
-
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
@@ -35,10 +29,6 @@ from backend.observability.correlation import bind_correlation_id, get_or_create
 
 from backend.contracts.ops_alerts import try_write_contract_violation_alert
 from backend.contracts.registry import validate_topic_event
-from event_utils import infer_topic
-from firestore_writer import FirestoreWriter
-from schema_router import route_payload
-from time_audit import ensure_utc
 
 from cloudrun_consumer.event_utils import infer_topic
 from cloudrun_consumer.firestore_writer import FirestoreWriter
@@ -673,13 +663,10 @@ async def pubsub_push(req: Request) -> dict[str, Any]:
             messageId=message_id,
             subscription=subscription_str,
             topic=topic or "",
-            handler=handler_name,
+            handler=handler,
             reason=reason,
             error=error,
             errors=errors[:10] if isinstance(errors, list) else None,
-            topic=topic,
-            subscription=subscription,
-            messageId=message_id,
         )
         writer.maybe_write_sampled_dlq_event(
             message_id=message_id,
