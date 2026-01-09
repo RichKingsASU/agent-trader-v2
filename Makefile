@@ -77,6 +77,7 @@ lock-check: ## Fail if backend *.lock files are out of date
 		echo "OK: lock files are in sync"
 
 .PHONY: help fmt lint smoke-check test build frontend-build ci-validate deploy guard report readiness status git-status logs scale port-forward clean dev
+.PHONY: data-plane-smoke-test
 
 help: ## Show available targets and usage
 	@echo "AgentTrader v2 — Trading Floor Makefile"
@@ -99,6 +100,9 @@ help: ## Show available targets and usage
 	@echo "  make guard && make deploy && make report"
 	@echo "  make readiness NAMESPACE=trading-floor"
 	@echo "  make logs AGENT=strategy-engine"
+
+data-plane-smoke-test: ## End-to-end data plane smoke test (Pub/Sub -> consumer -> Firestore)
+	@bash ./scripts/data_plane_smoke_test.sh
 
 dev: ## Start local development environment (backend + frontend)
 	@echo "Running local development environment..."
