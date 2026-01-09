@@ -3,16 +3,18 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import sys
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
-from cloudrun_consumer.idempotency import ensure_message_once
-from cloudrun_consumer.replay_support import ReplayContext, ensure_event_not_applied
-from cloudrun_consumer.time_audit import ensure_utc
+from time_audit import ensure_utc
+
+from idempotency import ensure_message_once
+from replay_support import ReplayContext, ensure_event_not_applied
+from time_audit import ensure_utc
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -50,10 +52,7 @@ def _max_dt(*values: Optional[datetime]) -> Optional[datetime]:
 
 def _lww_key(*, published_at: datetime, message_id: str) -> tuple[datetime, str]:
     """
-    Deterministic ordering key for last-write-wins documents.
-
-    Primary: published_at (UTC)
-    Tie-breaker: message_id (lexicographic)
+    Sort key for last-write-wins using (published_at, message_id).
     """
     return (
         ensure_utc(published_at, source="cloudrun_consumer.firestore_writer._lww_key", field="published_at"),
@@ -61,31 +60,26 @@ def _lww_key(*, published_at: datetime, message_id: str) -> tuple[datetime, str]
     )
 
 
-def _existing_pubsub_lww(existing: dict[str, Any]) -> tuple[datetime, str]:
+def _existing_pubsub_lww(existing: Any) -> tuple[Optional[datetime], str]:
     """
-    Read (published_at, message_id) from multiple historical shapes.
-
-    Supported shapes (examples):
-    - {"published_at": <datetime>, "source": {"message_id": "m1"}}
-    - {"source": {"publishedAt": "2026-01-08T01:02:03Z", "messageId": "m2"}}
+    Best-effort extraction of an existing (publishedAt, messageId) pair from multiple shapes.
+    Used for last-write-wins comparisons and unit tests.
     """
     if not isinstance(existing, dict):
-        return datetime.min.replace(tzinfo=timezone.utc), ""
+        return None, ""
 
-    published_at = _parse_rfc3339(existing.get("published_at")) or _parse_rfc3339(existing.get("publishedAt"))
-
+    pub = _parse_rfc3339(existing.get("publishedAt")) or _parse_rfc3339(existing.get("published_at"))
     mid = ""
+
     src = existing.get("source")
     if isinstance(src, dict):
-        mid = str(src.get("message_id") or src.get("messageId") or src.get("message_id") or "").strip()
+        if pub is None:
+            pub = _parse_rfc3339(src.get("publishedAt")) or _parse_rfc3339(src.get("published_at"))
+        mid_val = src.get("messageId") if "messageId" in src else src.get("message_id")
+        if isinstance(mid_val, str) and mid_val.strip():
+            mid = mid_val.strip()
 
-        if published_at is None:
-            published_at = _parse_rfc3339(src.get("published_at")) or _parse_rfc3339(src.get("publishedAt"))
-
-    if published_at is None:
-        published_at = datetime.min.replace(tzinfo=timezone.utc)
-
-    return ensure_utc(published_at, source="cloudrun_consumer.firestore_writer._existing_pubsub_lww", field="published_at"), mid
+    return (pub, mid)
 
 
 OPS_SERVICE_STATUSES = ("healthy", "degraded", "down", "unknown", "maintenance")
@@ -204,6 +198,96 @@ class FirestoreWriter:
             return True
         except Exception:
             return False
+
+    def _deterministic_sample(self, *, message_id: str, sample_rate: float) -> bool:
+        """
+        Deterministically sample by message id (stable across retries / instances).
+        """
+        r = float(sample_rate or 0.0)
+        if r <= 0.0:
+            return False
+        if r >= 1.0:
+            return True
+        mid = str(message_id or "").strip()
+        if not mid:
+            return False
+        # Use a stable hash -> [0,1).
+        h = hashlib.sha256(mid.encode("utf-8")).digest()
+        # First 8 bytes as uint64.
+        n = int.from_bytes(h[:8], "big", signed=False)
+        frac = n / float(2**64)
+        return frac < r
+
+    def maybe_write_sampled_dlq_event(
+        self,
+        *,
+        message_id: str,
+        subscription: str,
+        topic: str,
+        handler: str,
+        http_status: int,
+        reason: str,
+        error: str,
+        delivery_attempt: Optional[int],
+        attributes: Optional[dict[str, str]] = None,
+        payload: Optional[dict[str, Any]] = None,
+        sample_rate: float,
+        ttl_hours: float,
+    ) -> bool:
+        """
+        Best-effort DLQ "sample" record for debugging without relying on Pub/Sub DLQ retention.
+
+        Returns True if a doc write was attempted, else False.
+        """
+        if not self._deterministic_sample(message_id=message_id, sample_rate=sample_rate):
+            return False
+
+        mid = str(message_id or "").strip()
+        if not mid:
+            return False
+
+        doc_id = mid.replace("/", "_")[:256]
+        ref = self._db.collection(self._col("ops_pubsub_dlq_samples")).document(doc_id)
+
+        expire_at = None
+        try:
+            ttl = max(0.0, float(ttl_hours))
+            if ttl > 0.0:
+                expire_at = datetime.now(timezone.utc) + timedelta(hours=ttl)  # type: ignore[name-defined]
+        except Exception:
+            expire_at = None
+
+        doc: dict[str, Any] = {
+            "messageId": mid,
+            "subscription": str(subscription or ""),
+            "topic": str(topic or ""),
+            "handler": str(handler or ""),
+            "httpStatus": int(http_status),
+            "reason": str(reason or ""),
+            "error": str(error or "")[:2000],
+            "deliveryAttempt": int(delivery_attempt) if delivery_attempt is not None else None,
+            "attributes": dict(attributes or {}),
+            "payload": payload if isinstance(payload, dict) else None,
+            "createdAt": self._firestore.SERVER_TIMESTAMP,
+            "expireAt": expire_at,
+        }
+        # Remove nulls for cleaner docs.
+        doc = {k: v for k, v in doc.items() if v is not None}
+        try:
+            ref.set(doc, merge=True)
+        except Exception:
+            return False
+        return True
+
+    def _protect_published_at(self, *, existing: dict[str, Any], incoming_doc: dict[str, Any]) -> dict[str, Any]:
+        """
+        Prevent accidental overwrites of existing timestamps with nulls.
+        """
+        protected = dict(incoming_doc)
+        for k in ("publishedAt", "producedAt", "eventTime"):
+            if protected.get(k) is None and existing.get(k) is not None:
+                protected[k] = existing.get(k)
+        return protected
 
     def observe_pubsub_delivery(
         self,
@@ -554,99 +638,15 @@ class FirestoreWriter:
             existing = snap.to_dict() if snap.exists else {}
             existing_pub, existing_mid = _existing_pubsub_lww(existing)
 
-            incoming_key = _lww_key(published_at=source.published_at, message_id=source.message_id)
-            if existing_pub is not None and existing_mid is not None:
-                existing_key = _lww_key(published_at=existing_pub, message_id=existing_mid)
-                if incoming_key < existing_key:
-                    txn.set(dedupe_ref, {"outcome": "out_of_order_ignored"}, merge=True)
-                    return False, "out_of_order_event_ignored"
-
-            doc: dict[str, Any] = {
-                "pipelineId": str(pipeline_id),
-                "source": {"topic": str(source.topic), "messageId": str(source.message_id), "publishedAt": _as_utc(source.published_at)},
-                "publishedAt": _as_utc(source.published_at),
-                "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
-            }
-            for k, v in (fields or {}).items():
-                if v is not None:
-                    doc[str(k)] = v
-
-            txn.set(service_ref, doc, merge=True)
-            txn.set(dedupe_ref, {"outcome": "applied"}, merge=True)
-            return True, "applied"
-
-        txn = self._db.transaction()
-        return self._firestore.transactional(_txn)(txn)
-
-    def dedupe_and_upsert_ingest_pipeline(
-        self,
-        *,
-        message_id: str,
-        pipeline_id: str,
-        source: SourceInfo,
-        fields: dict[str, Any],
-        replay: Optional[ReplayContext] = None,
-        replay_dedupe_key: Optional[str] = None,
-    ) -> Tuple[bool, str]:
-        """
-        Transactionally:
-        - dedupe on `ops_dedupe/{messageId}`
-        - last-write-wins on `ingest_pipelines/{pipelineId}` using Pub/Sub publishedAt (+ messageId tie-break)
-        """
-        dedupe_ref = self._db.collection(self._col("ops_dedupe")).document(str(message_id))
-        pipeline_ref = self._db.collection(self._col("ingest_pipelines")).document(str(pipeline_id))
-
-        def _txn(txn: Any) -> Tuple[bool, str]:
-            first_time, _ = ensure_message_once(
-                txn=txn,
-                dedupe_ref=dedupe_ref,
-                message_id=str(message_id),
-                doc={
-                    "kind": "ingest_pipelines",
-                    "targetDoc": f"ingest_pipelines/{pipeline_id}",
-                    "sourceTopic": str(source.topic),
-                    "sourcePublishedAt": _as_utc(source.published_at),
-                },
-            )
-            if not first_time:
-                return False, "duplicate_message_noop"
-
-            if replay is not None:
-                ok, why = ensure_event_not_applied(
-                    txn=txn,
-                    db=self._db,
-                    replay=replay,
-                    dedupe_key=str(replay_dedupe_key or message_id),
-                    event_time=_as_utc(source.published_at),
-                    message_id=str(message_id),
-                )
-                if not ok:
-                    return False, why
-
-            snap = pipeline_ref.get(transaction=txn)
-            existing = snap.to_dict() if snap.exists else {}
-            existing_pub, existing_mid = _existing_pubsub_lww(existing if isinstance(existing, dict) else {})
-            if existing_pub is not None:
-                inc_key = _lww_key(published_at=source.published_at, message_id=str(source.message_id))
-                ex_key = _lww_key(published_at=existing_pub, message_id=str(existing_mid or ""))
-                if inc_key < ex_key:
-                    txn.set(
-                        dedupe_ref,
-                        {
-                            "outcome": "out_of_order_ignored",
-                            "reason": "incoming_publishedAt_older_than_stored",
-                            "storedPublishedAt": existing_pub,
-                            "storedMessageId": existing_mid,
-                        },
-                        merge=True,
-                    )
-                    return False, "out_of_order_event_ignored"
-
             existing_source_pub = None
+            existing_source_mid = None
             if isinstance(existing, dict):
                 src = existing.get("source")
                 if isinstance(src, dict):
                     existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
+                    mid = src.get("messageId") if "messageId" in src else src.get("message_id")
+                    if isinstance(mid, str) and mid.strip():
+                        existing_source_mid = mid.strip()
 
             existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
             existing_lh_sc = _parse_rfc3339(existing.get("last_heartbeat_at")) if isinstance(existing, dict) else None
@@ -657,53 +657,26 @@ class FirestoreWriter:
             incoming = _as_utc(updated_at)
             incoming_eff = _max_dt(incoming, last_heartbeat_at, source.published_at) or incoming
             if existing_max is not None and incoming_eff < existing_max:
-                stored_pub, stored_mid = _existing_pubsub_lww(existing if isinstance(existing, dict) else {})
                 # Marked dedupe already; do not reprocess on retries.
                 txn.set(
                     dedupe_ref,
                     {
                         "outcome": "out_of_order_ignored",
                         "reason": "incoming_publishedAt_older_than_stored",
-                        "storedPublishedAt": stored_pub,
-                        "storedMessageId": stored_mid,
+                        "storedPublishedAt": _as_utc(existing_max),
+                        "storedMessageId": existing_source_mid,
                     },
                     merge=True,
                 )
                 return False, "out_of_order_event_ignored"
 
-            prev_status, _ = _normalize_ops_service_status(existing.get("status") if isinstance(existing, dict) else None)
-            next_status, raw_status = _normalize_ops_service_status(status)
-            if not _transition_allowed(prev_status, next_status):
-                next_status = prev_status
-            if next_status == "unknown" and prev_status != "unknown":
-                next_status = prev_status
-
-            doc = {
-                "serviceId": str(service_id),
-                "service_id": str(service_id),
-                "env": str(env),
-                "environment": str(env),
-                "status": str(next_status),
-                "status_raw": str(raw_status),
-                "lastHeartbeatAt": last_heartbeat_at,
-                "last_heartbeat_at": last_heartbeat_at,
-                "version": str(version),
-                "region": str(region),
-                "updatedAt": incoming_eff,
-                "updated_at": incoming_eff,
-                "source": {
-                    "topic": str(source.topic),
-                    "messageId": str(source.message_id),
-                    "message_id": str(source.message_id),
-                    "publishedAt": _as_utc(source.published_at),
-                    "published_at": _as_utc(source.published_at),
-                },
+            doc: dict[str, Any] = {
+                "pipelineId": str(pipeline_id),
+                "source": {"topic": str(source.topic), "messageId": str(source.message_id), "publishedAt": _as_utc(source.published_at)},
+                "publishedAt": _as_utc(source.published_at),
                 "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
             }
-            for k, v in (fields or {}).items():
-                if v is not None:
-                    doc[str(k)] = v
-            txn.set(pipeline_ref, doc, merge=True)
+            txn.set(service_ref, doc, merge=True)
             txn.set(dedupe_ref, {"outcome": "applied"}, merge=True)
             return True, "applied"
 

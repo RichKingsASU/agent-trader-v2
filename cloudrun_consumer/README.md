@@ -99,6 +99,52 @@ Pub/Sub push does not include the topic name by default. This service infers top
   - `FIRESTORE_DATABASE` (default: `(default)`)
   - `PORT` (default: `8080`)
   - `SUBSCRIPTION_TOPIC_MAP` (JSON map: subscription name → topic)
+  - **Backpressure**
+    - `CONSUMER_MAX_WORKERS` (default: `8`): max concurrent in-flight message processors per instance (bounds Firestore pressure).
+    - `CONSUMER_QUEUE_SIZE` (default: `64`): bounded per-instance queue depth. When full, the handler returns **429** so Pub/Sub retries later.
+  - **Firestore retry**
+    - `FIRESTORE_RETRY_MAX_ATTEMPTS` (default: `6`)
+    - `FIRESTORE_RETRY_INITIAL_BACKOFF_S` (default: `0.25`)
+    - `FIRESTORE_RETRY_MAX_BACKOFF_S` (default: `6.0`)
+    - `FIRESTORE_RETRY_MAX_TOTAL_S` (default: `8.0`): caps total retry time per message on transient Firestore errors.
+  - **Explicit DLQ (recommended for permanent Firestore errors)**
+    - `DLQ_TOPIC`: topic id (e.g. `my-consumer-dlq`) or full topic path `projects/<proj>/topics/<topic>`.
+    - `DLQ_PUBLISH_DEADLINE_S` (default: `10.0`)
+
+### Backpressure + retry policy (consumer)
+
+- **Bounded concurrency / queueing**
+  - Work is processed via a bounded in-memory queue and fixed worker pool (`CONSUMER_MAX_WORKERS`).
+  - When the queue is full, the endpoint returns **429** (`backpressure_queue_full`) so Pub/Sub retries later.
+- **Firestore transient retry**
+  - On transient Firestore errors (`UNAVAILABLE`, `RESOURCE_EXHAUSTED`, `DEADLINE_EXCEEDED`, etc.) the consumer retries with exponential backoff + jitter.
+  - Retries are capped by `FIRESTORE_RETRY_MAX_ATTEMPTS` and `FIRESTORE_RETRY_MAX_TOTAL_S`.
+- **Permanent Firestore errors**
+  - On `PERMISSION_DENIED` and `INVALID_ARGUMENT`, the consumer emits an **ALERT** log and (if `DLQ_TOPIC` is set) publishes the decoded message to the DLQ, then returns **200** to stop redelivery loops.
+
+### Load test + documented safe limits
+
+The consumer’s **safe per-instance pressure limit** is:
+
+- **max in-flight Firestore work per instance** = `CONSUMER_MAX_WORKERS`
+- **max queued (waiting) messages per instance** = `CONSUMER_QUEUE_SIZE`
+
+To validate safe limits for your Firestore quota + doc shapes, run the load tester against a deployed instance (or local emulator):
+
+```bash
+python cloudrun_consumer/scripts/load_test_pubsub_push.py \
+  --url "http://localhost:8080/pubsub/push" \
+  --requests 2000 \
+  --concurrency 100 \
+  --topic "system.events" \
+  --subscription "projects/local/subscriptions/loadtest"
+```
+
+Interpretation:
+
+- **200s**: accepted/acked
+- **429s**: backpressure working (Pub/Sub should retry later)
+- **5xx**: transient failures (should be rare; indicates too much pressure, too low retry cap, or a bug)
 
 ### Run locally
 
