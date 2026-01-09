@@ -524,6 +524,9 @@ class AlpacaBroker:
         self._timeout = request_timeout_s
 
     def place_order(self, *, intent: OrderIntent) -> dict[str, Any]:
+        # Absolute safety boundary: never attempt broker-side order placement while halted.
+        # This ensures retries/replays cannot bypass upstream guards.
+        require_kill_switch_off(operation="alpaca.place_order")
         fatal_if_execution_reached(
             operation="alpaca.place_order",
             explicit_message=(
@@ -564,6 +567,8 @@ class AlpacaBroker:
         return r.json()
 
     def cancel_order(self, *, broker_order_id: str) -> dict[str, Any]:
+        # Even cancellations are broker-side actions; refuse while halted.
+        require_kill_switch_off(operation="alpaca.cancel_order")
         fatal_if_execution_reached(
             operation="alpaca.cancel_order",
             explicit_message=(
@@ -584,6 +589,8 @@ class AlpacaBroker:
         return r.json()
 
     def get_order_status(self, *, broker_order_id: str) -> dict[str, Any]:
+        # Status polls are not executions, but they do hit the broker API; keep halt semantics consistent.
+        require_kill_switch_off(operation="alpaca.get_order_status")
         fatal_if_execution_reached(
             operation="alpaca.get_order_status",
             explicit_message=(
@@ -2034,6 +2041,20 @@ class ExecutionEngine:
         except Exception:
             # Idempotency is best-effort; never break safety checks.
             logger.exception("exec.idempotency_guard_failed")
+
+        # Defense-in-depth (duplicate block): this path must never be able to
+        # place orders while the global kill switch is active.
+        try:
+            require_trading_live_mode(action="broker order placement")
+            require_kill_switch_off(operation="broker order placement")
+        except ExecutionHaltedError:
+            enabled, source = get_kill_switch_state()
+            halted_risk = RiskDecision(
+                allowed=False,
+                reason="kill_switch_enabled",
+                checks=[{"check": "kill_switch", "enabled": bool(enabled), "source": source}],
+            )
+            return ExecutionResult(status="rejected", risk=halted_risk, message="kill_switch_enabled")
 
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None
