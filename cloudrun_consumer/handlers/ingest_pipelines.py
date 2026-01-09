@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from event_utils import as_utc, parse_ts
-from firestore_writer import SourceInfo
+from cloudrun_consumer.event_utils import as_utc, parse_ts
+from cloudrun_consumer.firestore_writer import SourceInfo
 
 
 def _first_str(payload: dict[str, Any], keys: list[str]) -> Optional[str]:

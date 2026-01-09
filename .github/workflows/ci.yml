@@ -138,6 +138,7 @@ jobs:
             backend/requirements.lock
             backend/ingestion/requirements.txt
             cloudrun_ingestor/requirements.txt
+            cloudrun_consumer/requirements.txt
 
       - name: Paper-trading hard lock guard (CI)
         shell: bash
@@ -233,13 +234,42 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install -q --upgrade pytest
+          python3 -m pytest -q tests/test_imports.py
 
-      - name: Set up Node (Firebase emulators)
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+          # Import the actual Cloud Run entrypoint with dummy env to ensure we catch:
+          # - missing dependencies
+          # - syntax / import errors
+          # - accidental early-exit on startup
+          GCP_PROJECT_ID=dummy \
+          SYSTEM_EVENTS_TOPIC=dummy \
+          MARKET_TICKS_TOPIC=dummy \
+          MARKET_BARS_1M_TOPIC=dummy \
+          TRADE_SIGNALS_TOPIC=dummy \
+          INGEST_FLAG_SECRET_ID=dummy \
+          python3 -c "import importlib.util; s=importlib.util.spec_from_file_location('cloudrun_ingestor_main','cloudrun_ingestor/main.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print('ok: imported cloudrun_ingestor/main.py')"
 
-      - name: Integration test with Firestore emulator
+      - name: Pre-build Python import test (cloudrun_consumer; package-safe imports)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install -r cloudrun_consumer/requirements.txt
+          python3 -m pip install -q --upgrade pytest
+
+          # Run the service-local unit tests (fast, no cloud calls).
+          python3 -m pytest -q cloudrun_consumer/tests
+
+          # Critical: ensure imports do not rely on implicit cwd / flattened imports.
+          # Simulate container layout: PYTHONPATH=/app (repo root) + run from a non-repo cwd.
+          (cd /tmp && \
+            PYTHONPATH="${GITHUB_WORKSPACE}" \
+            GCP_PROJECT=dummy \
+            SYSTEM_EVENTS_TOPIC=dummy \
+            INGEST_FLAG_SECRET_ID=dummy \
+            ENV=dummy \
+            python3 -c "import cloudrun_consumer.main; print('ok: imported cloudrun_consumer.main')"
+          )
+
+      - name: Docker build + boot smoke test (cloudrun_ingestor)
         shell: bash
         run: |
           set -euo pipefail
@@ -349,9 +379,9 @@ jobs:
         run: |
           set -euo pipefail
 
-      - name: Contract unification gate (schemas + fixtures)
+      - name: Data plane smoke test (emulators: Pub/Sub + Firestore)
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m unittest -q tests.test_contract_schemas
+          bash scripts/data_plane_smoke_test.sh
 

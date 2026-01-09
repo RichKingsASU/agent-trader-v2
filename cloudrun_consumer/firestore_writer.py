@@ -2,21 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
 import sys
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
-from time_audit import ensure_utc
-
-from idempotency import ensure_message_once
-from replay_support import ReplayContext, ensure_event_not_applied
-from time_audit import ensure_utc
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+from cloudrun_consumer.idempotency import ensure_message_once
+from cloudrun_consumer.replay_support import ReplayContext, ensure_event_not_applied
+from cloudrun_consumer.time_audit import ensure_utc
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -54,26 +50,42 @@ def _max_dt(*values: Optional[datetime]) -> Optional[datetime]:
 
 def _lww_key(*, published_at: datetime, message_id: str) -> tuple[datetime, str]:
     """
-    Last-write-wins ordering key: publishedAt first, then messageId.
+    Deterministic ordering key for last-write-wins documents.
+
+    Primary: published_at (UTC)
+    Tie-breaker: message_id (lexicographic)
     """
-    return (_as_utc(published_at), str(message_id or ""))
+    return (
+        ensure_utc(published_at, source="cloudrun_consumer.firestore_writer._lww_key", field="published_at"),
+        str(message_id or ""),
+    )
 
 
-def _existing_pubsub_lww(existing: Any) -> tuple[Optional[datetime], Optional[str]]:
+def _existing_pubsub_lww(existing: dict[str, Any]) -> tuple[datetime, str]:
     """
-    Extract a best-effort (published_at, message_id) from existing Firestore doc shapes.
+    Read (published_at, message_id) from multiple historical shapes.
+
+    Supported shapes (examples):
+    - {"published_at": <datetime>, "source": {"message_id": "m1"}}
+    - {"source": {"publishedAt": "2026-01-08T01:02:03Z", "messageId": "m2"}}
     """
     if not isinstance(existing, dict):
-        return None, None
-    pub = _parse_rfc3339(existing.get("published_at")) or _parse_rfc3339(existing.get("publishedAt"))
+        return datetime.min.replace(tzinfo=timezone.utc), ""
+
+    published_at = _parse_rfc3339(existing.get("published_at")) or _parse_rfc3339(existing.get("publishedAt"))
+
+    mid = ""
     src = existing.get("source")
     if isinstance(src, dict):
-        pub = pub or _parse_rfc3339(src.get("published_at")) or _parse_rfc3339(src.get("publishedAt"))
-        mid = src.get("message_id") or src.get("messageId")
-    else:
-        mid = existing.get("message_id") or existing.get("messageId")
-    mid_s = str(mid).strip() if mid is not None else ""
-    return pub, (mid_s or None)
+        mid = str(src.get("message_id") or src.get("messageId") or src.get("message_id") or "").strip()
+
+        if published_at is None:
+            published_at = _parse_rfc3339(src.get("published_at")) or _parse_rfc3339(src.get("publishedAt"))
+
+    if published_at is None:
+        published_at = datetime.min.replace(tzinfo=timezone.utc)
+
+    return ensure_utc(published_at, source="cloudrun_consumer.firestore_writer._existing_pubsub_lww", field="published_at"), mid
 
 
 OPS_SERVICE_STATUSES = ("healthy", "degraded", "down", "unknown", "maintenance")
@@ -630,10 +642,55 @@ class FirestoreWriter:
                     )
                     return False, "out_of_order_event_ignored"
 
-            doc: dict[str, Any] = {
-                "pipelineId": str(pipeline_id),
-                "publishedAt": _as_utc(source.published_at),
-                "published_at": _as_utc(source.published_at),
+            existing_source_pub = None
+            if isinstance(existing, dict):
+                src = existing.get("source")
+                if isinstance(src, dict):
+                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
+
+            existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
+            existing_lh_sc = _parse_rfc3339(existing.get("last_heartbeat_at")) if isinstance(existing, dict) else None
+            existing_u = _parse_rfc3339(existing.get("updatedAt")) if isinstance(existing, dict) else None
+            existing_u_sc = _parse_rfc3339(existing.get("updated_at")) if isinstance(existing, dict) else None
+            existing_max = _max_dt(existing_lh, existing_lh_sc, existing_u, existing_u_sc, existing_source_pub)
+
+            incoming = _as_utc(updated_at)
+            incoming_eff = _max_dt(incoming, last_heartbeat_at, source.published_at) or incoming
+            if existing_max is not None and incoming_eff < existing_max:
+                stored_pub, stored_mid = _existing_pubsub_lww(existing if isinstance(existing, dict) else {})
+                # Marked dedupe already; do not reprocess on retries.
+                txn.set(
+                    dedupe_ref,
+                    {
+                        "outcome": "out_of_order_ignored",
+                        "reason": "incoming_publishedAt_older_than_stored",
+                        "storedPublishedAt": stored_pub,
+                        "storedMessageId": stored_mid,
+                    },
+                    merge=True,
+                )
+                return False, "out_of_order_event_ignored"
+
+            prev_status, _ = _normalize_ops_service_status(existing.get("status") if isinstance(existing, dict) else None)
+            next_status, raw_status = _normalize_ops_service_status(status)
+            if not _transition_allowed(prev_status, next_status):
+                next_status = prev_status
+            if next_status == "unknown" and prev_status != "unknown":
+                next_status = prev_status
+
+            doc = {
+                "serviceId": str(service_id),
+                "service_id": str(service_id),
+                "env": str(env),
+                "environment": str(env),
+                "status": str(next_status),
+                "status_raw": str(raw_status),
+                "lastHeartbeatAt": last_heartbeat_at,
+                "last_heartbeat_at": last_heartbeat_at,
+                "version": str(version),
+                "region": str(region),
+                "updatedAt": incoming_eff,
+                "updated_at": incoming_eff,
                 "source": {
                     "topic": str(source.topic),
                     "messageId": str(source.message_id),
