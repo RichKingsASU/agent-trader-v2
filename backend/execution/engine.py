@@ -1779,6 +1779,27 @@ class ExecutionEngine:
     def execute_intent(self, *, intent: OrderIntent) -> ExecutionResult:
         intent = intent.normalized()
 
+        # --- Correlation/idempotency invariant ---
+        # Capital-related side effects (idempotency store, reservation tracking) are keyed by `client_intent_id`.
+        # To be single-use per correlation_id and replay-safe, correlation_id must match client_intent_id.
+        md = intent.metadata or {}
+        corr_raw = str(md.get("correlation_id") or "").strip()
+        if corr_raw and corr_raw != str(intent.client_intent_id):
+            _fail_invariant(
+                name="correlation_id_matches_client_intent_id",
+                message="correlation_id must equal client_intent_id for replay-safe single-use execution",
+                context={
+                    "correlation_id": corr_raw,
+                    "client_intent_id": str(intent.client_intent_id),
+                    "strategy_id": intent.strategy_id,
+                    "symbol": intent.symbol,
+                    "broker_account_id": intent.broker_account_id,
+                },
+            )
+        if not corr_raw:
+            # Ensure correlation_id is always present for consistent audit/replay logs.
+            md["correlation_id"] = str(intent.client_intent_id)
+
         # --- In-flight reservation (best-effort) ---
         # Reserve *during processing only* (not a long-lived open-order hold).
         tenant_id = resolve_tenant_id_from_metadata(intent.metadata)

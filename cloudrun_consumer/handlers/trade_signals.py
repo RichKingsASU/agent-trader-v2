@@ -5,7 +5,9 @@ from typing import Any, Optional
 
 from cloudrun_consumer.event_utils import choose_doc_id, ordering_ts, parse_ts
 from cloudrun_consumer.firestore_writer import SourceInfo
+from cloudrun_consumer.idempotency import ensure_message_once
 from cloudrun_consumer.replay_support import ReplayContext
+from cloudrun_consumer.replay_support import ensure_event_not_applied
 
 
 def choose_trade_signal_dedupe_key(*, payload: dict[str, Any], message_id: str) -> str:
@@ -28,13 +30,24 @@ def choose_trade_signal_dedupe_key(*, payload: dict[str, Any], message_id: str) 
     return str(message_id or "").strip()
 
 
-def handle_trade_signal(
+def _extract_trade_signal_fields(
     *,
     payload: dict[str, Any],
     message_id: str,
     pubsub_published_at: datetime,
     source_topic: str,
-) -> tuple[str, Optional[str], datetime, Optional[datetime], Optional[datetime], Optional[str], Optional[str], Optional[str], SourceInfo]:
+) -> tuple[
+    str,
+    Optional[str],
+    str,
+    datetime,
+    Optional[datetime],
+    Optional[datetime],
+    Optional[str],
+    Optional[str],
+    Optional[str],
+    SourceInfo,
+]:
     doc_id = choose_doc_id(payload=payload, message_id=message_id)
     replay_dedupe_key = choose_trade_signal_dedupe_key(payload=payload, message_id=message_id)
     event_id = None
@@ -50,7 +63,7 @@ def handle_trade_signal(
     action = payload.get("action") if isinstance(payload.get("action"), str) else None
 
     source = SourceInfo(topic=str(source_topic or ""), message_id=str(message_id), published_at=pubsub_published_at)
-    return (doc_id, event_id, event_time, produced_at, published_at, symbol, strategy, action, source)
+    return (doc_id, event_id, replay_dedupe_key, event_time, produced_at, published_at, symbol, strategy, action, source)
 
 
 def _handle_trade_signal_impl(
@@ -70,11 +83,13 @@ def _handle_trade_signal_impl(
     _ = env
     _ = default_region
 
-    doc_id, event_id, event_time, produced_at, published_at, symbol, strategy, action, source = _extract_trade_signal_fields(
-        payload=payload,
-        message_id=message_id,
-        pubsub_published_at=pubsub_published_at,
-        source_topic=source_topic,
+    doc_id, event_id, replay_dedupe_key, event_time, produced_at, published_at, symbol, strategy, action, source = (
+        _extract_trade_signal_fields(
+            payload=payload,
+            message_id=message_id,
+            pubsub_published_at=pubsub_published_at,
+            source_topic=source_topic,
+        )
     )
     applied, reason = firestore_writer.upsert_trade_signal(
         doc_id=doc_id,
@@ -118,11 +133,13 @@ def handle_trade_signal(
     CI gate requirement: the trade-signals handler path must call an idempotency guard
     (`ensure_message_once` or `ensure_event_not_applied`) before executing handler logic.
     """
-    doc_id, event_id, event_time, _produced_at, _published_at, symbol, _strategy, _action, _source = _extract_trade_signal_fields(
-        payload=payload,
-        message_id=message_id,
-        pubsub_published_at=pubsub_published_at,
-        source_topic=source_topic,
+    doc_id, event_id, replay_dedupe_key, event_time, _produced_at, _published_at, symbol, _strategy, _action, _source = (
+        _extract_trade_signal_fields(
+            payload=payload,
+            message_id=message_id,
+            pubsub_published_at=pubsub_published_at,
+            source_topic=source_topic,
+        )
     )
 
     ok = True
@@ -134,12 +151,38 @@ def handle_trade_signal(
                 message_id=str(message_id),
                 doc_id=str(doc_id),
                 replay=replay,
-                replay_dedupe_key=str(event_id or doc_id),
+                replay_dedupe_key=str(replay_dedupe_key or event_id or doc_id),
                 event_time=event_time,
             )
         else:
-            # Defensive: production writer should always provide this method.
-            ok, why = False, "missing_idempotency_guard"
+            # Back-compat / test-double path: implement the guard using the writer's Firestore-like surface.
+            db = getattr(firestore_writer, "_db", None)
+            firestore_mod = getattr(firestore_writer, "_firestore", None)
+            col_fn = getattr(firestore_writer, "_col", None)
+            if db is None or firestore_mod is None or not callable(col_fn):
+                ok, why = False, "missing_idempotency_guard"
+            else:
+                dedupe_ref = db.collection(col_fn("trade_signals_dedupe")).document(str(message_id))
+
+                def _txn(txn: Any) -> tuple[bool, str]:
+                    first, _ = ensure_message_once(txn=txn, dedupe_ref=dedupe_ref, message_id=str(message_id))
+                    if not first:
+                        return False, "duplicate_message_noop"
+                    if replay is not None:
+                        ok2, why2 = ensure_event_not_applied(
+                            txn=txn,
+                            db=db,
+                            replay=replay,
+                            dedupe_key=str(replay_dedupe_key or event_id or doc_id),
+                            event_time=event_time,
+                            message_id=str(message_id),
+                        )
+                        if not ok2:
+                            return False, str(why2)
+                    return True, "ok"
+
+                txn = db.transaction()
+                ok, why = firestore_mod.transactional(_txn)(txn)
     except Exception as e:
         # Fail closed: do not execute handler logic if we can't guarantee idempotency.
         ok, why = False, f"idempotency_guard_error:{type(e).__name__}"
