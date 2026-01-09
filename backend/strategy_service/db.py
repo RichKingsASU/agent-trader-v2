@@ -212,7 +212,7 @@ def insert_paper_order_idempotent(
     try:
         with_firestore_retry(lambda: ref.create(doc))
         stored = doc
-    except AlreadyExists:
+    except gexc.AlreadyExists:
         snap = with_firestore_retry(lambda: ref.get())
         stored = snap.to_dict() or doc
 
