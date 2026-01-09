@@ -1,11 +1,8 @@
 import os
-import sys
 import unittest
 from datetime import datetime, timezone
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from event_utils import (  # noqa: E402
+from cloudrun_consumer.event_utils import (
     choose_doc_id,
     infer_topic,
     normalize_doc_id,

@@ -8,7 +8,7 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from time_audit import ensure_utc
+from cloudrun_consumer.time_audit import ensure_utc
 
 
 _DOC_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_\-:.]+")

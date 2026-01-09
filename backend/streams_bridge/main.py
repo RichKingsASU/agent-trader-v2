@@ -2,6 +2,11 @@ from backend.common.runtime_fingerprint import log_runtime_fingerprint as _log_r
 
 _log_runtime_fingerprint(service="stream-bridge")
 
+from backend.common.config import validate_or_exit as _validate_or_exit
+
+# Fail-fast env contract validation (single-line errors).
+_validate_or_exit("stream-bridge")
+
 from backend.common.logging import init_structured_logging
 
 init_structured_logging(service="stream-bridge")
