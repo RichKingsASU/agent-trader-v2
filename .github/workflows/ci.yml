@@ -379,9 +379,9 @@ jobs:
         run: |
           set -euo pipefail
 
-      - name: Contract unification gate (schemas + fixtures)
+      - name: Data plane smoke test (emulators: Pub/Sub + Firestore)
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m unittest -q tests.test_contract_schemas
+          bash scripts/data_plane_smoke_test.sh
 

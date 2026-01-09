@@ -78,7 +78,12 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
         raise HTTPException(status_code=500, detail=f"Risk service request failed: {e}") from e
 
     # 2. If allowed, insert paper order
-    if risk_result.allowed:
+    if risk_result.get("allowed"):
+        idem = (
+            (order.idempotency_key or "").strip()
+            or (request.headers.get("Idempotency-Key") or "").strip()
+            or None
+        )
         logical_order = {
             "uid": ctx.uid,
             "correlation_id": corr,
@@ -94,6 +99,7 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
             "time_in_force": order.time_in_force,
             "notional": order.notional,
             "quantity": order.quantity,
+            "idempotency_key": idem,
         }
 
         payload = PaperOrderCreate(
