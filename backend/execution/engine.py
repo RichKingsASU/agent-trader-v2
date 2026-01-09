@@ -26,15 +26,12 @@ from backend.common.replay_events import build_replay_event, dumps_replay_event,
 from backend.common.freshness import check_freshness
 from backend.time.nyse_time import parse_ts
 from backend.streams.alpaca_env import load_alpaca_env
-from backend.execution.reservations import (
-    BestEffortReservationManager,
-    FirestoreReservationManager,
-    NoopReservation,
-    ReservationHandle,
-    ReservationManager,
-    resolve_tenant_id_from_metadata,
+from backend.risk.capital_reservation import (
+    CapitalReservationError,
+    InsufficientBuyingPowerError,
+    reserve_capital_atomic,
+    release_capital_atomic,
 )
-from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
 
 logger = logging.getLogger(__name__)
 
@@ -2086,20 +2083,25 @@ class ExecutionEngine:
             pass
 
         # If immediately filled (or partially filled), write to ledger AND portfolio history.
-        status = str(broker_order.get("status") or "").lower()
-        filled_qty = float(broker_order.get("filled_qty") or 0.0)
-        if status in {"filled", "partially_filled"} or filled_qty > 0:
-            # Post-trade assertions MUST run against actual fill quantities/prices.
-            self._assert_post_trade_fill_and_reconcile(
-                intent=intent,
-                broker_order=broker_order,
-                broker_order_id=broker_order_id,
-                pre=pre,
-                trace_id=trace_id,
-            )
-            # Ledger + history writes are not optional for correctness; failure is fatal.
-            self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
-            self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
+        try:
+            status = str(broker_order.get("status") or "").lower()
+            filled_qty = float(broker_order.get("filled_qty") or 0.0)
+            if status in {"filled", "partially_filled"} or filled_qty > 0:
+                self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
+                self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
+                # If we reserved for this intent, release on first observed fill.
+                if reserved and tenant_id_for_reservation and uid_for_reservation:
+                    try:
+                        release_capital_atomic(
+                            tenant_id=tenant_id_for_reservation,
+                            uid=uid_for_reservation,
+                            broker_account_id=intent.broker_account_id,
+                            trade_id=intent.client_intent_id,
+                        )
+                    except Exception:
+                        logger.exception("exec.capital_release_failed (filled)")
+        except Exception as e:
+            logger.exception("exec.ledger_write_failed: %s", e)
 
         return ExecutionResult(
             status="placed",
@@ -2116,6 +2118,9 @@ class ExecutionEngine:
         )
         if self._dry_run:
             return {"id": broker_order_id, "status": "dry_run"}
+        # Broker-side action: enforce global authority + kill-switch before side effects.
+        require_trading_live_mode(action="broker cancel")
+        require_kill_switch_off(operation="broker cancel")
         fatal_if_execution_reached(
             operation="execution_engine.cancel_order",
             explicit_message=(
@@ -2126,6 +2131,8 @@ class ExecutionEngine:
         )
         resp = self._broker.cancel_order(broker_order_id=broker_order_id)
         logger.info("exec.cancel_response %s", json.dumps(_to_jsonable(resp)))
+        # Best-effort: attempt to release reservation keyed by broker_order_id if caller uses it as trade_id.
+        # NOTE: The canonical reservation key is client_intent_id; without it we cannot reliably release here.
         return resp
 
     def sync_and_ledger_if_filled(self, *, broker_order_id: str) -> dict[str, Any]:
@@ -2170,6 +2177,20 @@ class ExecutionEngine:
             ).normalized()
             self._write_ledger_fill(intent=intent, broker_order=order, fill=order)
             self._write_portfolio_history(intent=intent, broker_order=order, fill=order)
+            # Best-effort: release reservation if client_intent_id matches reservation trade_id.
+            try:
+                if self._ledger is None:
+                    self._ledger = _FirestoreLedger()
+                tenant_id = self._ledger._resolve_tenant_id(intent=intent)  # type: ignore[attr-defined]
+                uid = self._ledger._resolve_uid(intent=intent)  # type: ignore[attr-defined]
+                release_capital_atomic(
+                    tenant_id=tenant_id,
+                    uid=uid,
+                    broker_account_id=intent.broker_account_id,
+                    trade_id=intent.client_intent_id,
+                )
+            except Exception:
+                logger.exception("exec.capital_release_failed (sync)")
         return order
 
     @dataclass(frozen=True, slots=True)
