@@ -233,6 +233,57 @@ class FirestoreWriter:
         p = self._collection_prefix
         return str(name) if not p else f"{p}{name}"
 
+    def ensure_trade_signals_idempotency(
+        self,
+        *,
+        message_id: str,
+        doc_id: str,
+        replay: Optional[ReplayContext] = None,
+        replay_dedupe_key: Optional[str] = None,
+        event_time: datetime,
+    ) -> Tuple[bool, str]:
+        """
+        Enforce idempotency for trade-signals before running handler logic.
+
+        - Always gates on `ensure_message_once` (dedupe by Pub/Sub messageId).
+        - In replay mode, additionally gates on `ensure_event_not_applied` (stable key across replays).
+        """
+        mid = str(message_id or "").strip()
+        if not mid:
+            # Without a stable message id, we cannot safely dedupe by message.
+            # Fail closed for trade topics (handler wrapper will return a noop result).
+            return False, "missing_message_id"
+
+        dedupe_ref = self._db.collection(self._col("trade_signals_dedupe")).document(mid)
+        target_doc = f"trade_signals/{str(doc_id or '').strip()}"
+
+        def _txn(txn: Any) -> Tuple[bool, str]:
+            first, _existing = ensure_message_once(
+                txn=txn,
+                dedupe_ref=dedupe_ref,
+                message_id=mid,
+                doc={"kind": "trade_signals", "targetDoc": target_doc},
+            )
+            if not first:
+                return False, "duplicate_message_noop"
+
+            if replay is not None:
+                ok, why = ensure_event_not_applied(
+                    txn=txn,
+                    db=self._db,
+                    replay=replay,
+                    dedupe_key=str(replay_dedupe_key or doc_id or mid),
+                    event_time=_as_utc(event_time),
+                    message_id=mid,
+                )
+                if not ok:
+                    return False, why
+
+            return True, "ok"
+
+        txn = self._db.transaction()
+        return self._firestore.transactional(_txn)(txn)
+
     def maybe_write_sampled_dlq_event(
         self,
         *,
