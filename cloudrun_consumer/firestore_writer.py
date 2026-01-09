@@ -10,11 +10,28 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
-from time_audit import ensure_utc
+try:
+    # Preferred imports when used as a package (`cloudrun_consumer.*`).
+    from cloudrun_consumer.time_audit import ensure_utc
+    from cloudrun_consumer.idempotency import ensure_message_once
+    from cloudrun_consumer.replay_support import ReplayContext, ensure_event_not_applied
+except Exception:  # pragma: no cover
+    # Back-compat for older tests that insert `cloudrun_consumer/` into sys.path.
+    from time_audit import ensure_utc  # type: ignore
+    from idempotency import ensure_message_once  # type: ignore
+    from replay_support import ReplayContext, ensure_event_not_applied  # type: ignore
 
-from idempotency import ensure_message_once
-from replay_support import ReplayContext, ensure_event_not_applied
-from time_audit import ensure_utc
+
+def _dedupe_doc_id(*, kind: str, topic: str, message_id: str) -> str:
+    """
+    Build a Firestore-safe, reasonably short doc id for dedupe documents.
+    """
+    k = str(kind or "").strip() or "unknown"
+    t = str(topic or "").strip() or "unknown"
+    mid = str(message_id or "").strip() or "unknown"
+    # Firestore doc ids cannot contain '/'.
+    raw = f"{k}__{t}__{mid}".replace("/", "_")
+    return raw[:256] if len(raw) > 256 else raw
 
 
 def _lww_key(*, published_at: datetime, message_id: str) -> tuple[float, str]:
@@ -134,6 +151,34 @@ def _existing_pubsub_lww(existing: Any) -> tuple[Optional[datetime], str]:
             mid = mid_val.strip()
 
     return (pub, mid)
+
+
+def apply_pubsub_lww(
+    *,
+    existing: Optional[dict[str, Any]],
+    incoming: dict[str, Any],
+    published_at: datetime,
+    message_id: str,
+) -> tuple[bool, dict[str, Any]]:
+    """
+    Pure helper used in unit tests:
+    - Apply an incoming doc if it is strictly newer than the existing doc based on (published_at, message_id).
+    - Otherwise return the existing doc unchanged.
+    """
+    inc_key = _lww_key(published_at=published_at, message_id=str(message_id or ""))
+
+    if existing is None:
+        return True, dict(incoming)
+
+    ex_pub, ex_mid = _existing_pubsub_lww(existing)
+    if ex_pub is None:
+        return True, dict(incoming)
+
+    ex_key = _lww_key(published_at=ex_pub, message_id=str(ex_mid or ""))
+    if inc_key <= ex_key:
+        return False, dict(existing)
+
+    return True, dict(incoming)
 
 
 OPS_SERVICE_STATUSES = ("healthy", "degraded", "down", "unknown", "maintenance")
@@ -414,6 +459,22 @@ class FirestoreWriter:
         ref = self._db.collection(self._col(collection)).document(str(doc_id))
 
         def _txn(txn: Any) -> Tuple[bool, str]:
+            # Idempotency guard: no side-effects before message-level dedupe.
+            # This prevents duplicates from updating SERVER_TIMESTAMP fields.
+            msg_id = str(getattr(source, "message_id", "") or "").strip()
+            if msg_id:
+                dedupe_ref = self._db.collection(self._col("ops_message_dedupe")).document(
+                    _dedupe_doc_id(kind=str(collection), topic=str(source.topic), message_id=msg_id)
+                )
+                first, _ = ensure_message_once(
+                    txn=txn,
+                    dedupe_ref=dedupe_ref,
+                    message_id=msg_id,
+                    doc={"kind": str(collection), "targetDoc": f"{collection}/{doc_id}"},
+                )
+                if not first:
+                    return False, "duplicate_message_noop"
+
             if replay is not None:
                 ok, why = ensure_event_not_applied(
                     txn=txn,
@@ -692,45 +753,27 @@ class FirestoreWriter:
             existing = snap.to_dict() if snap.exists else {}
             existing_pub, existing_mid = _existing_pubsub_lww(existing)
 
-            existing_source_pub = None
-            existing_source_mid = None
-            if isinstance(existing, dict):
-                src = existing.get("source")
-                if isinstance(src, dict):
-                    existing_source_pub = _parse_rfc3339(src.get("publishedAt"))
-                    mid = src.get("messageId") if "messageId" in src else src.get("message_id")
-                    if isinstance(mid, str) and mid.strip():
-                        existing_source_mid = mid.strip()
-
-            existing_lh = _parse_rfc3339(existing.get("lastHeartbeatAt")) if isinstance(existing, dict) else None
-            existing_lh_sc = _parse_rfc3339(existing.get("last_heartbeat_at")) if isinstance(existing, dict) else None
-            existing_u = _parse_rfc3339(existing.get("updatedAt")) if isinstance(existing, dict) else None
-            existing_u_sc = _parse_rfc3339(existing.get("updated_at")) if isinstance(existing, dict) else None
-            existing_max = _max_dt(existing_lh, existing_lh_sc, existing_u, existing_u_sc, existing_source_pub)
-
-            incoming = _as_utc(updated_at)
-            incoming_eff = _max_dt(incoming, last_heartbeat_at, source.published_at) or incoming
-            if existing_max is not None and incoming_eff < existing_max:
-                # Marked dedupe already; do not reprocess on retries.
-                txn.set(
-                    dedupe_ref,
-                    {
-                        "outcome": "out_of_order_ignored",
-                        "reason": "incoming_publishedAt_older_than_stored",
-                        "storedPublishedAt": _as_utc(existing_max),
-                        "storedMessageId": existing_source_mid,
-                    },
-                    merge=True,
-                )
-                return False, "out_of_order_event_ignored"
+            incoming_key = _lww_key(published_at=source.published_at, message_id=source.message_id)
+            if existing_pub is not None and str(existing_mid or "").strip():
+                existing_key = _lww_key(published_at=existing_pub, message_id=str(existing_mid))
+                if incoming_key < existing_key:
+                    txn.set(dedupe_ref, {"outcome": "out_of_order_ignored"}, merge=True)
+                    return False, "out_of_order_event_ignored"
 
             doc: dict[str, Any] = {
                 "pipelineId": str(pipeline_id),
-                "source": {"topic": str(source.topic), "messageId": str(source.message_id), "publishedAt": _as_utc(source.published_at)},
+                "source": {
+                    "topic": str(source.topic),
+                    "messageId": str(source.message_id),
+                    "publishedAt": _as_utc(source.published_at),
+                },
                 "publishedAt": _as_utc(source.published_at),
                 "lastAppliedAt": self._firestore.SERVER_TIMESTAMP,
+                **(dict(fields) if isinstance(fields, dict) else {}),
             }
-            txn.set(service_ref, doc, merge=True)
+            # Clean nulls to avoid overwriting existing values with null.
+            doc = {k: v for k, v in doc.items() if v is not None}
+            txn.set(pipeline_ref, doc, merge=True)
             txn.set(dedupe_ref, {"outcome": "applied"}, merge=True)
             return True, "applied"
 
