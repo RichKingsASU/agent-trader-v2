@@ -24,15 +24,30 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-import logging
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
-from cloudrun_consumer.event_utils import infer_topic
-from cloudrun_consumer.firestore_writer import FirestoreWriter
-from cloudrun_consumer.replay_support import ReplayContext, write_replay_marker
-from cloudrun_consumer.schema_router import route_payload
-from cloudrun_consumer.time_audit import ensure_utc
+def _startup_diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
+    """
+    Print a structured JSON diagnostic log.
+
+    Intended for early import/startup failures where the main logger may not be configured.
+    """
+    payload: dict[str, Any] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "severity": str(severity).upper(),
+        "service": "cloudrun-pubsub-firestore-materializer",
+        "event_type": str(event_type),
+    }
+    payload.update(fields)
+    try:
+        sys.stdout.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except Exception:
+        return
+
 
 def _startup_diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
     """Print a structured JSON diagnostic log."""
