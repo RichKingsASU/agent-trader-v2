@@ -143,6 +143,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [production_readiness_enforcement, lint_format]
+    env:
+      TRADING_MODE: paper
 
     steps:
       - name: Checkout
