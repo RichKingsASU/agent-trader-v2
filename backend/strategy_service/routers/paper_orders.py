@@ -77,6 +77,27 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Risk service request failed: {e}") from e
 
+    try:
+        allowed = bool(getattr(risk_result, "allowed", False))
+        if isinstance(risk_result, dict):
+            allowed = bool(risk_result.get("allowed"))
+        log_event(
+            __import__("logging").getLogger(__name__),
+            "risk.trade_check.allowed" if allowed else "risk.trade_check.denied",
+            severity="INFO" if allowed else "WARNING",
+            correlation_id=corr,
+            execution_id=order.execution_id,
+            tenant_id=ctx.tenant_id,
+            uid=ctx.uid,
+            scope=getattr(risk_result, "scope", None) if not isinstance(risk_result, dict) else risk_result.get("scope"),
+            reason=getattr(risk_result, "reason", None) if not isinstance(risk_result, dict) else risk_result.get("reason"),
+            symbol=order.symbol,
+            side=order.side,
+            notional=float(order.notional),
+        )
+    except Exception:
+        pass
+
     # 2. If allowed, insert paper order
     if risk_result.get("allowed"):
         idem = (

@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from backend.observability.agent_identity import get_agent_identity, require_identity_env
 from backend.observability.correlation import get_or_create_correlation_id
+from backend.observability.execution_id import get_execution_id
 from backend.observability.redaction import redact_dict
 
 
@@ -121,6 +122,7 @@ def _base_fields(*, level: str) -> dict[str, Any]:
     cid = get_or_create_correlation_id()
     base["request_id"] = cid
     base["correlation_id"] = cid
+    base["execution_id"] = get_execution_id()
     # No separate trace context in this repo yet; keep replay-friendly by mirroring.
     base["trace_id"] = cid
     return base
