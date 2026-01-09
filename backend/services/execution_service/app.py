@@ -127,6 +127,10 @@ def _resolve_idempotency_key(req: ExecuteIntentRequest) -> str:
         (req.metadata or {}).get("idempotency_key"),
         (req.metadata or {}).get("client_intent_id"),
         (req.metadata or {}).get("intent_id"),
+        # Common correlation ids in this repo's trade pipeline.
+        (req.metadata or {}).get("execution_id"),
+        (req.metadata or {}).get("signal_id"),
+        (req.metadata or {}).get("allocation_id"),
         (req.metadata or {}).get("event_id"),
         (req.metadata or {}).get("message_id"),
         (req.metadata or {}).get("trace_id"),
@@ -577,6 +581,32 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
         else str(os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip()
     ) or "default"
     idem = FirestoreIdempotencyStore(project_id=os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or None)
+
+    # Additional contract: if an explicit execution_id is provided, refuse duplicates for the same trading day.
+    # This is a minimal downstream safety check: it prevents double-execution even if callers accidentally
+    # retry with a different client_intent_id.
+    execution_id = None
+    try:
+        execution_id = str((req.metadata or {}).get("execution_id") or "").strip() or None
+    except Exception:
+        execution_id = None
+    if execution_id:
+        trading_date_ny = to_nyse(datetime.now(timezone.utc)).date().isoformat()
+        acquired_daily, _daily_rec = idem.begin(
+            tenant_id=tenant_id_for_idem,
+            scope="execution.execution_id_applied_daily",
+            key=f"{execution_id}:{trading_date_ny}",
+            payload={"execution_id": execution_id, "trading_date_ny": trading_date_ny},
+        )
+        if not acquired_daily:
+            return ExecuteIntentResponse(
+                status="duplicate_execution_id",
+                risk={"allowed": False, "reason": "execution_id_already_applied_today", "checks": []},
+                broker_order_id=None,
+                broker_order=None,
+                message="execution_id_already_applied_today",
+            )
+
     acquired, record = idem.begin(
         tenant_id=tenant_id_for_idem,
         scope="execution.execute_intent",
