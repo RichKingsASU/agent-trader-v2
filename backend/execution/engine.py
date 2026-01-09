@@ -2137,6 +2137,9 @@ class ExecutionEngine:
         )
         if self._dry_run:
             return {"id": broker_order_id, "status": "dry_run"}
+        # Broker-side action: enforce global authority + kill-switch before side effects.
+        require_trading_live_mode(action="broker cancel")
+        require_kill_switch_off(operation="broker cancel")
         fatal_if_execution_reached(
             operation="execution_engine.cancel_order",
             explicit_message=(
