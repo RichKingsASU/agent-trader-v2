@@ -18,6 +18,8 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import logging
+
 from fastapi import FastAPI, HTTPException, Request, Response
 
 from backend.contracts.ops_alerts import try_write_contract_violation_alert
@@ -136,9 +138,19 @@ app = FastAPI(title="Cloud Run Pub/Sub → Firestore Materializer", version="0.2
 
 @app.on_event("startup")
 async def _startup() -> None:
-    project_id = (os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
-    if not project_id:
-        raise RuntimeError("Missing required env var: GCP_PROJECT (or GOOGLE_CLOUD_PROJECT)")
+    _normalize_env_alias("GCP_PROJECT", ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT_ID", "PROJECT_ID"])
+    # Centralized env contract validation (single-line failure).
+    try:
+        from backend.common.config import validate_or_exit as _validate_or_exit  # noqa: WPS433
+
+        _validate_or_exit("cloudrun-consumer")
+    except SystemExit:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"CONFIG_FAIL service=cloudrun-consumer action=\"config_validation_import_failed:{type(e).__name__}:{e}\"") from e
+
+    project_id = _require_env("GCP_PROJECT")
+
     database = os.getenv("FIRESTORE_DATABASE") or "(default)"
     collection_prefix = os.getenv("FIRESTORE_COLLECTION_PREFIX") or ""
     app.state.firestore_writer = FirestoreWriter(project_id=project_id, database=database, collection_prefix=collection_prefix)

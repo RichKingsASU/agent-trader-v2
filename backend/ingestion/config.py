@@ -13,24 +13,21 @@ from __future__ import annotations
 
 import os
 
+from backend.common.config import env_int, env_str
 
 def _int_env(name: str, default: int) -> int:
-    raw = (os.getenv(name) or "").strip()
-    if not raw:
-        return int(default)
-    try:
-        return int(raw)
-    except Exception:
-        return int(default)
+    # Back-compat wrapper; prefer backend.common.config.env_int in new code.
+    v = env_int(name, default=int(default), required=False)
+    return int(v) if v is not None else int(default)
 
 
 # Core project/topic identifiers (expected to be overridden by env in Cloud Run).
-PROJECT_ID: str = (os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("PUBSUB_PROJECT_ID") or "").strip()
-SYSTEM_EVENTS_TOPIC: str = (os.getenv("SYSTEM_EVENTS_TOPIC") or "").strip()
-MARKET_TICKS_TOPIC: str = (os.getenv("MARKET_TICKS_TOPIC") or "").strip()
-MARKET_BARS_1M_TOPIC: str = (os.getenv("MARKET_BARS_1M_TOPIC") or "").strip()
-TRADE_SIGNALS_TOPIC: str = (os.getenv("TRADE_SIGNALS_TOPIC") or "").strip()
-INGEST_FLAG_SECRET_ID: str = (os.getenv("INGEST_FLAG_SECRET_ID") or "").strip()
+PROJECT_ID: str = (env_str("GCP_PROJECT") or env_str("GOOGLE_CLOUD_PROJECT") or env_str("PUBSUB_PROJECT_ID") or "").strip()
+SYSTEM_EVENTS_TOPIC: str = (env_str("SYSTEM_EVENTS_TOPIC") or "").strip()
+MARKET_TICKS_TOPIC: str = (env_str("MARKET_TICKS_TOPIC") or "").strip()
+MARKET_BARS_1M_TOPIC: str = (env_str("MARKET_BARS_1M_TOPIC") or "").strip()
+TRADE_SIGNALS_TOPIC: str = (env_str("TRADE_SIGNALS_TOPIC") or "").strip()
+INGEST_FLAG_SECRET_ID: str = (env_str("INGEST_FLAG_SECRET_ID") or "").strip()
 
 
 # Loop timing defaults (seconds).

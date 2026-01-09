@@ -121,18 +121,15 @@ def _bootstrap_env() -> None:
 
 _bootstrap_env()
 
-# Validate presence only (no values).
-_REQUIRED_ENV = [
-    "GCP_PROJECT",
-    "SYSTEM_EVENTS_TOPIC",
-    "MARKET_TICKS_TOPIC",
-    "MARKET_BARS_1M_TOPIC",
-    "TRADE_SIGNALS_TOPIC",
-    "INGEST_FLAG_SECRET_ID",
-]
-_missing = _missing_required_env(_REQUIRED_ENV)
-if _missing:
-    _fail_fast(f"Missing required environment variables: {', '.join(_missing)}")
+# Centralized env contract validation (single-line failure).
+try:
+    from backend.common.config import validate_or_exit as _validate_or_exit  # noqa: WPS433
+
+    _validate_or_exit("cloudrun-ingestor")
+except SystemExit:
+    raise
+except Exception as e:
+    _fail_fast(f"Failed to validate env contract: {type(e).__name__}: {e}")
 
 # Canonical imports: ensure they resolve at startup.
 try:

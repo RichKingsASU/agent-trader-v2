@@ -134,6 +134,11 @@ If you use Secret Manager with the deploy scripts, pass:
 
 - `SECRETS='APCA_API_KEY_ID=alpaca-api-key:latest,APCA_API_SECRET_KEY=alpaca-secret-key:latest,APCA_API_BASE_URL=alpaca-base-url:latest'`
 
+Rotation note:
+
+- Cloud Run resolves Secret Manager values at **container startup**. After rotating a secret (new version), **redeploy** the service/job to pick up the new value.
+- See `docs/CONFIG_SECRETS.md` for rotation expectations and config validation behavior.
+
 ---
 
 ## Deploy: market ingestion service
