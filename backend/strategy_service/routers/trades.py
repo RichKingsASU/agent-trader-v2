@@ -375,6 +375,24 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     except httpx.HTTPError as e:
         raise HTTPException(status_code=500, detail=f"Risk service request failed: {e}") from e
 
+    try:
+        log_event(
+            logger,
+            "risk.trade_check.allowed" if bool(risk_result.allowed) else "risk.trade_check.denied",
+            severity="INFO" if bool(risk_result.allowed) else "WARNING",
+            correlation_id=corr,
+            execution_id=execution_id,
+            tenant_id=ctx.tenant_id,
+            uid=ctx.uid,
+            scope=getattr(risk_result, "scope", None),
+            reason=getattr(risk_result, "reason", None),
+            symbol=trade_request.symbol,
+            side=trade_request.side,
+            notional=float(trade_request.notional),
+        )
+    except Exception:
+        pass
+
     if not risk_result.allowed:
         raise HTTPException(status_code=400, detail=f"Trade not allowed by risk service: {risk_result.reason}")
 
