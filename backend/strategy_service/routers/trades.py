@@ -2,10 +2,13 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 import os
 from uuid import UUID, uuid4
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from decimal import Decimal
 import logging
 import hashlib
+
+import httpx
+from google.api_core import exceptions as gexc
 
 from backend.tenancy.auth import get_tenant_context
 from backend.tenancy.context import TenantContext
@@ -17,6 +20,8 @@ from backend.observability.risk_signals import risk_correlation_id
 from google.cloud import firestore
 from backend.risk.daily_capital_snapshot import DailyCapitalSnapshotError, DailyCapitalSnapshotStore
 from backend.time.nyse_time import to_nyse
+from backend.common.a2a_sdk import RiskAgentSyncClient
+from backend.contracts.risk import TradeCheckRequest
 
 from ..db import build_raw_order, insert_paper_order
 from ..db import insert_paper_order_idempotent
@@ -63,6 +68,31 @@ def _resolve_idempotency_key(*, trade_request: TradeRequest, request: Request) -
         if s:
             return s
     return None
+
+
+def _require_replay_key(*, trade_request: TradeRequest, request: Request) -> tuple[str, str | None]:
+    """
+    Capital-bearing endpoints must be replay-safe:
+    - Require a caller-provided correlation_id (preferred) OR an explicit idempotency key.
+    - Avoid generating new correlation IDs (which would break replay safety).
+    """
+    headers = dict(request.headers)
+    has_corr = bool((trade_request.correlation_id or "").strip()) or bool(
+        (headers.get("X-Request-Id") or headers.get("X-Correlation-Id") or "").strip()
+    )
+    idem_key = _resolve_idempotency_key(trade_request=trade_request, request=request)
+    if not has_corr and not idem_key:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "missing_replay_key",
+                "message": "Provide correlation_id (preferred) or Idempotency-Key to make capital reservation replay-safe.",
+            },
+        )
+    # Always compute corr after the "provided" check; risk_correlation_id may generate if caller omitted.
+    corr = risk_correlation_id(correlation_id=trade_request.correlation_id, headers=headers)
+    # If no idempotency key was provided, fall back to corr (single-use per correlation_id).
+    return corr, (idem_key or corr)
 
 
 def get_shadow_mode_flag() -> bool:
@@ -167,7 +197,7 @@ def _require_daily_capital_snapshot(*, db, tenant_id: str, uid: str) -> None:
     snap.assert_trade_window(now_utc=now)
 
 
-def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict:
+def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, idempotency_key: str | None = None) -> dict:
     """
     Create a synthetic shadow trade and log it to user-scoped shadowTradeHistory collection.
     
@@ -182,7 +212,7 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict
     """
     try:
         db = get_firestore_client()
-        raw_key = idempotency_key
+        raw_key = (idempotency_key or "").strip() or None
         shadow_id = _stable_id(scope="shadow_trade", key=raw_key) if raw_key else str(uuid4())
         
         # Get current price for fill simulation
@@ -267,6 +297,14 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     Fail-safe: On any error reading the shadow mode flag, defaults to shadow mode = True
     """
     ctx: TenantContext = get_tenant_context(request)
+    corr, idem_key = _require_replay_key(trade_request=trade_request, request=request)
+    trade_request.correlation_id = corr
+    execution_id = str((trade_request.execution_id or "").strip() or str(uuid4()))
+    trade_request.execution_id = execution_id
+
+    # Capital reservation key: single-use per correlation_id (scoped by tenant+uid).
+    stable_key = _stable_id(scope="capital_reservation", key=f"{ctx.tenant_id}|{ctx.uid}|{corr}")
+    idem = idem_key
 
     # Safety gate: daily bankroll snapshot must exist + be in-window.
     try:
@@ -341,7 +379,7 @@ def execute_trade(trade_request: TradeRequest, request: Request):
         raise HTTPException(status_code=400, detail=f"Trade not allowed by risk service: {risk_result.reason}")
 
     # Capital reservation (best-effort, idempotent): prevents double-allocation on replay.
-    # Reservation key is stable for a given idempotency key.
+    # Reservation key is stable per correlation_id (scoped), so the first writer wins.
     if stable_key:
         try:
             db = get_firestore_client()
@@ -352,6 +390,7 @@ def execute_trade(trade_request: TradeRequest, request: Request):
                 .document(stable_key)
             )
             reservation = {
+                "correlation_id": corr,
                 "idempotency_key": idem_key,
                 "scope": "trade_execute",
                 "tenant_id": ctx.tenant_id,

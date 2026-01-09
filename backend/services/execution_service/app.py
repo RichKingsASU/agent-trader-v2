@@ -118,11 +118,13 @@ def _resolve_idempotency_key(req: ExecuteIntentRequest) -> str:
     Resolve a replay-stable idempotency key for execution.
 
     Preference order:
+    - correlation_id (preferred for "single-use per correlation_id" safety)
     - explicit request field: client_intent_id
     - metadata-derived keys commonly present in event envelopes
-    - fallback: random (cannot be replay-safe)
+    - NO fallback: callers must provide a stable key to be replay-safe
     """
     candidates = [
+        (req.metadata or {}).get("correlation_id"),
         req.client_intent_id,
         (req.metadata or {}).get("idempotency_key"),
         (req.metadata or {}).get("client_intent_id"),
@@ -131,7 +133,6 @@ def _resolve_idempotency_key(req: ExecuteIntentRequest) -> str:
         (req.metadata or {}).get("message_id"),
         (req.metadata or {}).get("trace_id"),
         (req.metadata or {}).get("run_id"),
-        (req.metadata or {}).get("correlation_id"),
     ]
     for c in candidates:
         if c is None:
@@ -140,15 +141,9 @@ def _resolve_idempotency_key(req: ExecuteIntentRequest) -> str:
         if s:
             return s
 
-    # Fallback is NOT replay-safe. Keep it explicit in logs.
-    import uuid
-
-    fallback = f"intent_{uuid.uuid4().hex}"
-    logger.warning(
-        "exec_service.missing_idempotency_key generating_fallback client_intent_id=%s",
-        fallback,
+    raise ValueError(
+        "missing_idempotency_key: provide client_intent_id or metadata.correlation_id (or another stable metadata key)"
     )
-    return fallback
 
 
 app = FastAPI(title="AgentTrader Execution Engine")
@@ -386,7 +381,17 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
     trace_id = str(req.metadata.get("trace_id") or req.client_intent_id or "").strip() or None
     if trace_id:
         set_replay_context(trace_id=trace_id)
-    idempotency_key = _resolve_idempotency_key(req)
+    try:
+        idempotency_key = _resolve_idempotency_key(req)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "missing_idempotency_key",
+                "message": str(e),
+                "required": "Provide client_intent_id or metadata.correlation_id (recommended) for replay-safe execution.",
+            },
+        ) from e
     intent = OrderIntent(
         strategy_id=req.strategy_id,
         broker_account_id=req.broker_account_id,

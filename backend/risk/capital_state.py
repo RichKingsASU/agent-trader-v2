@@ -298,7 +298,13 @@ class _CapitalState:
         with self._lock:
             self._roll_day_if_needed()
             if rid in self._reserved_by_id:
-                raise DoubleReservationError(f"reservation_id {rid!r} is already reserved")
+                # Idempotent replay: if the same reservation is requested again, treat it as a no-op.
+                existing = float(self._reserved_by_id.get(rid) or 0.0)
+                if abs(existing - amt) <= 1e-9:
+                    return
+                raise DoubleReservationError(
+                    f"reservation_id {rid!r} is already reserved (existing={existing} requested={amt})"
+                )
             snap = self.snapshot()
             if amt > snap.available_capital + 1e-9:
                 raise NegativeAvailableCapitalError(
@@ -327,8 +333,14 @@ class _CapitalState:
         with self._lock:
             self._roll_day_if_needed()
             if rid in self._daily_risk_used_by_id:
+                # Idempotent replay: same risk_id + same amount is a no-op. Different amount is a hard failure.
+                existing = float(self._daily_risk_used_by_id.get(rid) or 0.0)
+                if abs(existing - amt) <= 1e-9:
+                    return
                 # Double-counting risk is an existential bug; refuse loudly.
-                raise DoubleReservationError(f"risk_id {rid!r} was already recorded")
+                raise DoubleReservationError(
+                    f"risk_id {rid!r} was already recorded (existing={existing} requested={amt})"
+                )
             projected = self._daily_risk_used_usd + amt
             if projected > self._daily_risk_cap_usd + 1e-9:
                 raise DailyRiskCapExceededError(
