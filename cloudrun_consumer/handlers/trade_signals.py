@@ -8,7 +8,27 @@ from cloudrun_consumer.firestore_writer import SourceInfo
 from cloudrun_consumer.replay_support import ReplayContext
 
 
-def _extract_trade_signal_fields(
+def choose_trade_signal_dedupe_key(*, payload: dict[str, Any], message_id: str) -> str:
+    """
+    Deterministic replay dedupe key for trade_signals.
+
+    Rules (in priority order):
+    - payload.signal_id (preferred)
+    - payload.eventId
+    - Pub/Sub messageId (fallback)
+    """
+    if isinstance(payload, dict):
+        for k in ("signal_id", "signalId"):
+            v = payload.get(k)
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        v = payload.get("eventId")
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return str(message_id or "").strip()
+
+
+def handle_trade_signal(
     *,
     payload: dict[str, Any],
     message_id: str,
@@ -16,6 +36,7 @@ def _extract_trade_signal_fields(
     source_topic: str,
 ) -> tuple[str, Optional[str], datetime, Optional[datetime], Optional[datetime], Optional[str], Optional[str], Optional[str], SourceInfo]:
     doc_id = choose_doc_id(payload=payload, message_id=message_id)
+    replay_dedupe_key = choose_trade_signal_dedupe_key(payload=payload, message_id=message_id)
     event_id = None
     if "eventId" in payload and payload.get("eventId") is not None:
         event_id = str(payload.get("eventId")).strip() or None
@@ -58,6 +79,7 @@ def _handle_trade_signal_impl(
     applied, reason = firestore_writer.upsert_trade_signal(
         doc_id=doc_id,
         event_id=event_id,
+        replay_dedupe_key=replay_dedupe_key,
         event_time=event_time,
         produced_at=produced_at,
         published_at=published_at,
