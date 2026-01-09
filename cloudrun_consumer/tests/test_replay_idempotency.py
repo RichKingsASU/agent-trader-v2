@@ -1,12 +1,8 @@
-import os
-import sys
 import unittest
 from datetime import datetime, timezone
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from event_utils import choose_doc_id  # noqa: E402
-from firestore_writer import apply_pubsub_lww  # noqa: E402
+from cloudrun_consumer.event_utils import choose_doc_id
+from cloudrun_consumer.firestore_writer import apply_pubsub_lww
 
 
 def _dt(s: str) -> datetime:

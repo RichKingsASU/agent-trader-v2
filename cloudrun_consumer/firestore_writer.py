@@ -10,11 +10,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
-from time_audit import ensure_utc
+from cloudrun_consumer.time_audit import ensure_utc
 
-from idempotency import ensure_message_once
-from replay_support import ReplayContext, ensure_event_not_applied
-from time_audit import ensure_utc
+from cloudrun_consumer.idempotency import ensure_message_once
+from cloudrun_consumer.replay_support import ReplayContext, ensure_event_not_applied
 
 
 def _lww_key(*, published_at: datetime, message_id: str) -> tuple[float, str]:
@@ -543,6 +542,7 @@ class FirestoreWriter:
         *,
         doc_id: str,
         event_id: Optional[str],
+        replay_dedupe_key: Optional[str] = None,
         event_time: datetime,
         produced_at: Optional[datetime],
         published_at: Optional[datetime],
@@ -581,7 +581,7 @@ class FirestoreWriter:
             source=source,
             doc=doc,
             replay=replay,
-            replay_dedupe_key=event_id or doc_id,
+            replay_dedupe_key=str(replay_dedupe_key or event_id or doc_id),
         )
 
     def dedupe_and_upsert_ops_service(
@@ -738,9 +738,36 @@ class FirestoreWriter:
         return self._firestore.transactional(_txn)(txn)
 
 
+def apply_pubsub_lww(
+    *,
+    existing: Optional[dict[str, Any]],
+    incoming: dict[str, Any],
+    published_at: datetime,
+    message_id: str,
+) -> tuple[bool, dict[str, Any]]:
+    """
+    Pure helper for unit tests: apply last-write-wins ordering.
+
+    Returns (applied, resulting_doc).
+    """
+    if existing is None:
+        return True, dict(incoming)
+
+    existing_pub, existing_mid = _existing_pubsub_lww(existing)
+    if existing_pub is not None and str(existing_mid or "").strip():
+        if _lww_key(published_at=published_at, message_id=message_id) < _lww_key(
+            published_at=existing_pub,
+            message_id=str(existing_mid),
+        ):
+            return False, dict(existing)
+
+    return True, dict(incoming)
+
+
 __all__ = [
     "SourceInfo",
     "FirestoreWriter",
     "_existing_pubsub_lww",
     "_lww_key",
+    "apply_pubsub_lww",
 ]
