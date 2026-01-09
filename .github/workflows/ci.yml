@@ -15,6 +15,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  production_readiness_enforcement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Production-readiness enforcement (grep + python)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/check_production_readiness.sh
+
   lint_format:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -123,7 +142,7 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [lint_format]
+    needs: [production_readiness_enforcement, lint_format]
 
     steps:
       - name: Checkout
@@ -357,6 +376,32 @@ jobs:
             exit 1
           }
 
+          # Fail if the container booted a Flask development server (should be gunicorn).
+          docker logs "${CID}" > /tmp/cloudrun_ingestor.log 2>&1 || true
+          python3 - <<'PY'
+          from __future__ import annotations
+          from pathlib import Path
+          import sys
+
+          p = Path("/tmp/cloudrun_ingestor.log")
+          txt = p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
+          needle = "WARNING: This is a development server"
+          if needle in txt:
+            print("ERROR: Flask development server warning detected in container logs.", file=sys.stderr)
+            # Print a small excerpt around the warning for quick debugging.
+            lines = txt.splitlines()
+            for i, line in enumerate(lines):
+              if needle in line:
+                start = max(0, i - 5)
+                end = min(len(lines), i + 6)
+                print("--- log excerpt ---", file=sys.stderr)
+                for j in range(start, end):
+                  print(lines[j], file=sys.stderr)
+                break
+            raise SystemExit(1)
+          print("ok: no Flask development server warning detected")
+          PY
+
           docker stop "${CID}" >/dev/null
 
   readiness:
@@ -379,7 +424,7 @@ jobs:
         run: |
           set -euo pipefail
 
-      - name: Data plane smoke test (emulators: Pub/Sub + Firestore)
+      - name: "Data plane smoke test (emulators: Pub/Sub + Firestore)"
         shell: bash
         run: |
           set -euo pipefail

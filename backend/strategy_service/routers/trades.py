@@ -7,6 +7,9 @@ from decimal import Decimal
 import logging
 import hashlib
 
+import httpx
+from google.api_core import exceptions as gexc
+
 from backend.tenancy.auth import get_tenant_context
 from backend.tenancy.context import TenantContext
 from backend.persistence.firebase_client import get_firestore_client
@@ -17,6 +20,8 @@ from backend.observability.risk_signals import risk_correlation_id
 from google.cloud import firestore
 from backend.risk.daily_capital_snapshot import DailyCapitalSnapshotError, DailyCapitalSnapshotStore
 from backend.time.nyse_time import to_nyse
+from backend.common.a2a_sdk import RiskAgentSyncClient
+from backend.contracts.risk import TradeCheckRequest
 
 from ..db import build_raw_order, insert_paper_order
 from ..db import insert_paper_order_idempotent
@@ -144,7 +149,7 @@ def _read_user_account_snapshot(*, db, uid: str) -> dict:
     return snap.to_dict() or {}
 
 
-def _require_daily_capital_snapshot(*, db, tenant_id: str, uid: str) -> None:
+def _require_daily_capital_snapshot(*, db, tenant_id: str, uid: str) -> object:
     """
     Enforce:
     - no trades before daily snapshot exists
@@ -165,6 +170,7 @@ def _require_daily_capital_snapshot(*, db, tenant_id: str, uid: str) -> None:
     )
     snap.assert_date_match(trading_date_ny=trading_date_ny)
     snap.assert_trade_window(now_utc=now)
+    return snap
 
 
 def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict:
@@ -267,11 +273,15 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     Fail-safe: On any error reading the shadow mode flag, defaults to shadow mode = True
     """
     ctx: TenantContext = get_tenant_context(request)
+    corr = risk_correlation_id(correlation_id=trade_request.correlation_id, headers=dict(request.headers))
+    trade_request.correlation_id = corr
+    execution_id = trade_request.execution_id or str(uuid4())
+    trade_request.execution_id = execution_id
 
     # Safety gate: daily bankroll snapshot must exist + be in-window.
     try:
         db = get_firestore_client()
-        _require_daily_capital_snapshot(db=db, tenant_id=ctx.tenant_id, uid=ctx.uid)
+        daily_snap = _require_daily_capital_snapshot(db=db, tenant_id=ctx.tenant_id, uid=ctx.uid)
     except DailyCapitalSnapshotError as e:
         msg = str(e)
         # Treat corruption/mismatch as hard failure (500) for immediate operator attention.
@@ -317,6 +327,17 @@ def execute_trade(trade_request: TradeRequest, request: Request):
         )
     
     # Risk check (always performed regardless of mode)
+    # Populate `current_day_loss` from (current equity - starting equity), so max_loss_per_day can be enforced.
+    # If we can't compute it, fall back to 0 (risk service may still enforce other limits).
+    current_day_loss = Decimal("0.0")
+    try:
+        acct_now = _read_user_account_snapshot(db=db, uid=ctx.uid)
+        current_equity = Decimal(str(acct_now.get("equity") or "0"))
+        starting_equity = Decimal(str(getattr(daily_snap, "starting_equity_usd", 0.0) or 0.0))
+        pnl = current_equity - starting_equity
+        current_day_loss = pnl if pnl < 0 else Decimal("0.0")
+    except Exception:
+        current_day_loss = Decimal("0.0")
     try:
         risk_req = TradeCheckRequest(
             broker_account_id=trade_request.broker_account_id,
@@ -326,7 +347,7 @@ def execute_trade(trade_request: TradeRequest, request: Request):
             side=trade_request.side,
             current_open_positions=0,
             current_trades_today=0,
-            current_day_loss="0.0",
+            current_day_loss=str(current_day_loss),
             current_day_drawdown="0.0",
         )
         risk_client = RiskAgentSyncClient(RISK_SERVICE_URL)
@@ -336,6 +357,24 @@ def execute_trade(trade_request: TradeRequest, request: Request):
         )
     except httpx.HTTPError as e:
         raise HTTPException(status_code=500, detail=f"Risk service request failed: {e}") from e
+
+    try:
+        log_event(
+            logger,
+            "risk.trade_check.allowed" if bool(risk_result.allowed) else "risk.trade_check.denied",
+            severity="INFO" if bool(risk_result.allowed) else "WARNING",
+            correlation_id=corr,
+            execution_id=execution_id,
+            tenant_id=ctx.tenant_id,
+            uid=ctx.uid,
+            scope=getattr(risk_result, "scope", None),
+            reason=getattr(risk_result, "reason", None),
+            symbol=trade_request.symbol,
+            side=trade_request.side,
+            notional=float(trade_request.notional),
+        )
+    except Exception:
+        pass
 
     if not risk_result.allowed:
         raise HTTPException(status_code=400, detail=f"Trade not allowed by risk service: {risk_result.reason}")

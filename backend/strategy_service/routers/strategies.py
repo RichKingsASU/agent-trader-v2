@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Request
 from typing import List
 from uuid import UUID, uuid4
 import os
+import logging
 from google.cloud import firestore
 from pydantic import BaseModel
 import httpx
@@ -13,9 +14,12 @@ from backend.tenancy.auth import get_tenant_context
 from backend.tenancy.context import TenantContext
 from backend.tenancy.paths import tenant_collection
 from backend.common.a2a_sdk import RiskAgentSyncClient
+from backend.common.logging import log_event
 from backend.contracts.risk import TradeCheckRequest
+from backend.observability.risk_signals import risk_correlation_id
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
+logger = logging.getLogger(__name__)
 
 COLLECTION_STRATEGIES = "strategies"
 RISK_SERVICE_URL = os.getenv("RISK_SERVICE_URL", "http://127.0.0.1:8002")
@@ -122,6 +126,24 @@ def simulate_order(payload: PaperOrderSimulateRequest, request: Request):
         )
     except httpx.HTTPError as e:
         raise HTTPException(status_code=500, detail=f"Failed to connect to risk service: {e}") from e
+
+    try:
+        log_event(
+            logger,
+            "risk.trade_check.allowed" if bool(risk_result.allowed) else "risk.trade_check.denied",
+            severity="INFO" if bool(risk_result.allowed) else "WARNING",
+            correlation_id=corr,
+            execution_id=payload.execution_id,
+            tenant_id=ctx.tenant_id,
+            uid=ctx.uid,
+            scope=getattr(risk_result, "scope", None),
+            reason=getattr(risk_result, "reason", None),
+            symbol=payload.symbol,
+            side=payload.side,
+            notional=float(payload.notional),
+        )
+    except Exception:
+        pass
 
 
     if not risk_result.allowed:

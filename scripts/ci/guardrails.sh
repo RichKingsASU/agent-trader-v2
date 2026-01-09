@@ -25,6 +25,7 @@ echo "Repo root: ${REPO_ROOT}"
 python3 "${REPO_ROOT}/scripts/ci/validate_yaml_syntax.py"
 bash "${REPO_ROOT}/scripts/ci/check_bash_guardrails.sh"
 python3 "${REPO_ROOT}/scripts/ci/check_no_latest_tags.py"
+python3 "${REPO_ROOT}/scripts/ci/check_python_runtime_guardrails.py"
 
 echo "OK: CI guardrails passed."
 
