@@ -15,7 +15,8 @@ from backend.common.kill_switch import get_kill_switch_state
 from backend.common.logging import log_event
 from backend.observability.risk_signals import risk_correlation_id
 from google.cloud import firestore
-from google.api_core import exceptions as gexc
+from backend.risk.daily_capital_snapshot import DailyCapitalSnapshotError, DailyCapitalSnapshotStore
+from backend.time.nyse_time import to_nyse
 
 from ..db import build_raw_order, insert_paper_order
 from ..db import insert_paper_order_idempotent
@@ -129,7 +130,44 @@ def get_current_price(symbol: str) -> Decimal:
         return Decimal("0")
 
 
-def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, idempotency_key: str | None) -> dict:
+def _read_user_account_snapshot(*, db, uid: str) -> dict:
+    """
+    Read the warm-cache account snapshot required to initialize the daily capital snapshot.
+    """
+    snap = with_firestore_retry(
+        lambda: db.collection("users").document(uid).collection("alpacaAccounts").document("snapshot").get()
+    )
+    if not snap.exists:
+        raise DailyCapitalSnapshotError(
+            f"Missing account snapshot: users/{uid}/alpacaAccounts/snapshot (cannot initialize DailyCapitalSnapshot)"
+        )
+    return snap.to_dict() or {}
+
+
+def _require_daily_capital_snapshot(*, db, tenant_id: str, uid: str) -> None:
+    """
+    Enforce:
+    - no trades before daily snapshot exists
+    - no trades after snapshot expires
+    - fail hard on date mismatch / tamper (fingerprint mismatch)
+    """
+    now = datetime.now(timezone.utc)
+    trading_date_ny = to_nyse(now).date()
+    acct = _read_user_account_snapshot(db=db, uid=uid)
+    store = DailyCapitalSnapshotStore(db=db)
+    snap = store.get_or_create_once(
+        tenant_id=tenant_id,
+        uid=uid,
+        trading_date_ny=trading_date_ny,
+        account_snapshot=acct,
+        now_utc=now,
+        source="strategy_service.trades.execute_trade",
+    )
+    snap.assert_date_match(trading_date_ny=trading_date_ny)
+    snap.assert_trade_window(now_utc=now)
+
+
+def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext) -> dict:
     """
     Create a synthetic shadow trade and log it to user-scoped shadowTradeHistory collection.
     
@@ -229,8 +267,17 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     Fail-safe: On any error reading the shadow mode flag, defaults to shadow mode = True
     """
     ctx: TenantContext = get_tenant_context(request)
-    idem_key = _resolve_idempotency_key(trade_request=trade_request, request=request)
-    stable_key = _stable_id(scope="trade_execute", key=idem_key) if idem_key else None
+
+    # Safety gate: daily bankroll snapshot must exist + be in-window.
+    try:
+        db = get_firestore_client()
+        _require_daily_capital_snapshot(db=db, tenant_id=ctx.tenant_id, uid=ctx.uid)
+    except DailyCapitalSnapshotError as e:
+        msg = str(e)
+        # Treat corruption/mismatch as hard failure (500) for immediate operator attention.
+        if "fingerprint mismatch" in msg or "Trading day mismatch" in msg:
+            raise HTTPException(status_code=500, detail={"error": "daily_capital_snapshot_invalid", "message": msg})
+        raise HTTPException(status_code=409, detail={"error": "daily_capital_snapshot_blocked", "message": msg})
     
     # Check shadow mode flag (fail-safe: defaults to True)
     is_shadow_mode = get_shadow_mode_flag()
