@@ -1864,6 +1864,13 @@ class ExecutionEngine:
             logger.info(
                 "exec.risk_decision %s",
                 json.dumps(_to_jsonable({"allowed": risk.allowed, "reason": risk.reason, "checks": risk.checks})),
+                extra={
+                    "event_type": "exec.risk_decision",
+                    "execution_id": str(getattr(intent, "client_intent_id", None) or "").strip() or None,
+                    "risk_allowed": bool(risk.allowed),
+                    "risk_reason": risk.reason,
+                    "risk_checks": risk.checks,
+                },
             )
             # Best-effort: propagate key risk-state for deterministic pre-trade risk guard inputs.
             # This avoids extra DB reads later and keeps the risk guard boundary explicit.
