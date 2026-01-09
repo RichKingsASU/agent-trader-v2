@@ -738,6 +738,56 @@ class _FirestoreLedger:
         return sum(1 for _ in q.stream())
 
 
+class _FirestoreRiskLimitsProvider:
+    """
+    Best-effort read of Firestore-backed risk limits (tenant-scoped).
+
+    Collection:
+      tenants/{tenant_id}/risk_limits/{doc}
+
+    Notes:
+    - The risk service uses these docs for /risk/check-trade.
+    - Execution engine reads them to enforce limits *before* broker placement.
+    """
+
+    _COLLECTION = "risk_limits"
+
+    def __init__(self):
+        from backend.persistence.firebase_client import get_firestore_client
+
+        self._db = get_firestore_client()
+
+    def get_enabled_limits(
+        self,
+        *,
+        tenant_id: str,
+        uid: str,
+        broker_account_id: str,
+        scope: str,
+        strategy_id: str | None,
+    ) -> dict[str, Any] | None:
+        if not tenant_id or not uid or not broker_account_id:
+            return None
+        q = (
+            self._db.collection("tenants")
+            .document(str(tenant_id))
+            .collection(self._COLLECTION)
+            .where("uid", "==", str(uid))
+            .where("broker_account_id", "==", str(broker_account_id))
+            .where("scope", "==", str(scope))
+            .where("enabled", "==", True)
+        )
+        if scope == "strategy":
+            q = q.where("strategy_id", "==", str(strategy_id or ""))
+        docs = list(q.limit(1).stream())
+        if not docs:
+            return None
+        d = docs[0].to_dict() or {}
+        # Helpful for audit/debugging.
+        d["id"] = docs[0].id
+        return d
+
+
 class _PostgresPositions:
     """
     Optional position source from Postgres table `public.broker_positions`.
@@ -1697,6 +1747,7 @@ class ExecutionEngine:
         )
         self._enable_smart_routing = enable_smart_routing
         self._capital_provider: _FirestoreCapitalProvider | None = None
+        self._risk_limits_provider: _FirestoreRiskLimitsProvider | None = None
 
         # Replay marker: engine constructed (startup-ish for this component).
         try:
@@ -1921,151 +1972,40 @@ class ExecutionEngine:
             except Exception:
                 logger.exception("exec.replay_risk_checkpoint_log_failed")
 
-        # --- Capital reservation (atomic; idempotent by client_intent_id) ---
-        # This is a correctness-first guardrail that prevents concurrent "double spend"
-        # within our own system. Broker-side buying power checks are not sufficient to
-        # prevent two agents from racing each other.
-        reserved = False
-        tenant_id_for_reservation: Optional[str] = None
-        uid_for_reservation: Optional[str] = None
-        try:
-            if intent.side == "buy":
-                # Best-effort: only reserve when we can resolve identity and a notional.
-                if self._ledger is None:
-                    self._ledger = _FirestoreLedger()
-                tenant_id_for_reservation = self._ledger._resolve_tenant_id(intent=intent)  # type: ignore[attr-defined]
-                uid_for_reservation = self._ledger._resolve_uid(intent=intent)  # type: ignore[attr-defined]
-
-                # Determine notional (USD) to reserve.
-                notional_usd: Optional[float] = None
-                meta = dict(intent.metadata or {})
-                # Preferred: explicit notional provided by upstream.
-                if meta.get("notional_usd") is not None:
-                    try:
-                        notional_usd = float(meta.get("notional_usd"))
-                    except Exception:
-                        notional_usd = None
-                if notional_usd is None and intent.limit_price is not None:
-                    notional_usd = float(intent.limit_price) * float(intent.qty)
-                if notional_usd is None and meta.get("price") is not None:
-                    try:
-                        notional_usd = float(meta.get("price")) * float(intent.qty)
-                    except Exception:
-                        notional_usd = None
-                if notional_usd is None:
-                    # Last resort: fetch quote and reserve at ask/mid.
-                    quote = MarketDataProvider().get_quote(symbol=intent.symbol, asset_class=intent.asset_class)
-                    ask = float(quote.get("ask") or 0.0)
-                    mid = float(quote.get("mid_price") or 0.0)
-                    px = ask if ask > 0 else mid
-                    if px > 0:
-                        notional_usd = px * float(intent.qty)
-
-                if notional_usd is not None and notional_usd > 0 and tenant_id_for_reservation and uid_for_reservation:
-                    # Fetch buying power snapshot for this uid to enforce a hard ceiling.
-                    from backend.alpaca_signal_trader import get_warm_cache_buying_power_usd
-
-                    buying_power_usd, _snap = get_warm_cache_buying_power_usd(user_id=uid_for_reservation)
-                    reserve_capital_atomic(
-                        tenant_id=tenant_id_for_reservation,
-                        uid=uid_for_reservation,
-                        broker_account_id=intent.broker_account_id,
-                        trade_id=intent.client_intent_id,
-                        amount_usd=float(notional_usd),
-                        buying_power_usd=float(buying_power_usd),
-                    )
-                    reserved = True
-                else:
-                    logger.info(
-                        "exec.capital_reservation_skipped %s",
-                        json.dumps(
-                            _to_jsonable(
-                                {
-                                    "reason": "missing_notional_or_identity",
-                                    "tenant_id": tenant_id_for_reservation,
-                                    "uid": uid_for_reservation,
-                                    "symbol": intent.symbol,
-                                    "side": intent.side,
-                                    "qty": intent.qty,
-                                    "limit_price": intent.limit_price,
-                                    "client_intent_id": intent.client_intent_id,
-                                }
-                            )
-                        ),
-                    )
-        except InsufficientBuyingPowerError as e:
-            checks = list(risk.checks or [])
-            checks.append({"check": "capital_reservation", "allowed": False, "reason": "insufficient_buying_power"})
-            return ExecutionResult(status="rejected", risk=RiskDecision(allowed=False, reason=str(e), checks=checks))
-        except CapitalReservationError as e:
-            checks = list(risk.checks or [])
-            checks.append({"check": "capital_reservation", "allowed": False, "reason": str(e)})
-            return ExecutionResult(status="rejected", risk=RiskDecision(allowed=False, reason="capital_reservation_failed", checks=checks))
-        except Exception as e:
-            # Fail-closed: if we cannot safely reserve, refuse to place orders.
-            checks = list(risk.checks or [])
-            checks.append({"check": "capital_reservation", "error": str(e)})
-            return ExecutionResult(status="rejected", risk=RiskDecision(allowed=False, reason="capital_reservation_error", checks=checks))
-
-        if self._dry_run:
-            logger.info("exec.dry_run_accept %s", json.dumps(_to_jsonable(audit_ctx)))
-            try:
-                logger.info(
-                    "%s",
-                    dumps_replay_event(
-                        build_replay_event(
-                            event="order_intent",
-                            component="backend.execution.engine",
-                            data={
-                                "stage": "broker_placed",
-                                "broker": self._broker_name,
-                                "broker_order_id": broker_order_id,
-                                "client_intent_id": intent.client_intent_id,
-                                "symbol": intent.symbol,
-                                "side": intent.side,
-                                "qty": intent.qty,
-                                "order_type": intent.order_type,
-                            },
-                            trace_id=trace_id,
-                            agent_name=os.getenv("AGENT_NAME") or "execution-engine",
-                            run_id=str(intent.metadata.get("run_id") or "").strip() or None,
-                        )
-                    ),
+            if not risk.allowed:
+                outcome = "rejected"
+                return ExecutionResult(
+                    status="rejected",
+                    risk=risk,
+                    routing=routing_decision,
+                    message=risk.reason,
                 )
-            except Exception:
-                logger.exception("exec.replay_dry_run_state_transition_log_failed")
-                pass
-            # Dry-run has no external side effects; always release immediately if we reserved.
-            if reserved and tenant_id_for_reservation and uid_for_reservation:
-                try:
-                    release_capital_atomic(
-                        tenant_id=tenant_id_for_reservation,
-                        uid=uid_for_reservation,
-                        broker_account_id=intent.broker_account_id,
-                        trade_id=intent.client_intent_id,
-                    )
-                except Exception:
-                    logger.exception("exec.capital_release_failed (dry_run)")
-            return ExecutionResult(status="dry_run", risk=risk, routing=routing_decision, message="dry_run_enabled")
 
-            # If immediately filled (or partially filled), write to ledger AND portfolio history.
+            if self._dry_run:
+                outcome = "dry_run"
+                return ExecutionResult(
+                    status="dry_run",
+                    risk=risk,
+                    routing=routing_decision,
+                    message="dry_run_enabled",
+                )
+
+            # Defense-in-depth: do not place broker orders unless explicitly authorized.
+            require_trading_live_mode(action="broker order placement")
             try:
-                status = str(broker_order.get("status") or "").lower()
-                filled_qty = float(broker_order.get("filled_qty") or 0.0)
-                if status in {"filled", "partially_filled"} or filled_qty > 0:
-                    self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
-                    self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
-            except Exception as e:
-                logger.exception("exec.ledger_write_failed: %s", e)
-
-            outcome = "placed"
-            return ExecutionResult(
-                status="placed",
-                risk=risk,
-                routing=routing_decision,
-                broker_order_id=broker_order_id,
-                broker_order=broker_order,
-            )
+                require_kill_switch_off(operation="broker order placement")
+            except ExecutionHaltedError:
+                enabled, source = get_kill_switch_state()
+                checks = list(risk.checks or [])
+                checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
+                halted_risk = RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
+                outcome = "rejected"
+                return ExecutionResult(
+                    status="rejected",
+                    risk=halted_risk,
+                    routing=routing_decision,
+                    message="kill_switch_enabled",
+                )
 
         # ---- Idempotency guard (engine-level, replay-safe) ----
         # This prevents duplicate broker submissions if the same intent is processed twice.
@@ -2113,19 +2053,9 @@ class ExecutionEngine:
             # Idempotency is best-effort; never break safety checks.
             logger.exception("exec.idempotency_guard_failed")
 
-        # Defense-in-depth (duplicate block): this path must never be able to
-        # place orders while the global kill switch is active.
-        try:
-            require_trading_live_mode(action="broker order placement")
-            require_kill_switch_off(operation="broker order placement")
-        except ExecutionHaltedError:
-            enabled, source = get_kill_switch_state()
-            halted_risk = RiskDecision(
-                allowed=False,
-                reason="kill_switch_enabled",
-                checks=[{"check": "kill_switch", "enabled": bool(enabled), "source": source}],
-            )
-            return ExecutionResult(status="rejected", risk=halted_risk, message="kill_switch_enabled")
+        # ---- Pre-trade assertions (fatal) ----
+        # Must run *before* broker placement. Includes deterministic risk guard checks.
+        pre = self._assert_pre_trade(intent=intent, trace_id=trace_id)
 
         broker_order = self._broker.place_order(intent=intent)
         broker_order_id = str(broker_order.get("id") or "").strip() or None
@@ -2436,10 +2366,11 @@ class ExecutionEngine:
         # Enforces: max daily loss, max order notional, max trades/day, max per-symbol exposure.
         # Inputs are strict/explicit; missing required state fails closed (when limits are enabled).
         try:
-            max_daily_loss = self._env_float("EXEC_MAX_DAILY_LOSS_USD", None)
+            # Baseline (env) limits (existing behavior).
+            max_daily_loss_env = self._env_float("EXEC_MAX_DAILY_LOSS_USD", None)
             max_order_notional = self._env_float("EXEC_MAX_ORDER_NOTIONAL", None)
             max_trades_per_day = _as_int_or_none(os.getenv("EXEC_MAX_DAILY_TRADES"))
-            max_per_symbol_exposure = self._env_float("EXEC_MAX_PER_SYMBOL_EXPOSURE_USD", None)
+            max_per_symbol_exposure_env = self._env_float("EXEC_MAX_PER_SYMBOL_EXPOSURE_USD", None)
 
             # Provided by earlier risk validation when available (see execute_intent()).
             trades_today = _as_int_or_none(intent.metadata.get("_risk_trades_today"))

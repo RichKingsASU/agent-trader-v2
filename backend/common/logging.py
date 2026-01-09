@@ -61,6 +61,7 @@ _RESERVED_ATTRS: frozenset[str] = frozenset(
         "sha",
         "request_id",
         "correlation_id",
+        "execution_id",
         "event_type",
         "severity",
         "message",
@@ -179,6 +180,12 @@ class JsonLogFormatter(logging.Formatter):
         event_type = _clean_text(getattr(record, "event_type", None) or "", max_len=128) or "log"
         rid = _clean_text(getattr(record, "request_id", None) or get_request_id() or "", max_len=128) or None
         cid = _clean_text(getattr(record, "correlation_id", None) or "", max_len=128) or None
+        try:
+            from backend.observability.execution_id import get_execution_id as _get_execution_id  # noqa: WPS433
+
+            eid = _clean_text(getattr(record, "execution_id", None) or _get_execution_id() or "", max_len=128) or None
+        except Exception:
+            eid = _clean_text(getattr(record, "execution_id", None) or "", max_len=128) or None
         if not cid:
             # Ensure a stable correlation_id is always present for queryability.
             try:
@@ -199,6 +206,7 @@ class JsonLogFormatter(logging.Formatter):
             "sha": _clean_text(getattr(record, "sha", None) or self._sha, max_len=64) or "unknown",
             "request_id": rid,
             "correlation_id": cid,
+            "execution_id": eid,
             "event_type": event_type,
             "message": _clean_text(record.getMessage(), max_len=4000),
             "logger": _clean_text(record.name, max_len=256),
@@ -344,6 +352,8 @@ def install_fastapi_request_id_middleware(app: Any, *, service: str | None = Non
     async def _request_id_mw(request: "Request", call_next):  # type: ignore[name-defined]
         incoming = request.headers.get("x-request-id") or request.headers.get("x-correlation-id") or None
         rid = _clean_text(incoming, max_len=128) or uuid.uuid4().hex
+        incoming_exec = request.headers.get("x-execution-id") or None
+        exec_id = _clean_text(incoming_exec, max_len=128) or None
         try:
             # Cloud Run perf markers (stdlib-only).
             from backend.common.cloudrun_perf import classify_request as _classify_request  # noqa: WPS433
@@ -353,41 +363,82 @@ def install_fastapi_request_id_middleware(app: Any, *, service: str | None = Non
             req_class = None
         start = time.perf_counter()
         status_code: int | None = None
+        try:
+            from backend.observability.execution_id import bind_execution_id as _bind_execution_id  # noqa: WPS433
+        except Exception:
+            _bind_execution_id = None  # type: ignore[assignment]
+
         with bind_request_id(request_id=rid) as bound:
-            try:
-                resp: "Response" = await call_next(request)  # type: ignore[name-defined]
-                status_code = int(getattr(resp, "status_code", 200))
-            except Exception:
-                status_code = 500
-                raise
-            finally:
-                dur_ms = int(max(0.0, (time.perf_counter() - start) * 1000.0))
+            binder = _bind_execution_id(execution_id=exec_id) if callable(_bind_execution_id) else None
+            if binder is None:
                 try:
-                    log_event(
-                        http_logger,
-                        "http.request",
-                        severity="INFO",
-                        service=svc,
-                        request_id=bound,
-                        correlation_id=bound,
-                        method=request.method,
-                        path=str(getattr(request.url, "path", "")),
-                        status_code=status_code,
-                        latency_ms=dur_ms,
-                        duration_ms=dur_ms,  # back-compat
-                        cold_start=bool(getattr(req_class, "cold_start", False)) if req_class is not None else None,
-                        request_ordinal=int(getattr(req_class, "request_ordinal", 0)) if req_class is not None else None,
-                        instance_uptime_ms=int(getattr(req_class, "instance_uptime_ms", 0)) if req_class is not None else None,
-                    )
+                    resp = await call_next(request)  # type: ignore[name-defined]
+                    status_code = int(getattr(resp, "status_code", 200))
                 except Exception:
-                    # Avoid recursion: if logging is broken, don't try to log about it.
-                    pass
+                    status_code = 500
+                    raise
+                finally:
+                    dur_ms = int(max(0.0, (time.perf_counter() - start) * 1000.0))
+                    try:
+                        log_event(
+                            http_logger,
+                            "http.request",
+                            severity="INFO",
+                            service=svc,
+                            request_id=bound,
+                            correlation_id=bound,
+                            execution_id=exec_id,
+                            method=request.method,
+                            path=str(getattr(request.url, "path", "")),
+                            status_code=status_code,
+                            latency_ms=dur_ms,
+                            duration_ms=dur_ms,  # back-compat
+                            cold_start=bool(getattr(req_class, "cold_start", False)) if req_class is not None else None,
+                            request_ordinal=int(getattr(req_class, "request_ordinal", 0)) if req_class is not None else None,
+                            instance_uptime_ms=int(getattr(req_class, "instance_uptime_ms", 0)) if req_class is not None else None,
+                        )
+                    except Exception:
+                        # Avoid recursion: if logging is broken, don't try to log about it.
+                        pass
+            else:
+                with binder:
+                    try:
+                        resp = await call_next(request)  # type: ignore[name-defined]
+                        status_code = int(getattr(resp, "status_code", 200))
+                    except Exception:
+                        status_code = 500
+                        raise
+                    finally:
+                        dur_ms = int(max(0.0, (time.perf_counter() - start) * 1000.0))
+                        try:
+                            log_event(
+                                http_logger,
+                                "http.request",
+                                severity="INFO",
+                                service=svc,
+                                request_id=bound,
+                                correlation_id=bound,
+                                execution_id=exec_id,
+                                method=request.method,
+                                path=str(getattr(request.url, "path", "")),
+                                status_code=status_code,
+                                latency_ms=dur_ms,
+                                duration_ms=dur_ms,  # back-compat
+                                cold_start=bool(getattr(req_class, "cold_start", False)) if req_class is not None else None,
+                                request_ordinal=int(getattr(req_class, "request_ordinal", 0)) if req_class is not None else None,
+                                instance_uptime_ms=int(getattr(req_class, "instance_uptime_ms", 0)) if req_class is not None else None,
+                            )
+                        except Exception:
+                            # Avoid recursion: if logging is broken, don't try to log about it.
+                            pass
 
         # Ensure callers can propagate across hops.
         try:
             resp.headers["X-Request-ID"] = bound  # type: ignore[name-defined]
             # Back-compat for existing callers.
             resp.headers["X-Correlation-Id"] = bound  # type: ignore[name-defined]
+            if exec_id:
+                resp.headers["X-Execution-Id"] = exec_id  # type: ignore[name-defined]
         except Exception:
             # Avoid recursion: header mutation failures are non-fatal.
             pass
