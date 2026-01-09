@@ -406,6 +406,36 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
                 "required": "Provide client_intent_id or metadata.correlation_id (recommended) for replay-safe execution.",
             },
         ) from e
+
+    # --- Correlation / idempotency contract (single-use per correlation_id) ---
+    # Downstream capital/reservation side-effects are keyed by intent.client_intent_id.
+    # To make replays safe and "single-use per correlation_id", we require a 1:1 mapping:
+    #   correlation_id == idempotency_key == client_intent_id (if provided).
+    metadata = dict(req.metadata or {})
+    corr = str(metadata.get("correlation_id") or "").strip()
+    req_client_intent_id = str(req.client_intent_id or "").strip()
+    if corr and corr != str(idempotency_key):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "correlation_id_mismatch",
+                "message": "metadata.correlation_id must match the resolved idempotency key",
+                "correlation_id": corr,
+                "idempotency_key": str(idempotency_key),
+            },
+        )
+    if req_client_intent_id and req_client_intent_id != str(idempotency_key):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "client_intent_id_mismatch",
+                "message": "client_intent_id must match metadata.correlation_id (single-use per correlation_id)",
+                "client_intent_id": req_client_intent_id,
+                "idempotency_key": str(idempotency_key),
+            },
+        )
+    # Ensure correlation_id is always present for consistent replay/idempotency behavior and audit logs.
+    metadata["correlation_id"] = str(idempotency_key)
     intent = OrderIntent(
         strategy_id=req.strategy_id,
         broker_account_id=req.broker_account_id,
@@ -416,7 +446,7 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
         time_in_force=req.time_in_force,
         limit_price=req.limit_price,
         client_intent_id=idempotency_key,
-        metadata=req.metadata,
+        metadata=metadata,
     )
 
     # --- Daily capital snapshot guard (no trade before/after window; no date drift) ---
