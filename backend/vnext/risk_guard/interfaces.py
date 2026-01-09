@@ -80,6 +80,10 @@ class RiskGuardState:
     daily_pnl_usd: float | None
     trades_today: int | None
     current_position_qty: float | None
+    # Optional audit context (not used for evaluation logic).
+    correlation_id: str | None = None
+    execution_id: str | None = None
+    strategy_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,6 +366,10 @@ def evaluate_risk_guard(
             logger.warning(
                 "risk_guard.blocked %s",
                 {
+                    "correlation_id": state.correlation_id,
+                    "execution_id": state.execution_id,
+                    "strategy_id": state.strategy_id,
+                    "risk_decision": "DENY",
                     "trading_date": state.trading_date,
                     "symbol": symbol,
                     "side": side,

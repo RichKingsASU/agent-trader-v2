@@ -32,6 +32,8 @@ from backend.risk.capital_reservation import (
     reserve_capital_atomic,
     release_capital_atomic,
 )
+from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
+from backend.observability.risk_signals import risk_correlation_id
 
 logger = logging.getLogger(__name__)
 
@@ -1916,16 +1918,25 @@ class ExecutionEngine:
                     )
 
             risk = self._risk.validate(intent=intent)
+            corr = risk_correlation_id(
+                correlation_id=str(intent.metadata.get("correlation_id") or "").strip() or None
+            )
+            execution_id = str(intent.metadata.get("execution_id") or intent.client_intent_id or "").strip() or None
             logger.info(
                 "exec.risk_decision %s",
-                json.dumps(_to_jsonable({"allowed": risk.allowed, "reason": risk.reason, "checks": risk.checks})),
-                extra={
-                    "event_type": "exec.risk_decision",
-                    "execution_id": str(getattr(intent, "client_intent_id", None) or "").strip() or None,
-                    "risk_allowed": bool(risk.allowed),
-                    "risk_reason": risk.reason,
-                    "risk_checks": risk.checks,
-                },
+                json.dumps(
+                    _to_jsonable(
+                        {
+                            "correlation_id": corr,
+                            "execution_id": execution_id,
+                            "strategy_id": intent.strategy_id,
+                            "risk_decision": "ALLOW" if risk.allowed else "DENY",
+                            "allowed": risk.allowed,
+                            "reason": risk.reason,
+                            "checks": risk.checks,
+                        }
+                    )
+                ),
             )
             # Best-effort: propagate key risk-state for deterministic pre-trade risk guard inputs.
             # This avoids extra DB reads later and keeps the risk guard boundary explicit.
@@ -2376,148 +2387,55 @@ class ExecutionEngine:
                 )
             )
 
-            # Firestore (per-strategy / per-account) limits: enforce these *before execution*.
-            # We only consume existing keys; missing keys mean "disabled".
-            tenant_for_limits = str(tenant_id or "").strip() or str(os.getenv("EXEC_TENANT_ID") or "").strip() or None
-            uid_for_limits = (
-                str(intent.metadata.get("uid") or intent.metadata.get("user_id") or os.getenv("EXEC_UID") or "").strip()
-                or None
+            corr = risk_correlation_id(
+                correlation_id=str(intent.metadata.get("correlation_id") or trace_id or "").strip() or None
             )
-            strat_doc: dict[str, Any] | None = None
-            acct_doc: dict[str, Any] | None = None
-            try:
-                if self._risk_limits_provider is None:
-                    self._risk_limits_provider = _FirestoreRiskLimitsProvider()
-                if tenant_for_limits and uid_for_limits:
-                    if str(intent.strategy_id or "").strip():
-                        strat_doc = self._risk_limits_provider.get_enabled_limits(
-                            tenant_id=str(tenant_for_limits),
-                            uid=str(uid_for_limits),
-                            broker_account_id=str(intent.broker_account_id),
-                            scope="strategy",
-                            strategy_id=str(intent.strategy_id),
-                        )
-                    acct_doc = self._risk_limits_provider.get_enabled_limits(
-                        tenant_id=str(tenant_for_limits),
-                        uid=str(uid_for_limits),
-                        broker_account_id=str(intent.broker_account_id),
-                        scope="account",
-                        strategy_id=None,
+            execution_id = str(intent.metadata.get("execution_id") or intent.client_intent_id or "").strip() or None
+
+            decision = evaluate_risk_guard(
+                trade=RiskGuardTrade(
+                    symbol=intent.symbol,
+                    side=intent.side,
+                    qty=float(intent.qty),
+                    estimated_price_usd=float(est_price),
+                    estimated_notional_usd=float(est_notional),
+                ),
+                state=RiskGuardState(
+                    trading_date=_iso_date_utc(),
+                    daily_pnl_usd=daily_pnl,
+                    trades_today=trades_today,
+                    current_position_qty=current_qty,
+                    correlation_id=corr,
+                    execution_id=execution_id,
+                    strategy_id=intent.strategy_id,
+                ),
+                limits=RiskGuardLimits(
+                    max_daily_loss_usd=max_daily_loss,
+                    max_order_notional_usd=max_order_notional,
+                    max_trades_per_day=max_trades_per_day,
+                    max_per_symbol_exposure_usd=max_per_symbol_exposure,
+                ),
+            )
+            logger.info(
+                "exec.risk_guard_decision %s",
+                json.dumps(
+                    _to_jsonable(
+                        {
+                            "correlation_id": corr,
+                            "execution_id": execution_id,
+                            "strategy_id": intent.strategy_id,
+                            "risk_decision": "ALLOW" if decision.allowed else "DENY",
+                        }
                     )
-            except Exception as e:
-                # Firestore failures should not silently allow a limit breach; we keep the env-based
-                # safety net and log the read failure for operators.
-                logger.warning(
-                    "exec.risk_limits_firestore_read_failed %s",
-                    json.dumps(
-                        _to_jsonable(
-                            {
-                                "error_type": type(e).__name__,
-                                "error": str(e),
-                                "tenant_id": tenant_for_limits,
-                                "uid": uid_for_limits,
-                                "broker_account_id": intent.broker_account_id,
-                                "strategy_id": intent.strategy_id,
-                                "trace_id": trace_id,
-                            }
-                        )
-                    ),
-                )
-                strat_doc = None
-                acct_doc = None
-
-            def _min_or_none(a: float | None, b: float | None) -> float | None:
-                if a is None:
-                    return b
-                if b is None:
-                    return a
-                return float(min(float(a), float(b)))
-
-            def _extract_max_loss_per_day(doc: dict[str, Any] | None) -> float | None:
-                if not isinstance(doc, dict):
-                    return None
-                return _as_float_or_none(doc.get("max_loss_per_day"))
-
-            def _extract_max_position_per_symbol(doc: dict[str, Any] | None) -> float | None:
-                if not isinstance(doc, dict):
-                    return None
-                return _as_float_or_none(doc.get("max_position_per_symbol"))
-
-            # Base limits (env). Firestore limits constrain further (min), and apply per-scope.
-            base_limits = RiskGuardLimits(
-                max_daily_loss_usd=max_daily_loss_env,
-                max_order_notional_usd=max_order_notional,
-                max_trades_per_day=max_trades_per_day,
-                max_per_symbol_exposure_usd=max_per_symbol_exposure_env,
+                ),
             )
-
-            trade = RiskGuardTrade(
-                symbol=intent.symbol,
-                side=intent.side,
-                qty=float(intent.qty),
-                estimated_price_usd=float(est_price),
-                estimated_notional_usd=float(est_notional),
-            )
-            state = RiskGuardState(
-                trading_date=_iso_date_utc(),
-                daily_pnl_usd=daily_pnl,
-                trades_today=trades_today,
-                current_position_qty=current_qty,
-            )
-
-            # 1) Strategy-scoped risk limits (if configured)
-            if strat_doc is not None:
-                strat_limits = RiskGuardLimits(
-                    max_daily_loss_usd=_min_or_none(base_limits.max_daily_loss_usd, _extract_max_loss_per_day(strat_doc)),
-                    max_order_notional_usd=base_limits.max_order_notional_usd,
-                    max_trades_per_day=base_limits.max_trades_per_day,
-                    max_per_symbol_exposure_usd=_min_or_none(
-                        base_limits.max_per_symbol_exposure_usd, _extract_max_position_per_symbol(strat_doc)
-                    ),
-                )
-                decision = evaluate_risk_guard(trade=trade, state=state, limits=strat_limits)
-                if not decision.allowed:
-                    payload = {
-                        "reason": "risk_guard_blocked",
-                        "limits_scope": "strategy",
-                        "limits_id": strat_doc.get("id"),
-                        "risk_guard": decision.to_dict(),
-                        "intent": _to_jsonable(intent),
-                        "trace_id": trace_id,
-                    }
-                    self._critical("exec.pretrade_assertion_failed", payload=payload)
-                    raise PreTradeAssertionError("risk_guard_blocked")
-
-            # 2) Account-scoped risk limits (if configured)
-            if acct_doc is not None:
-                acct_limits = RiskGuardLimits(
-                    max_daily_loss_usd=_min_or_none(base_limits.max_daily_loss_usd, _extract_max_loss_per_day(acct_doc)),
-                    max_order_notional_usd=base_limits.max_order_notional_usd,
-                    max_trades_per_day=base_limits.max_trades_per_day,
-                    max_per_symbol_exposure_usd=_min_or_none(
-                        base_limits.max_per_symbol_exposure_usd, _extract_max_position_per_symbol(acct_doc)
-                    ),
-                )
-                decision = evaluate_risk_guard(trade=trade, state=state, limits=acct_limits)
-                if not decision.allowed:
-                    payload = {
-                        "reason": "risk_guard_blocked",
-                        "limits_scope": "account",
-                        "limits_id": acct_doc.get("id"),
-                        "risk_guard": decision.to_dict(),
-                        "intent": _to_jsonable(intent),
-                        "trace_id": trace_id,
-                    }
-                    self._critical("exec.pretrade_assertion_failed", payload=payload)
-                    raise PreTradeAssertionError("risk_guard_blocked")
-
-            # 3) Env-only baseline risk guard (when Firestore limits not present for the required keys)
-            # (Still useful for CI and simple deployments.)
-            decision = evaluate_risk_guard(trade=trade, state=state, limits=base_limits)
             if not decision.allowed:
                 payload = {
                     "reason": "risk_guard_blocked",
-                    "limits_scope": "engine",
+                    "correlation_id": corr,
+                    "execution_id": execution_id,
+                    "strategy_id": intent.strategy_id,
+                    "risk_decision": "DENY",
                     "risk_guard": decision.to_dict(),
                     "intent": _to_jsonable(intent),
                     "trace_id": trace_id,
