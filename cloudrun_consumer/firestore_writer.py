@@ -54,7 +54,10 @@ def _lww_key(*, published_at: datetime, message_id: str) -> tuple[datetime, str]
     """
     Sort key for last-write-wins using (published_at, message_id).
     """
-    return (_as_utc(published_at), str(message_id or ""))
+    return (
+        ensure_utc(published_at, source="cloudrun_consumer.firestore_writer._lww_key", field="published_at"),
+        str(message_id or ""),
+    )
 
 
 def _existing_pubsub_lww(existing: Any) -> tuple[Optional[datetime], str]:

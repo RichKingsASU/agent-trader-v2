@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 
@@ -35,10 +36,10 @@ class NewsIngestor:
         self.store = FileNewsEventStore(data_root=cfg.data_root)
         self.cursor_store = FileCursorStore(cursor_path=cfg.cursor_path)
         self.stats = NewsIngestStats()
-        self._stop = False
+        self._stop = threading.Event()
 
     def request_stop(self) -> None:
-        self._stop = True
+        self._stop.set()
 
     def poll_once(self) -> None:
         cursor = self.cursor_store.load()
@@ -82,7 +83,7 @@ class NewsIngestor:
         hb_interval_s = max(5.0, hb_interval_s)
         last_hb = 0.0
 
-        while not self._stop:
+        while not self._stop.is_set():
             started = time.monotonic()
             try:
                 self.poll_once()
@@ -106,9 +107,9 @@ class NewsIngestor:
 
             elapsed = max(0.0, time.monotonic() - started)
             sleep_s = max(0.0, float(self.cfg.poll_interval_s) - elapsed)
-            # Sleep in small increments so SIGTERM can stop promptly.
-            while (sleep_s > 0.0) and (not self._stop):
+            # Interruptible wait so SIGTERM can stop promptly.
+            while (sleep_s > 0.0) and (not self._stop.is_set()):
                 step = min(1.0, sleep_s)
-                time.sleep(step)
+                self._stop.wait(timeout=float(step))
                 sleep_s -= step
 

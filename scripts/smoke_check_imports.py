@@ -57,6 +57,9 @@ def main(argv: list[str]) -> int:
     # The goal of this check is "missing deps", not "missing secrets/config".
     # Provide safe defaults so entrypoint imports don't exit early in CI.
     os.environ.setdefault("AGENT_MODE", "OFF")
+    # Paper-trading hard lock requires TRADING_MODE=paper for startup in safety-hardened services.
+    # This smoke test is about importability, so default it safely if missing.
+    os.environ.setdefault("TRADING_MODE", "paper")
     os.environ.setdefault("DATABASE_URL", "sqlite:////tmp/agenttrader_smoke.db")
     os.environ.setdefault("MARKETDATA_HEALTH_URL", "http://127.0.0.1:8080/healthz")
     os.environ.setdefault("MARKETDATA_HEARTBEAT_URL", "http://127.0.0.1:8080/heartbeat")

@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from event_utils import choose_doc_id, ordering_ts, parse_ts
-from firestore_writer import SourceInfo
-from replay_support import ReplayContext
+from cloudrun_consumer.event_utils import choose_doc_id, ordering_ts, parse_ts
+from cloudrun_consumer.firestore_writer import SourceInfo
+from cloudrun_consumer.replay_support import ReplayContext
 
 
 def handle_market_bar_1m(

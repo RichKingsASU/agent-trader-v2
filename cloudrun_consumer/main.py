@@ -1,9 +1,11 @@
 """
-Cloud Run Pub/Sub → Firestore materializer (push subscription).
+cloudrun_consumer entrypoint diagnostics
 
-Contract Unification Gate:
-- Validate topic-specific canonical schemas from `contracts/` before processing.
-- If invalid: record (DLQ sample / ops alert), log structured error, and ACK (2xx).
+Runtime assumptions (documented for deploy/debug):
+- Containers should follow the canonical repo layout:
+  - COPY . /app
+  - PYTHONPATH=/app
+  - use absolute imports (e.g. `from cloudrun_consumer...`)
 """
 
 from __future__ import annotations
@@ -18,20 +20,34 @@ import traceback
 import os
 import sys
 import time
-import traceback
+import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import logging
+
 from fastapi import FastAPI, HTTPException, Request, Response
 
-from backend.contracts.ops_alerts import try_write_contract_violation_alert
-from backend.contracts.registry import validate_topic_event
-from event_utils import infer_topic
-from firestore_writer import FirestoreWriter
-from schema_router import route_payload
-from time_audit import ensure_utc
+from cloudrun_consumer.event_utils import infer_topic
+from cloudrun_consumer.firestore_writer import FirestoreWriter
+from cloudrun_consumer.replay_support import ReplayContext, write_replay_marker
+from cloudrun_consumer.schema_router import route_payload
+from cloudrun_consumer.time_audit import ensure_utc
 
-
+def _startup_diag(event_type: str, *, severity: str = "INFO", **fields: Any) -> None:
+    """Print a structured JSON diagnostic log."""
+    payload: dict[str, Any] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "severity": str(severity).upper(),
+        "service": "cloudrun-pubsub-firestore-materializer",
+        "event_type": str(event_type),
+    }
+    payload.update(fields)
+    try:
+        sys.stdout.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except Exception:
+        return
 SERVICE_NAME = "cloudrun-pubsub-firestore-materializer"
 DLQ_SAMPLE_RATE_DEFAULT = "0.01"
 DLQ_SAMPLE_TTL_HOURS_DEFAULT = "72"
@@ -442,9 +458,19 @@ app = FastAPI(title="Cloud Run Pub/Sub → Firestore Materializer", version="0.2
 
 @app.on_event("startup")
 async def _startup() -> None:
-    project_id = (os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
-    if not project_id:
-        raise RuntimeError("Missing required env var: GCP_PROJECT (or GOOGLE_CLOUD_PROJECT)")
+    _normalize_env_alias("GCP_PROJECT", ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT_ID", "PROJECT_ID"])
+    # Centralized env contract validation (single-line failure).
+    try:
+        from backend.common.config import validate_or_exit as _validate_or_exit  # noqa: WPS433
+
+        _validate_or_exit("cloudrun-consumer")
+    except SystemExit:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"CONFIG_FAIL service=cloudrun-consumer action=\"config_validation_import_failed:{type(e).__name__}:{e}\"") from e
+
+    project_id = _require_env("GCP_PROJECT")
+
     database = os.getenv("FIRESTORE_DATABASE") or "(default)"
     collection_prefix = os.getenv("FIRESTORE_COLLECTION_PREFIX") or ""
     app.state.firestore_writer = FirestoreWriter(project_id=project_id, database=database, collection_prefix=collection_prefix)
@@ -809,5 +835,5 @@ if __name__ == "__main__":  # pragma: no cover
     import uvicorn
 
     port = int(os.getenv("PORT") or "8080")
-    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="warning", access_log=False)
+    uvicorn.run("cloudrun_consumer.main:app", host="0.0.0.0", port=port, log_level="warning", access_log=False)
 
