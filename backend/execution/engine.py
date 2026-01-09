@@ -20,6 +20,12 @@ from backend.common.kill_switch import (
 )
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.streams.alpaca_env import load_alpaca_env
+from backend.risk.capital_reservation import (
+    CapitalReservationError,
+    InsufficientBuyingPowerError,
+    reserve_capital_atomic,
+    release_capital_atomic,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1015,6 +1021,92 @@ class ExecutionEngine:
                 pass
             return ExecutionResult(status="rejected", risk=risk, routing=routing_decision, message=risk.reason)
 
+        # --- Capital reservation (atomic; idempotent by client_intent_id) ---
+        # This is a correctness-first guardrail that prevents concurrent "double spend"
+        # within our own system. Broker-side buying power checks are not sufficient to
+        # prevent two agents from racing each other.
+        reserved = False
+        tenant_id_for_reservation: Optional[str] = None
+        uid_for_reservation: Optional[str] = None
+        try:
+            if intent.side == "buy":
+                # Best-effort: only reserve when we can resolve identity and a notional.
+                if self._ledger is None:
+                    self._ledger = _FirestoreLedger()
+                tenant_id_for_reservation = self._ledger._resolve_tenant_id(intent=intent)  # type: ignore[attr-defined]
+                uid_for_reservation = self._ledger._resolve_uid(intent=intent)  # type: ignore[attr-defined]
+
+                # Determine notional (USD) to reserve.
+                notional_usd: Optional[float] = None
+                meta = dict(intent.metadata or {})
+                # Preferred: explicit notional provided by upstream.
+                if meta.get("notional_usd") is not None:
+                    try:
+                        notional_usd = float(meta.get("notional_usd"))
+                    except Exception:
+                        notional_usd = None
+                if notional_usd is None and intent.limit_price is not None:
+                    notional_usd = float(intent.limit_price) * float(intent.qty)
+                if notional_usd is None and meta.get("price") is not None:
+                    try:
+                        notional_usd = float(meta.get("price")) * float(intent.qty)
+                    except Exception:
+                        notional_usd = None
+                if notional_usd is None:
+                    # Last resort: fetch quote and reserve at ask/mid.
+                    quote = MarketDataProvider().get_quote(symbol=intent.symbol, asset_class=intent.asset_class)
+                    ask = float(quote.get("ask") or 0.0)
+                    mid = float(quote.get("mid_price") or 0.0)
+                    px = ask if ask > 0 else mid
+                    if px > 0:
+                        notional_usd = px * float(intent.qty)
+
+                if notional_usd is not None and notional_usd > 0 and tenant_id_for_reservation and uid_for_reservation:
+                    # Fetch buying power snapshot for this uid to enforce a hard ceiling.
+                    from backend.alpaca_signal_trader import get_warm_cache_buying_power_usd
+
+                    buying_power_usd, _snap = get_warm_cache_buying_power_usd(user_id=uid_for_reservation)
+                    reserve_capital_atomic(
+                        tenant_id=tenant_id_for_reservation,
+                        uid=uid_for_reservation,
+                        broker_account_id=intent.broker_account_id,
+                        trade_id=intent.client_intent_id,
+                        amount_usd=float(notional_usd),
+                        buying_power_usd=float(buying_power_usd),
+                    )
+                    reserved = True
+                else:
+                    logger.info(
+                        "exec.capital_reservation_skipped %s",
+                        json.dumps(
+                            _to_jsonable(
+                                {
+                                    "reason": "missing_notional_or_identity",
+                                    "tenant_id": tenant_id_for_reservation,
+                                    "uid": uid_for_reservation,
+                                    "symbol": intent.symbol,
+                                    "side": intent.side,
+                                    "qty": intent.qty,
+                                    "limit_price": intent.limit_price,
+                                    "client_intent_id": intent.client_intent_id,
+                                }
+                            )
+                        ),
+                    )
+        except InsufficientBuyingPowerError as e:
+            checks = list(risk.checks or [])
+            checks.append({"check": "capital_reservation", "allowed": False, "reason": "insufficient_buying_power"})
+            return ExecutionResult(status="rejected", risk=RiskDecision(allowed=False, reason=str(e), checks=checks))
+        except CapitalReservationError as e:
+            checks = list(risk.checks or [])
+            checks.append({"check": "capital_reservation", "allowed": False, "reason": str(e)})
+            return ExecutionResult(status="rejected", risk=RiskDecision(allowed=False, reason="capital_reservation_failed", checks=checks))
+        except Exception as e:
+            # Fail-closed: if we cannot safely reserve, refuse to place orders.
+            checks = list(risk.checks or [])
+            checks.append({"check": "capital_reservation", "error": str(e)})
+            return ExecutionResult(status="rejected", risk=RiskDecision(allowed=False, reason="capital_reservation_error", checks=checks))
+
         if self._dry_run:
             logger.info("exec.dry_run_accept %s", json.dumps(_to_jsonable(audit_ctx)))
             try:
@@ -1040,6 +1132,17 @@ class ExecutionEngine:
             except Exception:
                 logger.exception("exec.replay_dry_run_state_transition_log_failed")
                 pass
+            # Dry-run has no external side effects; always release immediately if we reserved.
+            if reserved and tenant_id_for_reservation and uid_for_reservation:
+                try:
+                    release_capital_atomic(
+                        tenant_id=tenant_id_for_reservation,
+                        uid=uid_for_reservation,
+                        broker_account_id=intent.broker_account_id,
+                        trade_id=intent.client_intent_id,
+                    )
+                except Exception:
+                    logger.exception("exec.capital_release_failed (dry_run)")
             return ExecutionResult(status="dry_run", risk=risk, routing=routing_decision, message="dry_run_enabled")
 
         # Defense-in-depth: do not place broker orders unless explicitly authorized.
@@ -1100,6 +1203,17 @@ class ExecutionEngine:
             if status in {"filled", "partially_filled"} or filled_qty > 0:
                 self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
                 self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
+                # If we reserved for this intent, release on first observed fill.
+                if reserved and tenant_id_for_reservation and uid_for_reservation:
+                    try:
+                        release_capital_atomic(
+                            tenant_id=tenant_id_for_reservation,
+                            uid=uid_for_reservation,
+                            broker_account_id=intent.broker_account_id,
+                            trade_id=intent.client_intent_id,
+                        )
+                    except Exception:
+                        logger.exception("exec.capital_release_failed (filled)")
         except Exception as e:
             logger.exception("exec.ledger_write_failed: %s", e)
 
@@ -1128,6 +1242,8 @@ class ExecutionEngine:
         )
         resp = self._broker.cancel_order(broker_order_id=broker_order_id)
         logger.info("exec.cancel_response %s", json.dumps(_to_jsonable(resp)))
+        # Best-effort: attempt to release reservation keyed by broker_order_id if caller uses it as trade_id.
+        # NOTE: The canonical reservation key is client_intent_id; without it we cannot reliably release here.
         return resp
 
     def sync_and_ledger_if_filled(self, *, broker_order_id: str) -> dict[str, Any]:
@@ -1172,6 +1288,20 @@ class ExecutionEngine:
             ).normalized()
             self._write_ledger_fill(intent=intent, broker_order=order, fill=order)
             self._write_portfolio_history(intent=intent, broker_order=order, fill=order)
+            # Best-effort: release reservation if client_intent_id matches reservation trade_id.
+            try:
+                if self._ledger is None:
+                    self._ledger = _FirestoreLedger()
+                tenant_id = self._ledger._resolve_tenant_id(intent=intent)  # type: ignore[attr-defined]
+                uid = self._ledger._resolve_uid(intent=intent)  # type: ignore[attr-defined]
+                release_capital_atomic(
+                    tenant_id=tenant_id,
+                    uid=uid,
+                    broker_account_id=intent.broker_account_id,
+                    trade_id=intent.client_intent_id,
+                )
+            except Exception:
+                logger.exception("exec.capital_release_failed (sync)")
         return order
 
     def _write_ledger_fill(
