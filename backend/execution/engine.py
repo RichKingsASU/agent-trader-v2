@@ -35,6 +35,7 @@ from backend.execution.reservations import (
     resolve_tenant_id_from_metadata,
 )
 from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
+from backend.observability.risk_signals import risk_correlation_id
 
 logger = logging.getLogger(__name__)
 
@@ -1861,9 +1862,25 @@ class ExecutionEngine:
                     )
 
             risk = self._risk.validate(intent=intent)
+            corr = risk_correlation_id(
+                correlation_id=str(intent.metadata.get("correlation_id") or "").strip() or None
+            )
+            execution_id = str(intent.metadata.get("execution_id") or intent.client_intent_id or "").strip() or None
             logger.info(
                 "exec.risk_decision %s",
-                json.dumps(_to_jsonable({"allowed": risk.allowed, "reason": risk.reason, "checks": risk.checks})),
+                json.dumps(
+                    _to_jsonable(
+                        {
+                            "correlation_id": corr,
+                            "execution_id": execution_id,
+                            "strategy_id": intent.strategy_id,
+                            "risk_decision": "ALLOW" if risk.allowed else "DENY",
+                            "allowed": risk.allowed,
+                            "reason": risk.reason,
+                            "checks": risk.checks,
+                        }
+                    )
+                ),
             )
             # Best-effort: propagate key risk-state for deterministic pre-trade risk guard inputs.
             # This avoids extra DB reads later and keeps the risk guard boundary explicit.
@@ -2340,6 +2357,11 @@ class ExecutionEngine:
                 )
             )
 
+            corr = risk_correlation_id(
+                correlation_id=str(intent.metadata.get("correlation_id") or trace_id or "").strip() or None
+            )
+            execution_id = str(intent.metadata.get("execution_id") or intent.client_intent_id or "").strip() or None
+
             decision = evaluate_risk_guard(
                 trade=RiskGuardTrade(
                     symbol=intent.symbol,
@@ -2353,6 +2375,9 @@ class ExecutionEngine:
                     daily_pnl_usd=daily_pnl,
                     trades_today=trades_today,
                     current_position_qty=current_qty,
+                    correlation_id=corr,
+                    execution_id=execution_id,
+                    strategy_id=intent.strategy_id,
                 ),
                 limits=RiskGuardLimits(
                     max_daily_loss_usd=max_daily_loss,
@@ -2361,9 +2386,26 @@ class ExecutionEngine:
                     max_per_symbol_exposure_usd=max_per_symbol_exposure,
                 ),
             )
+            logger.info(
+                "exec.risk_guard_decision %s",
+                json.dumps(
+                    _to_jsonable(
+                        {
+                            "correlation_id": corr,
+                            "execution_id": execution_id,
+                            "strategy_id": intent.strategy_id,
+                            "risk_decision": "ALLOW" if decision.allowed else "DENY",
+                        }
+                    )
+                ),
+            )
             if not decision.allowed:
                 payload = {
                     "reason": "risk_guard_blocked",
+                    "correlation_id": corr,
+                    "execution_id": execution_id,
+                    "strategy_id": intent.strategy_id,
+                    "risk_decision": "DENY",
                     "risk_guard": decision.to_dict(),
                     "intent": _to_jsonable(intent),
                     "trace_id": trace_id,
