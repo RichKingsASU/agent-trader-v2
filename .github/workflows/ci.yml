@@ -15,6 +15,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  production_readiness_enforcement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Production-readiness enforcement (grep + python)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/check_production_readiness.sh
+
   lint_format:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -123,7 +142,7 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [lint_format]
+    needs: [production_readiness_enforcement, lint_format]
 
     steps:
       - name: Checkout

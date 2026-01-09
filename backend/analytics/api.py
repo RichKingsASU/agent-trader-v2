@@ -349,10 +349,7 @@ async def run_stress_test_endpoint(
     """
     try:
         # Import stress test runner
-        import sys
-        import os
-        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../functions')))
-        from stress_test_runner import run_stress_test
+        from functions.stress_test_runner import run_stress_test
         
         # Build simulation parameters
         simulation_params = {
