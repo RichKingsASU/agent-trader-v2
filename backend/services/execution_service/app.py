@@ -191,6 +191,13 @@ def _startup() -> None:
     app.state.risk = risk
     app.state.agent_sm = AgentStateMachine(agent_id=str(os.getenv("EXEC_AGENT_ID") or "execution_engine"))
     app.state.shutting_down = False
+    # If kill-switch is active at boot, make it visible immediately.
+    try:
+        enabled, source = get_kill_switch_state()
+        if enabled:
+            logger.warning("kill_switch_active enabled=true source=%s", source)
+    except Exception:
+        pass
     try:
         app.state.ops_logger.readiness(ready=True)  # type: ignore[attr-defined]
     except Exception:
@@ -314,7 +321,8 @@ def state(request: Request) -> dict[str, Any]:
     tenant_id = str(os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip() or None
     stale_s = _int_env("MARKETDATA_STALE_THRESHOLD_S", 120)
     hb = check_market_ingest_heartbeat(tenant_id=tenant_id, stale_threshold_seconds=stale_s)
-    kill = risk.kill_switch_enabled()
+    kill_enabled, kill_source = get_kill_switch_state()
+    kill = bool(kill_enabled)
 
     # Update state based on latest signals (no-op if unchanged).
     sm.on_kill_switch(enabled=kill, meta={"source": "state_endpoint"})
@@ -341,6 +349,7 @@ def state(request: Request) -> dict[str, Any]:
         "agent_mode": agent_mode,
         "engine_dry_run": bool(getattr(app.state.engine, "dry_run", True)),
         "kill_switch_enabled": kill,
+        "kill_switch_source": kill_source,
         "marketdata_heartbeat": {
             "path": hb.path,
             "exists": hb.exists,
@@ -458,7 +467,8 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
     tenant_id = str(req.metadata.get("tenant_id") or os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip() or None
     stale_s = _int_env("MARKETDATA_STALE_THRESHOLD_S", 120)
     hb = check_market_ingest_heartbeat(tenant_id=tenant_id, stale_threshold_seconds=stale_s)
-    kill = risk.kill_switch_enabled()
+    kill_enabled, kill_source = get_kill_switch_state()
+    kill = bool(kill_enabled)
 
     sm.on_kill_switch(enabled=kill, meta={"source": "execute_endpoint"})
     if not kill:
@@ -562,6 +572,7 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
                         "state": sm.state.value,
                         "agent_mode": agent_mode,
                         "kill_switch_enabled": kill,
+                        "kill_switch_source": kill_source,
                         "reason": reason,
                         "marketdata_is_stale": hb.is_stale,
                         "marketdata_age_seconds": hb.age_seconds,
