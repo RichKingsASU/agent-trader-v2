@@ -37,3 +37,5 @@ packages/*/dist/
 *.so
 .cache/
 .local/
+functions/venv_*/
+site-packages/
