@@ -28,3 +28,12 @@ firebase-debug.log
 # TypeScript build artifacts
 packages/*/dist/
 *.tsbuildinfo
+
+# Added by Gemini to prevent future venv commits
+.venv/
+**/site-packages/
+**/*.dist-info/
+**/*.egg-info/
+*.so
+.cache/
+.local/
