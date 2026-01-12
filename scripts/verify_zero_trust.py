@@ -15,6 +15,7 @@ Requirements:
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -39,6 +40,24 @@ class ZeroTrustVerifier:
     def __init__(self):
         """Initialize Firebase and components."""
         try:
+            # CI/local safety: allow running against Firestore emulator without production secrets.
+            if os.getenv("FIRESTORE_EMULATOR_HOST"):
+                from google.auth.credentials import AnonymousCredentials
+                from google.cloud import firestore as gc_firestore
+
+                project = (
+                    os.getenv("GOOGLE_CLOUD_PROJECT")
+                    or os.getenv("GCLOUD_PROJECT")
+                    or os.getenv("GCP_PROJECT")
+                    or "demo-agenttrader-ci"
+                )
+                self.db = gc_firestore.Client(
+                    project=project,
+                    credentials=AnonymousCredentials(),
+                )
+                logger.info("✅ Firestore emulator detected (anonymous credentials)")
+                return
+
             if not firebase_admin._apps:
                 firebase_admin.initialize_app()
             self.db = firestore.client()
