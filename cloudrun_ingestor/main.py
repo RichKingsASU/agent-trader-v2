@@ -307,13 +307,11 @@ def _on_exit() -> None:
 
 # --- Background Worker for Ingestion Loop ---
 def ingestion_worker() -> None:
-    """
-    Background worker.
-
-    Keep this import-safe (no network/GCP calls) so CI can import `main:app`.
-    Production ingestion behavior is implemented elsewhere; this thread is a
-    placeholder that keeps the Cloud Run container's process model stable.
-    """
+    # Background worker.
+    #
+    # Keep this import-safe (no network/GCP calls) so CI can import `main:app`.
+    # Production ingestion behavior is implemented elsewhere; this thread is a
+    # placeholder that keeps the Cloud Run container's process model stable.
     log_standard_event(logger, "cloudrun.worker.start", severity="INFO", outcome="started")
     # Wait until shutdown. No work here by design.
     SHUTDOWN_FLAG.wait()
