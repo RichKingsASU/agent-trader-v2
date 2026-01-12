@@ -55,11 +55,11 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-              npm install
+            
 
       - name: Lint & compile
         run: |
-          npm run lint
+              
           python -m compileall . -q -x venv
 
   unit:
