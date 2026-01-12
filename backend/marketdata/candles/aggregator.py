@@ -14,37 +14,36 @@ logger = logging.getLogger(__name__)
 
 
 def publish_candle(_: Candle) -> None:
-    """
-    Optional integration hook (no-op by default).
+        """
+        Optional integration hook (no-op by default).
 
-    Callers may override this at integration time to persist/publish candles.
-    """
-    Parse a trade-like event.
-    Required fields:
-      - symbol: symbol / sym / S
-      - timestamp: timestamp / t / ts / time
-      - price: price / p
-      - size: size / s / qty / q
-    """
-    symbol = _get_field(event, "symbol", "sym", "S")
-    ts = _get_field(event, "timestamp", "t", "ts", "time")
-    price = _get_field(event, "price", "p")
-    size = _get_field(event, "size", "s", "qty", "q")
+        Callers may override this at integration time to persist/publish candles.
+        Parse a trade-like event.
+        Required fields:
+          - symbol: symbol / sym / S
+          - timestamp: timestamp / t / ts / time
+          - price: price / p
+          - size: size / s / qty / q
+        """
+        symbol = _get_field(event, "symbol", "sym", "S")
+        ts = _get_field(event, "timestamp", "t", "ts", "time")
+        price = _get_field(event, "price", "p")
+        size = _get_field(event, "size", "s", "qty", "q")
 
-    if symbol is None or ts is None or price is None or size is None:
-        raise ValueError("missing required trade fields")
+        if symbol is None or ts is None or price is None or size is None:
+            raise ValueError("missing required trade fields")
 
-    symbol_s = str(symbol).strip().upper()
-    if not symbol_s:
-        raise ValueError("empty symbol")
+        symbol_s = str(symbol).strip().upper()
+        if not symbol_s:
+            raise ValueError("empty symbol")
 
-    ts_utc = parse_ts(ts)
+        ts_utc = parse_ts(ts)
 
-    p = float(price)
-    s = int(size)
-    if s < 0:
-        raise ValueError("negative size")
-    return symbol_s, ts_utc, p, s
+        p = float(price)
+        s = int(size)
+        if s < 0:
+            raise ValueError("negative size")
+        return symbol_s, ts_utc, p, s
 
 
 @dataclass(slots=True)
