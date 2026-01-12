@@ -58,46 +58,46 @@ components:
       type: object
       additionalProperties: false
       properties:
-        ok: { type: boolean }
-        status_code: { type: integer, nullable: true }
-        latency_ms: { type: integer, nullable: true }
-        error: { type: string, nullable: true }
+        ok: {type: boolean}
+        status_code: {type: integer, nullable: true}
+        latency_ms: {type: integer, nullable: true}
+        error: {type: string, nullable: true}
       required: [ok, status_code, latency_ms, error]
     OpsHealthResponse:
       type: object
       additionalProperties: false
       properties:
-        status: { type: string, enum: [ok] }
-        service: { type: string }
-        ts: { type: string }
+        status: {type: string, enum: [ok]}
+        service: {type: string}
+        ts: {type: string}
       required: [status, service, ts]
     MissionControlKillSwitch:
       type: object
       additionalProperties: false
       properties:
-        execution_halted: { type: boolean }
-        source: { type: string, nullable: true }
+        execution_halted: {type: boolean}
+        source: {type: string, nullable: true}
       required: [execution_halted, source]
     MissionControlAgentOps:
       type: object
       additionalProperties: false
       properties:
-        agent_name: { type: string }
-        kind: { type: string, enum: [marketdata, strategy, execution, ingest] }
-        criticality: { type: string, enum: [critical, important, optional] }
-        service_dns: { type: string }
+        agent_name: {type: string}
+        kind: {type: string, enum: [marketdata, strategy, execution, ingest]}
+        criticality: {type: string, enum: [critical, important, optional]}
+        service_dns: {type: string}
         expected_endpoints:
           type: array
-          items: { type: string }
-        online: { type: boolean, nullable: true }
-        last_poll_at: { type: string, nullable: true }
+          items: {type: string}
+        online: {type: boolean, nullable: true}
+        last_poll_at: {type: string, nullable: true}
         endpoints:
           type: object
           additionalProperties: false
           properties:
-            healthz: { $ref: "#/components/schemas/EndpointResult", nullable: true }
-            ops_status: { $ref: "#/components/schemas/EndpointResult", nullable: true }
-            heartbeat: { $ref: "#/components/schemas/EndpointResult", nullable: true }
+            healthz: {$ref: "#/components/schemas/EndpointResult", nullable: true}
+            ops_status: {$ref: "#/components/schemas/EndpointResult", nullable: true}
+            heartbeat: {$ref: "#/components/schemas/EndpointResult", nullable: true}
           required: [healthz, ops_status, heartbeat]
         ops_status:
           description: Best-effort validated downstream `OpsStatus` contract, if available.
@@ -107,12 +107,12 @@ components:
           type: object
           additionalProperties: false
           properties:
-            state: { $ref: "#/components/schemas/OpsState" }
-            summary: { type: string }
+            state: {$ref: "#/components/schemas/OpsState"}
+            summary: {type: string}
             reason_codes:
               type: array
-              items: { type: string }
-            last_updated_utc: { type: string, nullable: true }
+              items: {type: string}
+            last_updated_utc: {type: string, nullable: true}
           required: [state, summary, reason_codes, last_updated_utc]
         raw_ops_status_redacted:
           description: Redacted downstream payload for drill-down debugging.
@@ -133,11 +133,10 @@ components:
       type: object
       additionalProperties: false
       properties:
-        ts: { type: string }
-        kill_switch: { $ref: "#/components/schemas/MissionControlKillSwitch" }
-        last_poll_cycle_at: { type: string, nullable: true }
+        ts: {type: string}
+        kill_switch: {$ref: "#/components/schemas/MissionControlKillSwitch"}
+        last_poll_cycle_at: {type: string, nullable: true}
         agents:
           type: array
-          items: { $ref: "#/components/schemas/MissionControlAgentOps" }
+          items: {$ref: "#/components/schemas/MissionControlAgentOps"}
       required: [ts, kill_switch, last_poll_cycle_at, agents]
-
