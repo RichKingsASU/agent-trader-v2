@@ -55,7 +55,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          npm ci
+          npm iinstall
 
       - name: Lint & compile
         run: |
@@ -63,7 +63,7 @@ jobs:
           python -m compileall . -q -x venv
 
   unit:
-    name: Unit Tests
+    name: Unit Tesinstall
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [production_readiness_enforcement, lint_format]
