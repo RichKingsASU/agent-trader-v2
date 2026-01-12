@@ -3,6 +3,7 @@ uvicorn==0.38.0
 
 # Market data + transport
 alpaca-py==0.43.2
+alpaca-trade-api==2.3.0
 websockets
 httpx
 requests
