@@ -224,11 +224,10 @@ def shutdown_handler(signum: int, frame: Any) -> None:
     SHUTDOWN_FLAG.set()
 
 
-    Important:
-    - Chain any previous handlers so Gunicorn/framework signal handling still works.
-    - If previous handler is SIG_DFL, emulate default termination via SystemExit so
-      `atexit` hooks can run and logs can flush.
-    """
+    # Important:
+    # - Chain any previous handlers so Gunicorn/framework signal handling still works.
+    # - If previous handler is SIG_DFL, emulate default termination via SystemExit so
+    #   `atexit` hooks can run and logs can flush.
     global _SHUTDOWN_HANDLERS_INSTALLED
     if _SHUTDOWN_HANDLERS_INSTALLED:
         return
@@ -307,13 +306,10 @@ def _on_exit() -> None:
 
 # --- Background Worker for Ingestion Loop ---
 def ingestion_worker() -> None:
-    """
-    Background worker.
-
-    Keep this import-safe (no network/GCP calls) so CI can import `main:app`.
-    Production ingestion behavior is implemented elsewhere; this thread is a
-    placeholder that keeps the Cloud Run container's process model stable.
-    """
+    # Background worker.
+    # Keep this import-safe (no network/GCP calls) so CI can import `main:app`.
+    # Production ingestion behavior is implemented elsewhere; this thread is a
+    # placeholder that keeps the Cloud Run container's process model stable.
     log_standard_event(logger, "cloudrun.worker.start", severity="INFO", outcome="started")
     # Wait until shutdown. No work here by design.
     SHUTDOWN_FLAG.wait()
@@ -329,13 +325,13 @@ except Exception as e:
     _fail_fast(f"Failed to import Flask: {type(e).__name__}: {e}")
 app = Flask(__name__)
 
-try:
-    from backend.common.cloudrun_perf import classify_request as _classify_request  # noqa: WPS433
+from backend.common.cloudrun_perf import classify_request as _classify_request  # noqa: WPS433
 
-    @app.before_request
-    def _cloudrun_request_perf_hook():  # type: ignore[no-redef]
-        # Minimal noise: still logs once per request (health checks are low-QPS here).
-        c = _classify_request()
+@app.before_request
+def _cloudrun_request_perf_hook():  # type: ignore[no-redef]
+    # Minimal noise: still logs once per request (health checks are low-QPS here).
+    c = _classify_request()
+    try:
         log_standard_event(
             logger,
             "cloudrun.http_request",
@@ -345,14 +341,13 @@ try:
             request_ordinal=int(c.request_ordinal),
             instance_uptime_ms=int(c.instance_uptime_ms),
         )
-
     except Exception:
         pass
 
-    @app.route("/")
-    def index():
-        # This endpoint is not strictly necessary for the worker but is useful for health checks.
-        return "Ingestion service is running.", 200
+@app.route("/")
+def index():
+    # This endpoint is not strictly necessary for the worker but is useful for health checks.
+    pass
 
 # Start the background worker thread when the Flask app initializes.
 if _running_under_gunicorn():
