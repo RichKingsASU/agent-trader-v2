@@ -83,3 +83,54 @@ Notes:
 
 Time bars are production-ready. Volume/range bars are not implemented in this module yet.
 
+## Underlying intraday backfill (1m, 5m)
+
+When option underlyings are missing intraday candles, use the backfill script:
+
+- Script: `backend/streams/alpaca_underlying_intraday_backfill.py`
+- Target store: `public.market_candles` (key: `(symbol, timeframe, ts_start)`)
+- Scope defaults:
+  - Symbols: `SPY,QQQ,IWM,AAPL,TSLA`
+  - Timeframes: `1m,5m`
+  - Range: last `30` NYSE trading days (regular session only)
+
+Example command:
+
+```bash
+export DATABASE_URL="postgres://..."
+export ALPACA_KEY_ID="..."
+export ALPACA_SECRET_KEY="..."
+export ALPACA_FEED="iex"
+export ALPACA_SYMBOLS="SPY,QQQ,IWM,AAPL,TSLA"
+export CANDLE_TIMEFRAMES="1m,5m"
+export BACKFILL_TRADING_DAYS="30"
+python3 backend/streams/alpaca_underlying_intraday_backfill.py
+```
+
+Dry-run:
+
+```bash
+DRY_RUN=1 python3 backend/streams/alpaca_underlying_intraday_backfill.py
+```
+
+Validation SQL (Postgres): find any NY session-day with an unexpected bar count:
+
+```sql
+-- 1m should have 390 bars per regular session day (09:30–16:00 NY)
+SELECT
+  symbol,
+  timeframe,
+  (ts_start AT TIME ZONE 'America/New_York')::date AS session_date_ny,
+  COUNT(*) AS bars
+FROM public.market_candles
+WHERE symbol IN ('SPY','QQQ','IWM','AAPL','TSLA')
+  AND timeframe IN ('1m','5m')
+  AND (ts_start AT TIME ZONE 'America/New_York')::time >= TIME '09:30'
+  AND (ts_start AT TIME ZONE 'America/New_York')::time <  TIME '16:00'
+  AND (ts_start AT TIME ZONE 'America/New_York')::date >= (CURRENT_DATE - INTERVAL '60 days')
+GROUP BY 1,2,3
+HAVING (timeframe = '1m' AND COUNT(*) <> 390)
+    OR (timeframe = '5m' AND COUNT(*) <> 78)
+ORDER BY 3 DESC, 1, 2;
+```
+
