@@ -1818,6 +1818,31 @@ class ExecutionEngine:
     def execute_intent(self, *, intent: OrderIntent) -> ExecutionResult:
         intent = intent.normalized()
 
+        # --- Compliance/audit: LIVE execution attempts MUST emit audit data ---
+        # Contract (compliance test):
+        # - Emit `event_type=execution_attempt` for every LIVE attempt (dry_run=False)
+        # - Include: AGENT_NAME, AGENT_ROLE, AGENT_VERSION, confirm_token_id, timestamp
+        # - Fail-closed: do not proceed with execution if audit logging fails
+        if not self._dry_run:
+            md = dict(intent.metadata or {})
+            confirm_token_id = str(md.get("confirm_token_id") or "").strip() or "missing"
+            try:
+                # Import here to avoid import cycles in module init.
+                from backend.common.logging import log_event as _audit_log_event  # noqa: WPS433
+
+                _audit_log_event(
+                    logger,
+                    "execution_attempt",
+                    severity="INFO",
+                    # Uppercase keys required by compliance assertion.
+                    AGENT_NAME=str(os.getenv("AGENT_NAME") or "unknown"),
+                    AGENT_ROLE=str(os.getenv("AGENT_ROLE") or "unknown"),
+                    AGENT_VERSION=str(os.getenv("AGENT_VERSION") or os.getenv("GIT_SHA") or "unknown"),
+                    confirm_token_id=confirm_token_id,
+                )
+            except Exception as e:  # noqa: BLE001
+                raise RuntimeError(f"audit_log_failed: {type(e).__name__}: {e}") from e
+
         # --- In-flight reservation (best-effort) ---
         # Reserve *during processing only* (not a long-lived open-order hold).
         tenant_id = resolve_tenant_id_from_metadata(intent.metadata)
