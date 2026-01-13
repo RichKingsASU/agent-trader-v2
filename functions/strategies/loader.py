@@ -72,7 +72,13 @@ class StrategyLoader:
         signals = await loader.evaluate_all_strategies_with_maestro(market_data, account_snapshot)
     """
     
-    def __init__(self, db=None):
+    def __init__(
+        self,
+        db: Optional[Any] = None,
+        config: Optional[Dict[str, Any]] = None,
+        tenant_id: str = "default",
+        uid: Optional[str] = None,
+    ):
         """
         Initialize the strategy loader and discover all strategies.
         
@@ -85,6 +91,8 @@ class StrategyLoader:
         self._strategy_classes: Dict[str, Type] = {}
         self._load_errors: Dict[str, str] = {}
         self._db = db
+        self._tenant_id = tenant_id
+        self._uid = uid
         
         # Initialize identity manager if Firestore client provided
         self._identity_manager = None
@@ -576,3 +584,12 @@ def get_strategy_loader(db: Optional[Any] = None, tenant_id: str = "default", ui
         _global_loader = StrategyLoader(db=db, tenant_id=tenant_id, uid=uid)
     
     return _global_loader
+
+
+def load_strategies(db: Optional[Any] = None, tenant_id: str = "default", uid: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Convenience wrapper used by the consensus engine.
+
+    Returns a mapping of strategy name -> strategy instance.
+    """
+    return get_strategy_loader(db=db, tenant_id=tenant_id, uid=uid).get_all_strategies()

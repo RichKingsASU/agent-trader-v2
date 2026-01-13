@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -17,6 +18,33 @@ from backend.trading.agent_intent.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class TradeSignal:
+    """
+    Lightweight signal object used by tests and warm-cache logic.
+    """
+
+    action: str  # "buy" | "sell" | "flat"
+    symbol: str
+    notional_usd: float
+    reason: str = ""
+
+
+def enforce_affordability(*, signal: TradeSignal, buying_power_usd: float) -> TradeSignal:
+    """
+    Enforce that BUY signals don't exceed buying power.
+
+    If buying power is unavailable/insufficient, return a flattened (no-op) signal.
+    """
+    bp = float(buying_power_usd)
+    notional = float(signal.notional_usd)
+    action = (signal.action or "").strip().lower()
+
+    if action == "buy" and (bp <= 0.0 or notional > bp):
+        return TradeSignal(action="flat", symbol=signal.symbol, notional_usd=0.0, reason=signal.reason)
+    return signal
 
 
 # --- Vertex AI Gemini defaults (hardcoded to match the known-good Vertex test) ---
