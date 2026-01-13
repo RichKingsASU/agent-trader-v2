@@ -81,13 +81,19 @@ for cfg in cloudbuild.mcp.yaml cloudbuild.strategy-runtime.yaml cloudbuild.strat
 done
 
 echo "== Cloud Build: marketdata-mcp-server =="
-gcloud builds submit --config cloudbuild.mcp.yaml .
+# gcloud builds submit --config cloudbuild.mcp.yaml .
+echo "Production deployments are now gated through the 'Deploy to Prod' GitHub Action."
+echo "This script is intended for development and testing only."
 
 echo "== Cloud Build: strategy-runtime =="
-gcloud builds submit --config cloudbuild.strategy-runtime.yaml .
+# gcloud builds submit --config cloudbuild.strategy-runtime.yaml .
+echo "Production deployments are now gated through the 'Deploy to Prod' GitHub Action."
+echo "This script is intended for development and testing only."
 
 echo "== Cloud Build: strategy-engine =="
-gcloud builds submit --config cloudbuild.strategy-engine.yaml .
+# gcloud builds submit --config cloudbuild.strategy-engine.yaml .
+echo "Production deployments are now gated through the 'Deploy to Prod' GitHub Action."
+echo "This script is intended for development and testing only."
 
 echo "== kubectl apply k8s/ =="
 kubectl apply -f k8s/

@@ -46,7 +46,7 @@ Legend:
 | Variable | Canonical meaning | Required (local) | Required (prod) | Optional | Forbidden in prod | Notes / validation |
 |---|---:|---:|---:|---:|---:|---|
 | `AGENT_MODE` | runtime mode guardrail | ✅ | ✅ |  |  | Hard-fail if missing/invalid; allowed: `OFF`,`OBSERVE`,`EVAL`,`PAPER`; **`EXECUTE` hard-forbidden** |
-| `TRADING_MODE` | repo-wide trading mode | ✅ | ✅ |  |  | Hard-fail unless exactly `paper` (paper-trading hard lock) |
+| `TRADING_MODE` | repo-wide trading mode | ✅ | ✅ |  |  | Hard-fail unless `TRADING_MODE=paper` **AND APCA_API_BASE_URL contains `paper-api.alpaca.markets`** (paper-trading hard lock) |
 | `ENV` | environment label |  |  | ✅ |  | Used for logs; also required by `cloudrun-consumer` contract |
 | `ENVIRONMENT` | environment label alias |  |  | ✅ |  | Logging only (falls back chain includes `ENV`, `APP_ENV`, `DEPLOY_ENV`) |
 | `APP_ENV` | environment label alias |  |  | ✅ |  | Logging only |

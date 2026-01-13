@@ -11,6 +11,8 @@ __pycache__/
 
 # Secrets (CRITICAL)
 .env
+**/.env
+**/.env.local
 secret.json
 serviceAccountKey.json
 service-account-key.json

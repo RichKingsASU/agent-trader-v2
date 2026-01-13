@@ -236,9 +236,7 @@ python3 -m pytest tests/test_congressional_alpha_strategy.py -v
 
 ```bash
 # Build and deploy
-gcloud builds submit \
-  --config=infra/cloudbuild_congressional_ingest.yaml \
-  --substitutions=_TENANT_ID=prod,_NATS_URL=nats://nats.prod:4222
+
 
 # Verify deployment
 gcloud run services describe congressional-ingest --region=us-central1

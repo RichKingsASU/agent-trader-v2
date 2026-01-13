@@ -46,6 +46,18 @@ def check_account():
 def place_test_order():
     """Places a test paper order."""
     _require_explicit_order_smoke_test_override()
+
+    is_paper_mode = os.getenv("TRADING_MODE", "").strip().lower() == "paper"
+    is_alpaca_paper_url = "paper-api.alpaca.markets" in alpaca.trading_base_v2
+
+    if not (is_paper_mode and is_alpaca_paper_url):
+        raise RuntimeError(
+            "REFUSED: Test order placement is only allowed in paper trading mode "
+            "with Alpaca paper API. "
+            f"(TRADING_MODE='{os.getenv('TRADING_MODE')}', "
+            f"APCA_API_BASE_URL='{alpaca.trading_base_v2}')"
+        )
+
     logger.warning("Placing test order...", extra={"event_type": "alpaca.place_test_order"})
     payload = {
         "symbol": "SPY",

@@ -40,7 +40,7 @@ These Cloud Build configs build container images (Docker build).
 Example:
 
 ```bash
-gcloud builds submit --config infra/cloudbuild_ingest.yaml .
+
 ```
 
 ### Cloud Run Jobs (deploy ingestion)

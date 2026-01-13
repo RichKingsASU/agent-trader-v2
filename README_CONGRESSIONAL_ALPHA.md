@@ -228,7 +228,7 @@ Modify `backend/strategy_runner/examples/congressional_alpha/strategy.py`:
 
 ### Cloud Run (Production)
 ```bash
-gcloud builds submit --config=infra/cloudbuild_congressional_ingest.yaml
+
 ```
 
 ### Docker

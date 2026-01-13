@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 # This script provides commands to build and deploy the
 # AgentTrader Strategy Engine to Google Cloud Run as a Job.
@@ -25,7 +26,10 @@ gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:${SE
 
 # --- Build and Push Container Image ---
 echo "Building and pushing container image..."
-gcloud builds submit --config infra/cloudbuild_strategy_engine.yaml . --substitutions=_JOB_NAME=$JOB_NAME
+# gcloud builds submit --config infra/cloudbuild_strategy_engine.yaml . --substitutions=_JOB_NAME=$JOB_NAME
+echo "Production deployments are now gated through the 'Deploy to Prod' GitHub Action."
+echo "This script is intended for development and testing only."
+
 
 # --- Deploy to Cloud Run as a Job ---
 echo "Deploying to Cloud Run as a Job..."
