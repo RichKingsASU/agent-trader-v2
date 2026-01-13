@@ -75,17 +75,18 @@ def test_kill_switch_rejects(monkeypatch):
     )
     engine = ExecutionEngine(broker=broker, risk=risk, dry_run=False)
 
-    result = engine.execute_intent(
-        intent=OrderIntent(
-            strategy_id="s1",
-            broker_account_id="acct1",
-            symbol="SPY",
-            side="buy",
-            qty=1,
+    from backend.common.runtime_execution_prevention import FatalExecutionPathError
+
+    with pytest.raises(FatalExecutionPathError):
+        engine.execute_intent(
+            intent=OrderIntent(
+                strategy_id="s1",
+                broker_account_id="acct1",
+                symbol="SPY",
+                side="buy",
+                qty=1,
+            )
         )
-    )
-    assert result.status == "rejected"
-    assert result.risk.reason == "kill_switch_enabled"
     assert broker.place_calls == 0
 
 

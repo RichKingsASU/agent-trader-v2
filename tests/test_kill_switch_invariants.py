@@ -10,10 +10,10 @@ from __future__ import annotations
 import pytest
 
 from backend.common.kill_switch import (
-    ExecutionHaltedError,
     get_kill_switch_state,
     require_live_mode,
 )
+from backend.common.runtime_execution_prevention import FatalExecutionPathError
 
 
 def test_kill_switch_env_halts_execution(monkeypatch):
@@ -22,7 +22,7 @@ def test_kill_switch_env_halts_execution(monkeypatch):
     """
     monkeypatch.setenv("EXECUTION_HALTED", "1")
 
-    with pytest.raises(ExecutionHaltedError):
+    with pytest.raises(FatalExecutionPathError):
         require_live_mode(operation="unit-test-op")
 
 

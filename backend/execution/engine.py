@@ -16,7 +16,6 @@ import requests
 from backend.common.env import get_env
 from backend.common.agent_mode import require_live_mode as require_trading_live_mode
 from backend.common.kill_switch import (
-    ExecutionHaltedError,
     get_kill_switch_state,
     is_kill_switch_enabled,
     require_live_mode as require_kill_switch_off,
@@ -2031,20 +2030,7 @@ class ExecutionEngine:
 
             # Defense-in-depth: do not place broker orders unless explicitly authorized.
             require_trading_live_mode(action="broker order placement")
-            try:
-                require_kill_switch_off(operation="broker order placement")
-            except ExecutionHaltedError:
-                enabled, source = get_kill_switch_state()
-                checks = list(risk.checks or [])
-                checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
-                halted_risk = RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
-                outcome = "rejected"
-                return ExecutionResult(
-                    status="rejected",
-                    risk=halted_risk,
-                    routing=routing_decision,
-                    message="kill_switch_enabled",
-                )
+            require_kill_switch_off(operation="broker order placement")
 
         # ---- Idempotency guard (engine-level, replay-safe) ----
         # This prevents duplicate broker submissions if the same intent is processed twice.
@@ -2218,6 +2204,9 @@ class ExecutionEngine:
         """
         if self._dry_run:
             return {"id": broker_order_id, "status": "dry_run"}
+
+        # Broker API call (even if "read-only"): enforce kill-switch before any network side effects.
+        require_kill_switch_off(operation="broker status poll")
 
         # --- PAPER TRADING OVERRIDE (START) ---
         # Allow paper trading if TRADING_MODE is 'paper' and Alpaca base URL is paper.

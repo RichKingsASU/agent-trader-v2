@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Optional, Tuple
 
+from backend.common.runtime_execution_prevention import fatal_if_execution_reached
+
 TRUTHY = {"1", "true", "yes", "on"}
 
 # Standardized kill switch name (preferred)
@@ -74,8 +76,15 @@ def require_live_mode(*, operation: str = "trading") -> None:
     """
     enabled, source = get_kill_switch_state()
     if enabled:
-        raise ExecutionHaltedError(
-            f"Execution halted via {source or 'kill switch'}. Refusing {operation}. "
-            f"Disable by setting {KILL_SWITCH_ENV}=0 (or updating {KILL_SWITCH_FILE_ENV})."
+        # Fail-closed at the absolute execution boundary.
+        # This is intentionally fatal: if a codepath is attempting broker-side activity while the
+        # global kill-switch is enabled, we must hard-stop before any network/broker calls.
+        fatal_if_execution_reached(
+            operation=f"kill_switch:{operation}",
+            explicit_message=(
+                f"Execution halted via {source or 'kill switch'}. Refusing {operation}. "
+                f"Disable by setting {KILL_SWITCH_ENV}=0 (or updating {KILL_SWITCH_FILE_ENV})."
+            ),
+            context={"kill_switch_source": source, "operation": operation},
         )
 
