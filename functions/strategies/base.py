@@ -1,21 +1,24 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Any, Dict, Optional
+
 
 class BaseStrategy(ABC):
     """
-    Abstract base class for all trading strategies.
+    Abstract base class for all trading strategies (async interface).
+
+    This is the canonical interface used by unit tests and newer async strategy
+    runners. Concrete strategies MUST implement `evaluate`.
     """
 
+    def __init__(self, *, name: str, config: Optional[Dict[str, Any]] = None) -> None:
+        self.name = str(name)
+        self.config: Dict[str, Any] = dict(config or {})
+
     @abstractmethod
-    def evaluate(self, market_data: Dict[str, Any], account_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    async def evaluate(self, market_data: Dict[str, Any], account_snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """
         Evaluate the strategy based on market data and account snapshot.
-
-        Args:
-            market_data: A dictionary containing market data.
-            account_snapshot: A dictionary containing the current account snapshot.
-
-        Returns:
-            A dictionary containing the trading signal.
         """
-        pass
+        raise NotImplementedError

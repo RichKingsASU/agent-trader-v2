@@ -285,8 +285,8 @@ async def ops_metrics():
     return await metrics()
 
 
-@app.get("/ops/status")
-async def ops_status() -> dict[str, Any]:
+@app.get("/ops/status/v2")
+async def ops_status_v2() -> dict[str, Any]:
     """
     Stable ops status contract.
     """

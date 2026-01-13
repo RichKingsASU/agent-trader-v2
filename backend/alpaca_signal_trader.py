@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -172,5 +173,47 @@ Symbol: {symbol}
             limit_price=None,
             delta_to_hedge=None,
         ),
+    )
+
+
+@dataclass(frozen=True)
+class TradeSignal:
+    """
+    Minimal trade signal contract used by safety gates.
+
+    Note: Capital sizing is subject to downstream risk controls; this struct is
+    intentionally small and deterministic for unit testing and guardrails.
+    """
+
+    action: str  # "buy" | "sell" | "flat"
+    symbol: str
+    notional_usd: float
+    reason: str
+
+
+def enforce_affordability(*, signal: TradeSignal, buying_power_usd: float) -> TradeSignal:
+    """
+    Fail-closed affordability gate.
+
+    If a BUY would exceed buying power (or buying power is unavailable), the
+    signal is forced to FLAT with notional_usd=0.0.
+    """
+    action = str(signal.action or "flat").strip().lower()
+    bp = float(buying_power_usd or 0.0)
+    notional = float(signal.notional_usd or 0.0)
+
+    if action == "buy" and (bp <= 0.0 or notional > bp):
+        return TradeSignal(
+            action="flat",
+            symbol=str(signal.symbol).strip().upper(),
+            notional_usd=0.0,
+            reason=str(signal.reason or "").strip() or "Affordability gate forced flat.",
+        )
+
+    return TradeSignal(
+        action=action,
+        symbol=str(signal.symbol).strip().upper(),
+        notional_usd=notional,
+        reason=str(signal.reason or "").strip(),
     )
 

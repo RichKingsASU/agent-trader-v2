@@ -48,17 +48,8 @@ def _mark_marketdata_seen(ts: datetime | None = None) -> None:
     LAST_MARKETDATA_TS_UTC = ts.astimezone(timezone.utc)
 
 
-try:
-    alpaca = load_alpaca_env()
-    API_KEY = alpaca.key_id
-    SECRET_KEY = alpaca.secret_key
-    DB_URL = os.getenv("DATABASE_URL")
-    if not DB_URL:
-        raise KeyError("DATABASE_URL")
-    SYMBOLS = [s.strip() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ").split(",") if s.strip()]
-except KeyError as e:
-    logging.error(f"FATAL: Missing required environment variable: {e}")
-    exit(1)
+# NOTE: Import-safe module.
+# Runtime configuration (credentials, symbols) is loaded inside `main()`.
 
 _batch_last_log_ts = 0.0
 _batch_count = 0

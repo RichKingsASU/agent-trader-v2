@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import os
+
 from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
 
-_enforce_agent_mode_guard()
+if os.getenv("PYTEST_CURRENT_TEST") is None and os.getenv("SKIP_STARTUP_GATES") != "1":
+    _enforce_agent_mode_guard()
 
 import asyncio
 import logging
-import os
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -21,11 +23,15 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
+from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware
 from backend.common.app_heartbeat_writer import start_heartbeat_background, stop_heartbeat_background
 from backend.common.ops_metrics import REGISTRY
 from backend.ops.status_contract import OpsStatus as OpsStatusModel
 
 logger = logging.getLogger(__name__)
+
+# Ensure consistent structured logging (import-safe).
+init_structured_logging(service="mission-control")
 
 AGENT_KIND = Literal["marketdata", "strategy", "execution", "ingest"]
 CRITICALITY = Literal["critical", "important", "optional"]

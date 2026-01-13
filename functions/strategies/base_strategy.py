@@ -46,20 +46,30 @@ class TradingSignal:
     def __init__(
         self,
         signal_type: SignalType,
-        symbol: str,
-        asset_class: AssetClass = AssetClass.EQUITY,
         confidence: float = 0.0,
         reasoning: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        symbol: Optional[str] = None,
+        asset_class: AssetClass = AssetClass.EQUITY,
         estimated_slippage: Optional[float] = None,
-        metadata: Optional[Dict[str, Any]] = None
     ):
+        """
+        Create a TradingSignal.
+
+        Positional args are intentionally ordered as:
+          (signal_type, confidence, reasoning, metadata?)
+
+        This matches unit tests and keeps the signal contract lightweight.
+        If a symbol is needed, pass it as a keyword argument.
+        """
         self.signal_type = signal_type
-        self.symbol = symbol.upper().strip()
+        self.symbol = str(symbol).upper().strip() if symbol else None
         self.asset_class = asset_class
-        self.confidence = max(0.0, min(1.0, confidence))  # Clamp between 0 and 1
-        self.reasoning = reasoning
+        self.confidence = max(0.0, min(1.0, float(confidence)))  # Clamp between 0 and 1
+        self.reasoning = str(reasoning or "")
         self.estimated_slippage = estimated_slippage
-        self.metadata = metadata or {}
+        self.metadata = dict(metadata or {})
     
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -67,13 +77,16 @@ class TradingSignal:
         
         Includes signature if present in metadata.
         """
-        result = {
+        result: Dict[str, Any] = {
             "action": self.signal_type.value,
-            "symbol": self.symbol,
-            "asset_class": self.asset_class.value,
             "confidence": self.confidence,
             "reasoning": self.reasoning,
         }
+        if self.symbol:
+            result["symbol"] = self.symbol
+            result["asset_class"] = self.asset_class.value
+        if self.estimated_slippage is not None:
+            result["estimated_slippage"] = float(self.estimated_slippage)
         
         # Extract signature to top level if present
         if 'signature' in self.metadata:
@@ -101,7 +114,7 @@ class BaseStrategy(ABC):
     All signals should be signed using sign_signal() for non-repudiation.
     """
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, name: Optional[str] = None):
         """
         Initialize the strategy with configuration.
         
@@ -110,6 +123,7 @@ class BaseStrategy(ABC):
                 - max_slippage_pct: Maximum acceptable slippage (default: 0.001 = 0.1%)
                 - supported_assets: List of asset classes (default: [EQUITY])
         """
+        self.name = str(name or self.__class__.__name__)
         self.config = config or {}
 
         # Multi-asset cost guardrails

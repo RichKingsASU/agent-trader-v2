@@ -71,8 +71,22 @@ class StrategyLoader:
         strategies = loader.get_all_strategies()
         signals = await loader.evaluate_all_strategies_with_maestro(market_data, account_snapshot)
     """
+
+    # Class-level rate limiting state (Global Variable Reuse friendly).
+    _batch_write_limit: int = 500
+    _doc_write_limit: int = 50
+    _batch_cooldown_sec: float = 5.0
+    _current_batch_count: int = 0
+    _last_batch_time: float = 0.0
     
-    def __init__(self, db=None):
+    def __init__(
+        self,
+        db=None,
+        *,
+        config: Optional[Dict[str, Any]] = None,
+        tenant_id: str = "default",
+        uid: Optional[str] = None,
+    ):
         """
         Initialize the strategy loader and discover all strategies.
         
@@ -85,6 +99,19 @@ class StrategyLoader:
         self._strategy_classes: Dict[str, Type] = {}
         self._load_errors: Dict[str, str] = {}
         self._db = db
+        self.tenant_id = tenant_id
+        self.uid = uid
+        # Compatibility shim: some tests access this private name-mangled attribute.
+        self._StrategyLoader__class__ = self.__class__
+
+        # Optional Maestro orchestration layer.
+        self.maestro = None
+        if HAS_MAESTRO and MaestroController is not None and db is not None:
+            try:
+                self.maestro = MaestroController(db=db, tenant_id=tenant_id, uid=uid)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Failed to initialize MaestroController: %s", e)
+                self.maestro = None
         
         # Initialize identity manager if Firestore client provided
         self._identity_manager = None
@@ -131,7 +158,7 @@ class StrategyLoader:
             module_name = filepath.stem
             
             # Skip excluded files
-            if module_name in excluded_files:
+            if module_name in excluded_files or module_name.startswith("test_") or module_name.startswith("_"):
                 continue
             
             # Try to import the module and discover strategies
@@ -547,6 +574,39 @@ class StrategyLoader:
             logger.error(f"Maestro orchestration failed: {e}", exc_info=True)
             # Return raw signals if orchestration fails
             return raw_signals, None
+
+
+def load_strategies() -> Dict[str, Type]:
+    """
+    Discover available strategy classes without instantiating them.
+
+    This is intentionally import-safe: errors in individual strategy modules are
+    isolated and won't prevent the loader from returning other strategies.
+    """
+    strategies: Dict[str, Type] = {}
+    strategies_dir = Path(__file__).parent
+    excluded = {"__init__", "base", "base_strategy", "loader", "maestro_controller"}
+
+    for mod in pkgutil.iter_modules([str(strategies_dir)]):
+        module_name = mod.name
+        if module_name in excluded or module_name.startswith("_"):
+            continue
+        try:
+            module = importlib.import_module(f"strategies.{module_name}")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Skipping strategy module %s: %s", module_name, e)
+            continue
+
+        for _, obj in inspect.getmembers(module, inspect.isclass):
+            if obj.__module__ != module.__name__:
+                continue
+            if HAS_BASE_STRATEGY and BaseStrategySync is not None and issubclass(obj, BaseStrategySync) and obj is not BaseStrategySync:
+                strategies[obj.__name__] = obj
+                continue
+            if HAS_BASE and BaseStrategyAsync is not None and issubclass(obj, BaseStrategyAsync) and obj is not BaseStrategyAsync:
+                strategies[obj.__name__] = obj
+
+    return strategies
 
 
 # Global instance for Cloud Functions optimization (Global Variable Reuse)

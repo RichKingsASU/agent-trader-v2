@@ -1,6 +1,8 @@
 # Dependencies
 node_modules/
 venv/
+.venv/
+**/.venv/
 functions/venv_brain/
 functions/venv_ingest/
 __pycache__/
@@ -34,4 +36,6 @@ firebase-debug.log
 # TypeScript build artifacts
 packages/*/dist/
 packages/shared-types/dist/
+!packages/shared-types/dist/
+!packages/shared-types/dist/**
 *.tsbuildinfo

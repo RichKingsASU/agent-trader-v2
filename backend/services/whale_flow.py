@@ -360,15 +360,20 @@ class WhaleFlowService:
         )
         max_conviction = max(conviction_scores) if conviction_scores else Decimal("0")
         
-        # Determine dominant sentiment
-        if bullish_count > bearish_count * 1.5:
-            dominant_sentiment = "BULLISH"
-        elif bearish_count > bullish_count * 1.5:
-            dominant_sentiment = "BEARISH"
-        elif abs(bullish_count - bearish_count) <= 1:
+        # Determine dominant sentiment.
+        # Keep this conservative: only label "BULLISH/BEARISH" when the signal is overwhelming.
+        total_flows = len(flows)
+        if bullish_count == 0 and bearish_count == 0:
             dominant_sentiment = "NEUTRAL"
         else:
-            dominant_sentiment = "MIXED"
+            bullish_ratio = (bullish_count / total_flows) if total_flows else 0.0
+            bearish_ratio = (bearish_count / total_flows) if total_flows else 0.0
+            if bullish_ratio >= 0.75 and bullish_count > bearish_count:
+                dominant_sentiment = "BULLISH"
+            elif bearish_ratio >= 0.75 and bearish_count > bullish_count:
+                dominant_sentiment = "BEARISH"
+            else:
+                dominant_sentiment = "MIXED"
         
         return {
             "ticker": ticker,

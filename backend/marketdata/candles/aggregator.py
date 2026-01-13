@@ -7,8 +7,8 @@ from typing import Any, DefaultDict
 from collections import defaultdict
 
 from backend.time.nyse_time import UTC, ensure_aware_utc, parse_ts, utc_now
-from backend.marketdata.candles.models import EmittedCandle
-from backend.marketdata.candles.timeframes import Timeframe, bucket_range_utc, parse_timeframes
+from backend.marketdata.candles.models import Candle, Tick
+from backend.marketdata.candles.timeframe import Timeframe, bar_range_utc, parse_timeframes
 
 logger = logging.getLogger(__name__)
 
@@ -19,32 +19,7 @@ def publish_candle(_: Candle) -> None:
 
     Callers may override this at integration time to persist/publish candles.
     """
-    Parse a trade-like event.
-    Required fields:
-      - symbol: symbol / sym / S
-      - timestamp: timestamp / t / ts / time
-      - price: price / p
-      - size: size / s / qty / q
-    """
-    symbol = _get_field(event, "symbol", "sym", "S")
-    ts = _get_field(event, "timestamp", "t", "ts", "time")
-    price = _get_field(event, "price", "p")
-    size = _get_field(event, "size", "s", "qty", "q")
-
-    if symbol is None or ts is None or price is None or size is None:
-        raise ValueError("missing required trade fields")
-
-    symbol_s = str(symbol).strip().upper()
-    if not symbol_s:
-        raise ValueError("empty symbol")
-
-    ts_utc = parse_ts(ts)
-
-    p = float(price)
-    s = int(size)
-    if s < 0:
-        raise ValueError("negative size")
-    return symbol_s, ts_utc, p, s
+    return None
 
 
 @dataclass(slots=True)
@@ -300,7 +275,7 @@ class CandleAggregator:
         """
         try:
             symbol = str(event.get("symbol") or "").strip().upper()
-            ts = parse_timestamp(event.get("timestamp"))
+            ts = parse_ts(event.get("timestamp"))
             price = float(event.get("price"))
             size = int(event.get("size"))
         except Exception:

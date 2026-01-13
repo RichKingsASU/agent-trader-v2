@@ -16,6 +16,26 @@ from cloudrun_consumer.idempotency import ensure_message_once
 from cloudrun_consumer.replay_support import ReplayContext, ensure_event_not_applied
 
 
+def _dedupe_doc_id(*, kind: str, topic: str, message_id: str) -> str:
+    """
+    Deterministic Firestore document id for message-level dedupe.
+
+    Firestore doc ids cannot contain '/', so we sanitize and add a short hash to
+    avoid collisions when message ids are long or similar.
+    """
+    # Tests and operational tooling expect message_id to be the primary key.
+    # Sanitize only what's required for Firestore doc ids.
+    mid = str(message_id or "").strip()
+    if mid:
+        return mid.replace("/", "_")
+
+    # Fall back to a deterministic hash if no message_id is provided.
+    k = str(kind or "unknown").strip()
+    t = str(topic or "unknown").strip()
+    h = hashlib.sha256(f"{k}|{t}|".encode("utf-8")).hexdigest()[:16]
+    return f"missing_message_id_{h}"
+
+
 def _lww_key(*, published_at: datetime, message_id: str) -> tuple[float, str]:
     """
     Last-write-wins ordering key for Pub/Sub-derived writes.
@@ -492,34 +512,8 @@ class FirestoreWriter:
         ref = self._db.collection(self._col(collection)).document(str(doc_id))
 
         def _txn(txn: Any) -> Tuple[bool, str]:
-            # Idempotency guard: no side-effects before message-level dedupe.
-            # This prevents duplicates from updating SERVER_TIMESTAMP fields.
-            msg_id = str(getattr(source, "message_id", "") or "").strip()
-            if msg_id:
-                dedupe_ref = self._db.collection(self._col("ops_message_dedupe")).document(
-                    _dedupe_doc_id(kind=str(collection), topic=str(source.topic), message_id=msg_id)
-                )
-                first, _ = ensure_message_once(
-                    txn=txn,
-                    dedupe_ref=dedupe_ref,
-                    message_id=msg_id,
-                    doc={"kind": str(collection), "targetDoc": f"{collection}/{doc_id}"},
-                )
-                if not first:
-                    return False, "duplicate_message_noop"
-
-            if replay is not None:
-                ok, why = ensure_event_not_applied(
-                    txn=txn,
-                    db=self._db,
-                    replay=replay,
-                    dedupe_key=str(replay_dedupe_key or doc_id),
-                    event_time=_as_utc(event_time),
-                    message_id=str(source.message_id),
-                )
-                if not ok:
-                    return False, why
-
+            # Read current state first so out-of-order/stale events are a pure NOOP
+            # (no dedupe markers for losing messages).
             snap = ref.get(transaction=txn)
             existing = snap.to_dict() if snap.exists else {}
 
@@ -535,6 +529,61 @@ class FirestoreWriter:
             incoming = _as_utc(event_time)
             if existing_max is not None and incoming < existing_max:
                 return False, "stale_event_ignored"
+
+            # Idempotency guard: no side-effects before message-level dedupe.
+            # This prevents duplicates from updating SERVER_TIMESTAMP fields.
+            msg_id = str(getattr(source, "message_id", "") or "").strip()
+            if msg_id:
+                dedupe_ref = self._db.collection(self._col("ops_dedupe")).document(
+                    _dedupe_doc_id(kind=str(collection), topic=str(source.topic), message_id=msg_id)
+                )
+                first, _ = ensure_message_once(
+                    txn=txn,
+                    dedupe_ref=dedupe_ref,
+                    message_id=msg_id,
+                    doc={"kind": str(collection), "targetDoc": f"{collection}/{doc_id}"},
+                )
+                if not first:
+                    return False, "duplicate_message_noop"
+
+            # Business-level dedupe for trade signals when no stable event_id is present.
+            # This prevents two different Pub/Sub messages from creating duplicate docs.
+            if str(collection) == "trade_signals" and replay is None and not (doc.get("eventId") or "").strip():
+                payload = doc.get("data") if isinstance(doc.get("data"), dict) else {}
+                business = {
+                    "symbol": str((payload.get("symbol") or doc.get("symbol") or "")).strip().upper(),
+                    "strategyId": str((payload.get("strategyId") or doc.get("strategy") or "")).strip(),
+                    "action": str((payload.get("action") or doc.get("action") or "")).strip().upper(),
+                    "signalType": str((payload.get("signalType") or "")).strip(),
+                    "eventTime": _as_utc(event_time).isoformat(),
+                }
+                bkey = hashlib.sha256(json.dumps(business, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+                b_ref = self._db.collection(self._col("ops_trade_signal_dedupe_business")).document(bkey)
+                try:
+                    txn.create(
+                        b_ref,
+                        {
+                            "kind": "trade_signals",
+                            "businessKey": business,
+                            "targetDoc": f"{collection}/{doc_id}",
+                            "firstMessageId": msg_id or None,
+                            "createdAt": self._firestore.SERVER_TIMESTAMP,
+                        },
+                    )
+                except Exception:
+                    return False, "duplicate_business_noop"
+
+            if replay is not None:
+                ok, why = ensure_event_not_applied(
+                    txn=txn,
+                    db=self._db,
+                    replay=replay,
+                    dedupe_key=str(replay_dedupe_key or doc_id),
+                    event_time=_as_utc(event_time),
+                    message_id=str(source.message_id),
+                )
+                if not ok:
+                    return False, why
 
             txn.set(ref, doc)
             return True, "applied"

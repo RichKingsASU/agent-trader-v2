@@ -112,22 +112,23 @@ def compute_daily_pnl(
             # Sort by timestamp to ensure proper FIFO ordering
             symbol_trades.sort(key=lambda t: t.ts)
             
-            # Use FIFO to calculate realized P&L for closed positions
+            # Use FIFO to calculate realized P&L per fill (attribution occurs on closing trades).
             pnl_result = compute_pnl_fifo(symbol_trades)
             
-            for closed_position in pnl_result.closed_positions:
-                realized_pnl = closed_position.realized_pnl
-                fees = closed_position.total_fees
-                
-                daily_pnl += realized_pnl
-                daily_fees += fees
-                
-                if realized_pnl > 0:
+            for tr in pnl_result.trades:
+                # Only count trades that actually close inventory (i.e., have realized attribution).
+                if tr.realized_pnl_gross == 0.0 and tr.realized_fees == 0.0:
+                    continue
+
+                daily_pnl += tr.realized_pnl_gross
+                daily_fees += tr.realized_fees
+
+                if tr.realized_pnl_net > 0:
                     winning_trades += 1
-                    wins.append(realized_pnl)
-                elif realized_pnl < 0:
+                    wins.append(tr.realized_pnl_net)
+                elif tr.realized_pnl_net < 0:
                     losing_trades += 1
-                    losses.append(realized_pnl)
+                    losses.append(tr.realized_pnl_net)
         
         # Calculate summary statistics
         total_trades = winning_trades + losing_trades
@@ -261,10 +262,12 @@ def compute_win_loss_ratio(
         symbol_trades.sort(key=lambda t: t.ts)
         pnl_result = compute_pnl_fifo(symbol_trades)
         
-        for closed_position in pnl_result.closed_positions:
-            if closed_position.realized_pnl > 0:
+        for tr in pnl_result.trades:
+            if tr.realized_pnl_gross == 0.0 and tr.realized_fees == 0.0:
+                continue
+            if tr.realized_pnl_net > 0:
                 winning_trades += 1
-            elif closed_position.realized_pnl < 0:
+            elif tr.realized_pnl_net < 0:
                 losing_trades += 1
     
     total_trades = winning_trades + losing_trades

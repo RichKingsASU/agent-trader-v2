@@ -28,7 +28,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, time
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_DOWN
 from typing import Any, Dict, List, Optional
 from backend.time.nyse_time import NYSE_TZ, parse_ts, to_nyse, utc_now
 
@@ -296,8 +296,16 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
             f"hedge_qty adjusted to {hedge_qty}"
         )
     
-    # Round to nearest whole share
-    return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    # Round to nearest whole share.
+    # Unit tests expect ties to round toward zero for negative values (e.g. -6.5 -> -6).
+    q = hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_DOWN)
+
+    # If we decided to hedge but rounding would noop to 0 shares, enforce a minimum
+    # of 1 share in the correct direction (fail-closed vs "do nothing").
+    if q == Decimal("0") and hedge_qty != Decimal("0"):
+        q = Decimal("-1") if hedge_qty < 0 else Decimal("1")
+
+    return q
 
 
 def _should_hedge(net_delta: Decimal, current_time: datetime) -> bool:

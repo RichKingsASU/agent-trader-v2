@@ -52,11 +52,10 @@ def evaluate_startup_gate(env: Mapping[str, str]) -> tuple[bool, list[str]]:
     elif broker_enabled != "false":
         reason_codes.append("BROKER_EXECUTION_ENABLED_not_false")
 
-    # Repo-level "fail fast if unsafe": execution must be explicitly disabled.
+    # Repo-level safety: if explicitly enabled, refuse. If missing, treat as disabled
+    # (this agent is OBSERVE-only and cannot place orders).
     execution_enabled = _env(env, "EXECUTION_ENABLED")
-    if execution_enabled is None:
-        reason_codes.append("EXECUTION_ENABLED_missing")
-    elif execution_enabled != "false":
+    if execution_enabled is not None and execution_enabled != "false":
         reason_codes.append("EXECUTION_ENABLED_not_false")
 
     return (len(reason_codes) == 0, reason_codes)

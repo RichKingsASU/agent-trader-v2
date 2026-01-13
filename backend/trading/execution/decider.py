@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from backend.trading.execution.models import ExecutionDecision, SafetySnapshot
 from backend.trading.proposals.models import OrderProposal
@@ -27,30 +27,46 @@ def _coerce_dt(value: Any) -> datetime | None:
     return None
 
 
-def _compact_recommended_order(proposal: OrderProposal) -> dict[str, Any]:
+def _compact_recommended_order(proposal: Any) -> dict[str, Any]:
     """
     Produce a compact, audit-friendly order summary.
 
     Uses a stable subset of the proposal contract fields only.
     """
-    return {
-        "proposal_id": str(proposal.proposal_id),
-        "correlation_id": proposal.correlation_id,
-        "strategy_name": proposal.strategy_name,
-        "symbol": proposal.symbol,
-        "asset_type": proposal.asset_type.value,
-        "side": proposal.side.value,
-        "quantity": int(proposal.quantity),
-        "limit_price": proposal.limit_price,
-        "time_in_force": proposal.time_in_force.value,
-        "valid_until_utc": proposal.constraints.valid_until_utc.isoformat(),
-        "requires_human_approval": bool(proposal.constraints.requires_human_approval),
-    }
+    if isinstance(proposal, OrderProposal):
+        return {
+            "proposal_id": str(proposal.proposal_id),
+            "correlation_id": proposal.correlation_id,
+            "strategy_name": proposal.strategy_name,
+            "symbol": proposal.symbol,
+            "asset_type": proposal.asset_type.value,
+            "side": proposal.side.value,
+            "quantity": int(proposal.quantity),
+            "limit_price": proposal.limit_price,
+            "time_in_force": proposal.time_in_force.value,
+            "valid_until_utc": proposal.constraints.valid_until_utc.isoformat(),
+            "requires_human_approval": bool(proposal.constraints.requires_human_approval),
+        }
+
+    # Minimal dict-based proposal contract (used by unit tests / skeleton agent).
+    if isinstance(proposal, Mapping):
+        order = proposal.get("order") if isinstance(proposal.get("order"), Mapping) else {}
+        return {
+            "proposal_id": str(proposal.get("proposal_id") or ""),
+            "correlation_id": str(proposal.get("correlation_id") or "").strip() or None,
+            "symbol": str(order.get("symbol") or ""),
+            "side": str(order.get("side") or ""),
+            "qty": order.get("qty"),
+            "valid_until_utc": str(proposal.get("valid_until_utc") or ""),
+            "requires_human_approval": bool(proposal.get("requires_human_approval", True)),
+        }
+
+    return {"proposal_id": str(getattr(proposal, "proposal_id", ""))}
 
 
 def decide_execution(
     *,
-    proposal: OrderProposal,
+    proposal: OrderProposal | Mapping[str, Any],
     safety: SafetySnapshot,
     agent_name: str,
     agent_role: str,
@@ -63,8 +79,16 @@ def decide_execution(
     """
     now_dt = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
-    proposal_id = str(proposal.proposal_id)
-    correlation_id = str(proposal.correlation_id or "").strip() or None
+    if isinstance(proposal, OrderProposal):
+        proposal_id = str(proposal.proposal_id)
+        correlation_id = str(proposal.correlation_id or "").strip() or None
+        requires_human = bool(proposal.constraints.requires_human_approval)
+        valid_until_dt = proposal.constraints.valid_until_utc
+    else:
+        proposal_id = str(proposal.get("proposal_id") or "")
+        correlation_id = str(proposal.get("correlation_id") or "").strip() or None
+        requires_human = bool(proposal.get("requires_human_approval", True))
+        valid_until_dt = _coerce_dt(proposal.get("valid_until_utc")) or datetime.fromtimestamp(0, tz=timezone.utc)
 
     reject: list[str] = []
 
@@ -77,11 +101,10 @@ def decide_execution(
         reject.append("marketdata_stale_or_missing")
 
     # Rule: requires_human_approval => reject (default True)
-    if bool(proposal.constraints.requires_human_approval):
+    if bool(requires_human):
         reject.append("requires_human_approval")
 
     # Rule: proposal valid_until expired => reject (missing/unparseable => reject)
-    valid_until_dt = proposal.constraints.valid_until_utc
     if valid_until_dt.astimezone(timezone.utc) < now_dt:
         reject.append("proposal_expired")
 

@@ -26,8 +26,13 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from google.cloud import firestore
-import vertexai
-from vertexai.generative_models import GenerativeModel
+try:
+    import vertexai  # type: ignore
+    from vertexai.generative_models import GenerativeModel  # type: ignore
+except Exception:  # noqa: BLE001
+    # Keep module import-safe in environments that don't install Vertex AI deps (e.g. unit-test CI).
+    vertexai = None  # type: ignore[assignment]
+    GenerativeModel = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +354,10 @@ async def _generate_explainability_with_gemini(
         Explainability string from Gemini
     """
     try:
+        if vertexai is None or GenerativeModel is None:
+            logger.warning("Vertex AI dependencies unavailable; using fallback explainability")
+            return _generate_fallback_explanation(anomaly, trades, market_data)
+
         # Initialize Vertex AI
         import os
         project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT")

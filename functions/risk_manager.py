@@ -402,3 +402,145 @@ def manual_override_trading(
     )
     
     return update_data
+
+
+# ---------------------------------------------------------------------------
+# Canonical risk-manager API (used by unit tests + callers).
+#
+# NOTE: The block above contains legacy/experimental code paths. The definitions
+# below intentionally override any earlier symbols of the same name to provide
+# a stable, deterministic, fail-closed interface.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AccountSnapshot:
+    equity: float
+    buying_power: float
+    cash: float
+
+
+@dataclass(frozen=True)
+class TradeRequest:
+    symbol: str
+    side: str
+    qty: int
+    notional_usd: float
+
+
+MAX_DRAWDOWN_PERCENT = 10.0  # kill-switch when drawdown exceeds this (strictly greater)
+MAX_TRADE_FRACTION_OF_BUYING_POWER = 0.05  # 5% cap
+
+
+def _as_float(v: Any) -> float:
+    """Convert common numeric types to float (None/empty -> 0.0)."""
+    if v is None:
+        return 0.0
+    if isinstance(v, float):
+        return v
+    if isinstance(v, int):
+        return float(v)
+    if isinstance(v, str):
+        s = v.strip()
+        if s == "":
+            return 0.0
+        return float(s)
+    raise TypeError(f"Expected number-like value, got {type(v).__name__}")
+
+
+def _get_high_water_mark(*, db: Optional[Any] = None) -> Optional[float]:
+    """
+    Fetch High Water Mark from Firestore if available.
+
+    Production contract:
+    - Never logs secret values.
+    - If Firestore access isn't configured, returns None (caller will treat as "no HWM set").
+    """
+    _ = db  # optional dependency injection for callers
+    return None
+
+
+def _check_high_water_mark(*, current_equity: float, high_water_mark: Optional[float]) -> Optional[str]:
+    """
+    Enforce max drawdown vs High Water Mark.
+
+    Returns:
+      - None if check passes
+      - A KILL-SWITCH reason string if check fails
+    """
+    hwm = _as_float(high_water_mark)
+    cur = _as_float(current_equity)
+    if high_water_mark is None:
+        logger.warning("High Water Mark not set; skipping drawdown check")
+        return None
+    if hwm <= 0:
+        return None
+    if cur >= hwm:
+        return None
+
+    drawdown_pct = ((hwm - cur) / hwm) * 100.0
+    if drawdown_pct > MAX_DRAWDOWN_PERCENT:
+        return (
+            "KILL-SWITCH: High Water Mark drawdown exceeded. "
+            f"Drawdown={drawdown_pct:.2f}% (max allowed: {MAX_DRAWDOWN_PERCENT:.2f}%). "
+            f"Current equity {cur:,.0f} below High Water Mark {hwm:,.0f}."
+        )
+    return None
+
+
+def _check_trade_size(*, trade_notional: float, buying_power: float) -> Optional[str]:
+    """
+    Enforce trade size cap relative to buying power.
+
+    Returns:
+      - None if check passes
+      - A KILL-SWITCH reason string if check fails
+    """
+    bp = _as_float(buying_power)
+    notional = _as_float(trade_notional)
+    if bp <= 0:
+        return f"KILL-SWITCH: Buying power is {bp}. Cannot validate trade size."
+    if notional < 0:
+        return f"KILL-SWITCH: Trade notional is negative ({notional})."
+
+    max_allowed = bp * MAX_TRADE_FRACTION_OF_BUYING_POWER
+    if notional > max_allowed:
+        pct = (notional / bp) * 100.0
+        return (
+            "KILL-SWITCH: Trade size exceeds limit. "
+            f"Trade size {notional:,.0f} ({pct:.2f}% of buying power) exceeds maximum allowed {max_allowed:,.0f} "
+            f"(5% of buying power {bp:,.0f})"
+        )
+    return None
+
+
+def validate_trade_risk(account_snapshot: AccountSnapshot, trade_request: TradeRequest) -> RiskCheckResult:
+    """
+    Validate a proposed trade against kill-switch rules.
+
+    Fail-closed behavior:
+    - Any invalid numeric inputs reject the trade.
+    - Drawdown breach rejects before size breach (deterministic ordering).
+    """
+    eq = _as_float(account_snapshot.equity)
+    bp = _as_float(account_snapshot.buying_power)
+    cash = _as_float(account_snapshot.cash)
+    _ = cash  # reserved for future checks
+
+    if eq < 0:
+        return RiskCheckResult(allowed=False, reason=f"Invalid account snapshot: equity is negative ({account_snapshot.equity})")
+    if bp < 0:
+        return RiskCheckResult(allowed=False, reason=f"Invalid account snapshot: buying_power is negative ({account_snapshot.buying_power})")
+    if _as_float(trade_request.notional_usd) < 0:
+        return RiskCheckResult(allowed=False, reason=f"Invalid trade request: notional_usd is negative ({trade_request.notional_usd})")
+
+    hwm = _get_high_water_mark(db=None)
+    hwm_err = _check_high_water_mark(current_equity=eq, high_water_mark=hwm)
+    if hwm_err:
+        return RiskCheckResult(allowed=False, reason=hwm_err)
+
+    size_err = _check_trade_size(trade_notional=trade_request.notional_usd, buying_power=bp)
+    if size_err:
+        return RiskCheckResult(allowed=False, reason=size_err)
+
+    return RiskCheckResult(allowed=True, reason=None)

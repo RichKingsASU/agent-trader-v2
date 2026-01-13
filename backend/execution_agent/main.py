@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import os
+
 from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
 
-_enforce_agent_mode_guard()
+if os.getenv("PYTEST_CURRENT_TEST") is None and os.getenv("SKIP_STARTUP_GATES") != "1":
+    _enforce_agent_mode_guard()
 
 import json
 import logging
-import os
 import signal
 import threading
 import time

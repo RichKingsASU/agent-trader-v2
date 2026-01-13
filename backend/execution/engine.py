@@ -32,8 +32,10 @@ from backend.risk.capital_reservation import (
     reserve_capital_atomic,
     release_capital_atomic,
 )
+from backend.risk.loss_acceleration_guard import LossAccelerationGuard
 from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
 from backend.observability.risk_signals import risk_correlation_id
+from backend.execution.reservations import NoopReservation, ReservationHandle
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,19 @@ def _utc_now() -> datetime:
 def _iso_date_utc(dt: datetime | None = None) -> str:
     d = (dt or _utc_now()).astimezone(timezone.utc).date()
     return d.isoformat()
+
+
+def resolve_tenant_id_from_metadata(metadata: dict[str, Any] | None) -> str:
+    """
+    Resolve tenant_id deterministically from intent metadata.
+
+    Contract:
+    - Never raises (fail-closed behavior is enforced by downstream policy checks).
+    - Returns a non-empty string (defaults to "default" for local/CI).
+    """
+    md = metadata if isinstance(metadata, dict) else {}
+    tenant_id = str(md.get("tenant_id") or os.getenv("EXEC_TENANT_ID") or "default").strip()
+    return tenant_id or "default"
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -1738,6 +1753,11 @@ class RiskManager:
                         "client_intent_id": intent.client_intent_id,
                     },
                 )
+
+        # Per-agent execution budgets (side-effecting consume-on-allow).
+        budget_reject = self._consume_agent_budget_or_reject(intent=intent, checks=checks)
+        if budget_reject is not None:
+            return budget_reject
 
         return RiskDecision(allowed=True, reason="ok", checks=checks)
 
