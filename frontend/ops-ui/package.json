@@ -16,9 +16,12 @@
     "tailwindcss": "^4.1.18"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.18",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react-swc": "^3.7.0",
+    "autoprefixer": "^10.4.23",
+    "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.6.3",
     "vite": "^5.4.8"
   }

@@ -11,18 +11,32 @@ Minimal “calm” dashboard for Mission Control status:
 From the repo:
 
 ```bash
-cd frontend
+cd frontend/ops-ui
 npm install
-npm run dev:ops-ui
+npm run dev
 ```
 
 Then open `http://localhost:8090`.
 
-By default, Ops UI calls Mission Control at `http://agenttrader-mission-control`. For local development, override:
+### Local connectivity (recommended)
+
+Run Mission Control locally on `http://127.0.0.1:8080` (see `backend/mission_control/README.md`), then run Ops UI.
+
+Ops UI local dev uses a same-origin proxy:
+
+- Browser connects to Ops UI: `http://localhost:8090`
+- Ops UI calls Mission Control via: `GET /mission-control/...`
+- Vite proxies `/mission-control/*` → `http://127.0.0.1:8080/*`
+
+This avoids CORS requirements in Mission Control during local dev.
+
+### Overriding the API base URL
+
+If you are not using the proxy (or you have Mission Control elsewhere), set:
 
 ```bash
 cd frontend/ops-ui
-VITE_MISSION_CONTROL_BASE_URL="http://localhost:8081" npm run dev
+VITE_MISSION_CONTROL_BASE_URL="http://127.0.0.1:8080" npm run dev
 ```
 
 ## Build
