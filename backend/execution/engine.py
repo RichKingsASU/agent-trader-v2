@@ -25,6 +25,7 @@ from backend.common.replay_events import build_replay_event, dumps_replay_event,
 from backend.common.freshness import check_freshness
 from backend.time.nyse_time import parse_ts
 from backend.streams.alpaca_env import load_alpaca_env
+from backend.execution.reservations import resolve_tenant_id_from_metadata
 from backend.risk.capital_reservation import (
     CapitalReservationError,
     InsufficientBuyingPowerError,

@@ -5,6 +5,7 @@ from backend.execution.engine import (
     RiskManager,
 )
 from backend.common.agent_mode import AgentModeError
+import pytest
 
 
 class _LedgerStub:
