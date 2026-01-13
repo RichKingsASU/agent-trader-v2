@@ -3,6 +3,8 @@ import os
 import alpaca_trade_api as tradeapi
 from firebase_admin import credentials, firestore, initialize_app
 
+from functions.utils.apca_env import assert_paper_alpaca_base_url
+
 def check_alpaca():
     """Checks the connection to Alpaca."""
     print("Checking Alpaca connection...")
@@ -10,10 +12,13 @@ def check_alpaca():
         print("Alpaca API keys not found. Please set the APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables.")
         return False
     try:
+        base_url = assert_paper_alpaca_base_url(
+            os.environ.get("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
+        )
         api = tradeapi.REST(
             os.environ.get('APCA_API_KEY_ID'),
             os.environ.get('APCA_API_SECRET_KEY'),
-            base_url=os.environ.get('APCA_API_BASE_URL'),
+            base_url=base_url,
             api_version='v2'
         )
         account = api.get_account()

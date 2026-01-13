@@ -6,6 +6,8 @@ import pandas as pd
 import alpaca_trade_api as tradeapi
 from datetime import datetime, timedelta
 
+from functions.utils.apca_env import assert_paper_alpaca_base_url
+
 """
 Strategy III: Kalman Filter Pairs Trader
 
@@ -43,10 +45,13 @@ class KalmanPairsTrader:
         self.prediction_errors = []
         
         try:
+            base_url = assert_paper_alpaca_base_url(
+                os.environ.get("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
+            )
             self.api = tradeapi.REST(
                 os.environ.get('APCA_API_KEY_ID'),
                 os.environ.get('APCA_API_SECRET_KEY'),
-                base_url=os.environ.get('APCA_API_BASE_URL', 'https://paper-api.alpaca.markets')
+                base_url=base_url
             )
             print("✅ Alpaca API initialized successfully.")
         except Exception as e:

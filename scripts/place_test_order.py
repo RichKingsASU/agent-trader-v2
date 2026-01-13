@@ -28,6 +28,14 @@ def main():
 
     api_key = os.getenv("APCA_API_KEY_ID")
     secret_key = os.getenv("APCA_API_SECRET_KEY")
+    # Safety: if a base URL is configured, it must be paper-only.
+    try:
+        from backend.common.env import assert_paper_alpaca_base_url  # type: ignore
+
+        _ = assert_paper_alpaca_base_url(os.getenv("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets")
+    except Exception as e:
+        print(f"REFUSED: invalid Alpaca trading base URL: {e}")
+        exit(2)
 
     if not api_key or not secret_key:
         print("ERROR: APCA_API_KEY_ID and APCA_API_SECRET_KEY must be set in .env.local.")

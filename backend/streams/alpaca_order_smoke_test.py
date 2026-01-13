@@ -15,6 +15,19 @@ KEY = alpaca.key_id
 SEC = alpaca.secret_key
 HEADERS = {"APCA-API-KEY-ID": KEY, "APCA-API-SECRET-KEY": SEC}
 
+
+def _require_explicit_order_smoke_test_override() -> None:
+    """
+    This module is execution-capable (order placement). Refuse by default.
+    """
+    v = (os.getenv("ENABLE_ALPACA_ORDER_SMOKE_TEST_ORDER") or "").strip().lower()
+    if v not in {"1", "true", "t", "yes", "y", "on"}:
+        raise RuntimeError(
+            "REFUSED: alpaca_order_smoke_test order placement is disabled by default. "
+            "Set ENABLE_ALPACA_ORDER_SMOKE_TEST_ORDER=true to allow placing a test order."
+        )
+
+
 def check_account():
     """Checks Alpaca account status."""
     logger.info("Checking Alpaca account...", extra={"event_type": "alpaca.account_check"})
@@ -32,6 +45,7 @@ def check_account():
 
 def place_test_order():
     """Places a test paper order."""
+    _require_explicit_order_smoke_test_override()
     logger.warning("Placing test order...", extra={"event_type": "alpaca.place_test_order"})
     payload = {
         "symbol": "SPY",

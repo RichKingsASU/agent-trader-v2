@@ -47,10 +47,9 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import requests
 
 # Task requirements: contracts from trading base; snapshots from Alpaca data host.
-_trading_base = (os.getenv("APCA_API_BASE_URL") or "").strip()
-if not _trading_base:
-    raise RuntimeError("Missing required env var: APCA_API_BASE_URL")
-TRADING_BASE = _trading_base[:-1] if _trading_base.endswith("/") else _trading_base
+from backend.common.env import get_alpaca_api_base_url
+
+TRADING_BASE = get_alpaca_api_base_url(required=True)
 DATA_BASE = "https://data.alpaca.markets"
 
 from backend.common.agent_boot import configure_startup_logging

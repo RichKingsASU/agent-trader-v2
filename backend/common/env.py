@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from urllib.parse import urlparse
 
 
 def get_env(name: str, default: Any = None, *, required: bool = False) -> Any:
@@ -131,8 +132,48 @@ def get_alpaca_api_base_url(*, required: bool = True) -> str:
     v = get_env("APCA_API_BASE_URL", default=None, required=False)
     if v:
         s = str(v).strip()
-        return s[:-1] if s.endswith("/") else s
+        s = s[:-1] if s.endswith("/") else s
+        return assert_paper_alpaca_base_url(s)
     if required:
         raise RuntimeError("Missing required env var: APCA_API_BASE_URL")
     return ""
+
+
+def assert_paper_alpaca_base_url(url: str) -> str:
+    """
+    Absolute safety boundary: allow ONLY Alpaca paper trading API base URLs.
+
+    Allowed:
+    - https://paper-api.alpaca.markets
+    - https://paper-api.alpaca.markets/<path> (some callers store /v2, etc.)
+
+    Forbidden (hard fail):
+    - anything containing "api.alpaca.markets" that is NOT the paper host
+    - any scheme other than https
+    - any host other than paper-api.alpaca.markets
+    """
+    if url is None or str(url).strip() == "":
+        raise RuntimeError("Missing required Alpaca base URL (APCA_API_BASE_URL)")
+
+    raw = str(url).strip()
+    lowered = raw.lower()
+
+    # Explicit hard-fail: never allow live trading host.
+    if "api.alpaca.markets" in lowered and "paper-api.alpaca.markets" not in lowered:
+        raise RuntimeError(f"REFUSED: live Alpaca trading host is forbidden: {raw!r}")
+
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() != "https":
+        raise RuntimeError(f"REFUSED: Alpaca base URL must be https: {raw!r}")
+    if (parsed.hostname or "").lower() != "paper-api.alpaca.markets":
+        raise RuntimeError(f"REFUSED: Alpaca base URL must be paper host: {raw!r}")
+    if parsed.port not in (None, 443):
+        raise RuntimeError(f"REFUSED: Alpaca base URL must not specify a port: {raw!r}")
+    if parsed.username or parsed.password:
+        raise RuntimeError(f"REFUSED: Alpaca base URL must not include credentials: {raw!r}")
+    if parsed.query or parsed.fragment:
+        raise RuntimeError(f"REFUSED: Alpaca base URL must not include query/fragment: {raw!r}")
+
+    normalized = raw[:-1] if raw.endswith("/") else raw
+    return normalized
 

@@ -1,13 +1,32 @@
 
 import os
 import datetime
+import time
 import alpaca_trade_api as tradeapi
 import yfinance as yf
+
+from functions.utils.apca_env import assert_paper_alpaca_base_url
 
 # --- Configuration ---
 API_KEY = os.environ.get('APCA_API_KEY_ID')
 API_SECRET = os.environ.get('APCA_API_SECRET_KEY')
-BASE_URL = os.environ.get('APCA_API_BASE_URL')
+BASE_URL = os.environ.get('APCA_API_BASE_URL') or "https://paper-api.alpaca.markets"
+
+
+def _require_enable_dangerous_functions() -> None:
+    """
+    This script can liquidate positions. Require an explicit opt-in.
+    """
+    v = (os.getenv("ENABLE_DANGEROUS_FUNCTIONS") or "").strip().lower()
+    if v not in {"1", "true", "t", "yes", "y", "on"}:
+        raise RuntimeError(
+            "REFUSED: gamma_scalper is execution-capable. "
+            "Set ENABLE_DANGEROUS_FUNCTIONS=true to proceed."
+        )
+
+
+_require_enable_dangerous_functions()
+BASE_URL = assert_paper_alpaca_base_url(BASE_URL)
 # --- Initialize Alpaca API ---
 api = tradeapi.REST(API_KEY, API_SECRET, base_url=BASE_URL, api_version='v2')
 

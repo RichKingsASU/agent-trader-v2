@@ -45,7 +45,8 @@ def _get_user_alpaca_keys(db: firestore.Client, user_id: str) -> Dict[str, str]:
         secrets = secrets_doc.to_dict() or {}
         key_id = secrets.get("key_id") or secrets.get("api_key_id")
         secret_key = secrets.get("secret_key") or secrets.get("api_secret_key")
-        base_url = secrets.get("base_url", "https://api.alpaca.markets")
+        # Paper-only safety default. Live trading host is forbidden in this repo.
+        base_url = secrets.get("base_url", "https://paper-api.alpaca.markets")
         
         if not key_id or not secret_key:
             raise ValueError(f"Incomplete Alpaca keys for user {user_id}")
