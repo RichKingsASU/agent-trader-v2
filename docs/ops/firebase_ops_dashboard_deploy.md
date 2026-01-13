@@ -33,11 +33,11 @@ If you use multiple Hosting sites in one Firebase project, add a `site` or `targ
 Firebase Hosting deploys whatever is in the configured `public` directory (`frontend/ops-ui/dist`). Ensure you build the Ops UI before deploying:
 
 ```bash
-# Example (if your repo includes the Node workspace config):
-#   cd frontend
-#   npm ci
-#   npm -w ops-ui run build
-#
+# Build (from repo root):
+cd frontend/ops-ui
+npm ci
+npm run build
+
 # Then, from repo root:
 firebase deploy --only hosting
 ```

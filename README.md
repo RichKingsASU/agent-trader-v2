@@ -100,9 +100,11 @@ If the safety guard fails your build, read the error message carefully. It will 
 ## Repo layout
 
 - **`/backend`**: Python services + ingestion jobs
-- **`/frontend`**: Vite + React UI
+- **`/frontend`**: UIs (canonical Ops UI: `frontend/ops-ui/`)
 - **`/infra`**: Dockerfiles + Cloud Build configs
 - **`/scripts`**: local/dev automation scripts (no secrets)
+
+For the canonical “single source of truth” map (Ops UI / Mission Control / execution engine), see `docs/REPOSITORY_STRUCTURE.md`.
 
 ## Local development (one command)
 

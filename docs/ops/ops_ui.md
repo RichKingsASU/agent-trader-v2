@@ -42,13 +42,12 @@ VITE_MISSION_CONTROL_BASE_URL="http://127.0.0.1:8080" npm run dev
 ## Build
 
 ```bash
-cd frontend
+cd frontend/ops-ui
 npm ci
 npm run build
 ```
 
-This builds both:
-- `frontend/` (main UI)
+This builds:
 - `frontend/ops-ui/` (Ops UI)
 
 ## Firebase Hosting deploy (optional)

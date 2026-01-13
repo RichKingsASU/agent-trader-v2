@@ -34,16 +34,12 @@ jobs:
           node-version: "20"
 
       - name: Build Ops Dashboard (ops-ui)
-        working-directory: frontend
+        working-directory: frontend/ops-ui
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f package.json ]; then
-            echo "ERROR: frontend/package.json not found; cannot build ops-ui." >&2
-            exit 1
-          fi
           npm ci --no-audit --no-fund
-          npm -w ops-ui run build
+          npm run build
 
       - name: Deploy to Firebase Hosting (live)
         uses: FirebaseExtended/action-hosting-deploy@v0

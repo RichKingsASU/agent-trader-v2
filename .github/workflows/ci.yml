@@ -55,11 +55,13 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          npm ci
+          npm ci --prefix frontend/ops-ui --no-audit --no-fund
 
       - name: Lint & compile
         run: |
-          npm run lint
+          # Repo is Python-first; the only CI-enforced Node surface is Ops UI.
+          # Build is the typecheck/compile gate for that surface (Vite + TS).
+          npm --prefix frontend/ops-ui run build
           python -m compileall . -q -x venv
 
   unit:
