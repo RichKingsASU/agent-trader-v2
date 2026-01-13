@@ -85,6 +85,18 @@ class InvariantViolation(RuntimeError):
     """
 
 
+class PreTradeAssertionError(RuntimeError):
+    """
+    Raised when a pre-trade safety assertion fails (fail-closed).
+    """
+
+
+class PostTradeAssertionError(RuntimeError):
+    """
+    Raised when a post-trade safety assertion fails (fail-closed).
+    """
+
+
 def _as_money_decimal(v: Any, *, name: str) -> Decimal:
     """
     Convert a numeric-ish value to Decimal for invariant checks.
@@ -2299,19 +2311,23 @@ class ExecutionEngine:
         # ---- Data freshness (market ingest heartbeat) ----
         stale_s = self._env_int("MARKETDATA_STALE_THRESHOLD_S", 120)
         tenant_id = str(intent.metadata.get("tenant_id") or os.getenv("EXEC_TENANT_ID") or "").strip() or None
-        from backend.execution.marketdata_health import check_market_ingest_heartbeat
+        if str(os.getenv("MARKETDATA_HEALTH_CHECK_DISABLED") or "").strip().lower() in {"1", "true", "yes", "on"}:
+            # Explicit override (primarily for local testing / debugging).
+            pass
+        else:
+            from backend.execution.marketdata_health import check_market_ingest_heartbeat
 
-        hb = check_market_ingest_heartbeat(tenant_id=tenant_id, stale_threshold_seconds=stale_s)
-        if hb.is_stale:
-            payload = {
-                "reason": "marketdata_stale",
-                "tenant_id": tenant_id,
-                "heartbeat": _to_jsonable(hb),
-                "intent": _to_jsonable(intent),
-                "trace_id": trace_id,
-            }
-            self._critical("exec.pretrade_assertion_failed", payload=payload)
-            raise PreTradeAssertionError("marketdata_stale")
+            hb = check_market_ingest_heartbeat(tenant_id=tenant_id, stale_threshold_seconds=stale_s)
+            if hb.is_stale:
+                payload = {
+                    "reason": "marketdata_stale",
+                    "tenant_id": tenant_id,
+                    "heartbeat": _to_jsonable(hb),
+                    "intent": _to_jsonable(intent),
+                    "trace_id": trace_id,
+                }
+                self._critical("exec.pretrade_assertion_failed", payload=payload)
+                raise PreTradeAssertionError("marketdata_stale")
 
         # ---- Market quote + quote freshness (per-symbol) ----
         quote = self._market_quote_strict(intent=intent)
