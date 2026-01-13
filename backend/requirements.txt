@@ -30,4 +30,6 @@ asyncpg==0.29.0
 psycopg2-binary==2.9.9
 
 # Repo blueprint generator (k8s/cloudbuild YAML parsing)
-PyYAML>=6.0.2
+# NOTE: Do not force a PyYAML minimum here. The repo-level CI installs both
+# backend and Cloud Functions dependencies, and `alpaca-trade-api` currently
+# pins PyYAML to 6.0.1. Keeping this unconstrained avoids CI resolver failures.

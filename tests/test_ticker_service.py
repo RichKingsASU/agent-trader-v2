@@ -4,6 +4,7 @@ Tests for the ticker service real-time market data feed.
 
 import os
 import pytest
+import builtins
 from unittest.mock import Mock, patch, AsyncMock
 
 
@@ -11,6 +12,26 @@ def test_ticker_service_import():
     """Test that ticker_service module can be imported."""
     from functions import ticker_service
     assert ticker_service is not None
+
+
+def test_lazy_alpaca_trade_api_import_is_fail_closed(monkeypatch):
+    """
+    Unit tests should not require Cloud Functions-only dependencies at import time.
+    When the WebSocket stream is actually started, we fail closed with a clear error.
+    """
+    from functions import ticker_service
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "alpaca_trade_api":
+            raise ModuleNotFoundError("No module named 'alpaca_trade_api'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(RuntimeError, match="alpaca-trade-api"):
+        ticker_service._get_alpaca_trade_api()
 
 
 def test_get_alpaca_credentials_success(monkeypatch):

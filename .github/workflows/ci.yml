@@ -90,3 +90,35 @@ jobs:
       - name: Run unit tests
         run: |
           pytest -q
+
+  functions_deps_smoke:
+    name: Functions dependency smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [production_readiness_enforcement]
+
+    steps:
+      - name: Checkout (full history, no submodules)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Functions dependencies (isolated)
+        run: |
+          python -m venv .venv-functions
+          . .venv-functions/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.functions.txt
+          pip check
+
+      - name: Import/compile smoke (Functions)
+        run: |
+          . .venv-functions/bin/activate
+          python -c "import alpaca_trade_api as _; import functions.ticker_service as _"
+          python -m compileall functions -q

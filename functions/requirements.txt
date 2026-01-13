@@ -1,9 +1,14 @@
-alpaca-py==0.33.0
+alpaca-py==0.43.2
 alpaca-trade-api==3.2.0
 firebase-admin==6.5.0
 firebase-functions==0.5.0
 pydantic>=2.0.0,<3.0.0
 cloudevents==1.11.0
-google-cloud-aiplatform>=1.132.0
+# NOTE: Cloud Functions deploys currently rely on alpaca-trade-api, which pins
+# websockets<11. Newer google-cloud-aiplatform releases pull in google-genai
+# (which requires websockets>=13), making the dependency graph impossible to
+# resolve. Keep this pinned to a known-compatible version until the Alpaca
+# client is migrated off alpaca-trade-api.
+google-cloud-aiplatform==1.91.0
 google-cloud-secret-manager>=2.26.0
 pytz==2024.1

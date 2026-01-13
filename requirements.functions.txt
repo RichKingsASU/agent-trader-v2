@@ -1,0 +1,7 @@
+# Repository-level dependency aggregator for Firebase Python functions.
+#
+# Keep this separate from requirements.txt: the backend runtime and Cloud
+# Functions runtimes intentionally use different dependency graphs (notably
+# WebSocket client versions), and combining them makes pip resolution
+# impossible.
+-r functions/requirements.txt

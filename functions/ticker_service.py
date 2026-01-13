@@ -11,7 +11,6 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-import alpaca_trade_api as tradeapi
 import firebase_admin
 from firebase_admin import firestore
 
@@ -54,6 +53,23 @@ def _get_target_symbols() -> List[str]:
     """
     symbols_str = os.environ.get("TICKER_SYMBOLS", "AAPL,NVDA,TSLA")
     return [s.strip().upper() for s in symbols_str.split(",") if s.strip()]
+
+
+def _get_alpaca_trade_api():
+    """
+    Lazy-import alpaca_trade_api.
+
+    Unit tests and backend runtime checks should be able to import this module
+    without requiring Cloud Functions-only dependencies.
+    """
+    try:
+        import alpaca_trade_api as tradeapi  # type: ignore
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(
+            "Missing dependency 'alpaca-trade-api'. Install it via requirements.functions.txt "
+            "(or functions/requirements.txt) when running Cloud Functions code."
+        ) from e
+    return tradeapi
 
 
 class TickerService:
@@ -129,6 +145,7 @@ class TickerService:
         
         while self.running and retry_count < self.max_retries:
             try:
+                tradeapi = _get_alpaca_trade_api()
                 logger.info(
                     f"Starting Alpaca WebSocket stream for symbols: {', '.join(self.symbols)}"
                 )

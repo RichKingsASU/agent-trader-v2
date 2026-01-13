@@ -43,6 +43,14 @@ jobs:
         run: |
           pip check
 
+      - name: Functions dependency integrity gate (isolated)
+        run: |
+          python -m venv .venv-functions
+          . .venv-functions/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.functions.txt
+          pip check
+
       - name: Enforce import discipline
         run: |
           pip install flake8 flake8-absolute-import
