@@ -26,6 +26,13 @@ from backend.common.replay_events import build_replay_event, dumps_replay_event,
 from backend.common.freshness import check_freshness
 from backend.time.nyse_time import parse_ts
 from backend.streams.alpaca_env import load_alpaca_env
+from backend.execution.reservations import (
+    BestEffortReservationManager,
+    NoopReservation,
+    ReservationHandle,
+    ReservationManager,
+    resolve_tenant_id_from_metadata,
+)
 from backend.risk.capital_reservation import (
     CapitalReservationError,
     InsufficientBuyingPowerError,
@@ -1841,6 +1848,8 @@ class ExecutionEngine:
         self._router = router  # Lazy initialization if None and smart routing enabled
         self._ledger = ledger
         self._broker_name = broker_name
+        # Best-effort in-flight reservation tracking (defaults to noop behavior).
+        self._reservations = BestEffortReservationManager(reservations)
         self._dry_run = bool(dry_run) if dry_run is not None else bool(
             str(get_env("EXEC_DRY_RUN", "1")).strip().lower() in {"1", "true", "yes", "on"}
         )
