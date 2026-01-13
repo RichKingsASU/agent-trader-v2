@@ -34,7 +34,13 @@ def get_apca_env() -> ApcaEnv:
     secret_key = _get_required("APCA_API_SECRET_KEY")
     base_url = _get_required("APCA_API_BASE_URL")
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
-    
+
+    # Safety: default to paper unless explicitly set otherwise.
+    agent_mode = get_agent_mode()
+    trading_mode = (os.getenv("TRADING_MODE") or "paper").strip().lower()
+    if trading_mode not in ("paper", "live"):
+        raise RuntimeError(f"Invalid TRADING_MODE: {trading_mode!r} (expected 'paper' or 'live')")
+
     base_url = assert_valid_alpaca_base_url(
         url=base_url,
         agent_mode=agent_mode,
