@@ -89,14 +89,20 @@ Legend:
 | `FLAG_CHECK_INTERVAL_SECONDS` | ingest flag poll interval |  |  | ✅ |  | Optional for `cloudrun-ingestor` contract |
 | `INGEST_HEARTBEAT_SUBSCRIPTION_ID` | expected heartbeat subscription short id |  |  | ✅ |  | Used by `pubsub_event_ingestion_service`; default `ingest-heartbeat` |
 | `LIVEZ_MAX_AGE_S` | liveness max loop age |  |  | ✅ |  | Used by market-ingest, strategy-service, consumer, pubsub-event-ingestion |
+| `EVENT_STORE` | pubsub-event-ingestion store backend |  |  | ✅ |  | `EVENT_STORE=memory` forces in-memory store (visibility-first) |
 | `DRY_RUN` | stream-bridge dry-run / Firestore write disable |  |  | ✅ |  | Used by `stream-bridge` and `FirestoreWriter.create_from_env()` |
 | `FIRESTORE_DATABASE` | Firestore database id |  | ✅ (cloudrun-consumer) | ✅ |  | Optional; defaults to `(default)` |
 | `FIRESTORE_COLLECTION_PREFIX` | prefix for Firestore collections |  |  | ✅ |  | Optional for `cloudrun-consumer` |
 | `DEFAULT_REGION` | default region label |  |  | ✅ |  | Used by `cloudrun-consumer` |
 | `SUBSCRIPTION_TOPIC_MAP` | subscription→topic mapping JSON/text |  |  | ✅ |  | Used by `cloudrun-consumer` |
+| `FIRESTORE_RETRY_MAX_ATTEMPTS` | Firestore retry attempts |  |  | ✅ |  | `cloudrun-consumer` transient Firestore retry tuning |
+| `FIRESTORE_RETRY_INITIAL_BACKOFF_S` | Firestore retry initial backoff |  |  | ✅ |  | `cloudrun-consumer` transient Firestore retry tuning |
+| `FIRESTORE_RETRY_MAX_BACKOFF_S` | Firestore retry max backoff |  |  | ✅ |  | `cloudrun-consumer` transient Firestore retry tuning |
+| `FIRESTORE_RETRY_MAX_TOTAL_S` | Firestore retry total cap |  |  | ✅ |  | `cloudrun-consumer` transient Firestore retry tuning |
 | `DLQ_SAMPLE_RATE` | DLQ sampling fraction |  |  | ✅ |  | Optional for `cloudrun-consumer` contract |
 | `DLQ_SAMPLE_TTL_HOURS` | DLQ marker TTL hours |  |  | ✅ |  | Optional for `cloudrun-consumer` contract |
 | `REPLAY_RUN_ID` | replay marker grouping id |  |  | ✅ |  | Enables replay markers in `cloudrun-consumer` |
+| `GUNICORN_CMD_ARGS` | runtime detection for Cloud Run worker |  |  | ✅ |  | Used by `cloudrun-ingestor` to detect “real runtime” (gunicorn) |
 | `EXEC_DRY_RUN` | execution engine dry-run |  |  | ✅ |  | Defaults truthy (`"1"`). If `0`, broker placement is attempted (still paper-locked by `TRADING_MODE`) |
 | `EXEC_AGENT_ID` | execution agent identity label |  |  | ✅ |  | Used for state machine id in execution service |
 | `EXEC_SHUTDOWN_DRAIN_TIMEOUT_S` | drain timeout for shutdown |  |  | ✅ |  | Execution service shutdown behavior |
