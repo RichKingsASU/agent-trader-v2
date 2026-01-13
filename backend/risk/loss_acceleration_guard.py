@@ -93,6 +93,16 @@ class LossAccelerationGuard:
     def __init__(self, *, config: LossAccelerationConfig | None = None):
         self._cfg = config or LossAccelerationConfig.from_env()
 
+    @property
+    def config(self) -> LossAccelerationConfig:
+        """
+        Effective configuration used by this guard (env-resolved).
+
+        Exposed to allow callers (e.g., execution engine) to log the active
+        thresholds alongside decisions for auditability.
+        """
+        return self._cfg
+
     def compute_metrics(self, *, uid: Optional[str] = None) -> Optional[DrawdownVelocity]:
         if not self._cfg.enabled:
             return None

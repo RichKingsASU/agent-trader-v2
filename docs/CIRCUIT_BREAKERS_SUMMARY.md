@@ -93,6 +93,22 @@ docs/
 └── CIRCUIT_BREAKERS_SUMMARY.md        # This file
 ```
 
+## Drawdown Circuit Breaker (Intraday Loss Acceleration)
+
+**Status**: ✅ Implemented (execution-time guard)
+
+**Location**:
+- Metrics + thresholds: `backend/risk/drawdown_velocity.py`, `backend/risk/loss_acceleration_guard.py`
+- Enforcement + logging: `backend/execution/engine.py` (`RiskManager.validate`)
+
+**Behavior**:
+- Computes rolling **HWM-based drawdown** and **positive-only drawdown velocity** (pp/min)
+- Triggers when drawdown is non-trivial and velocity exceeds thresholds
+- **Action**:
+  - `throttle`: blocks order intents temporarily (retry after interval)
+  - `pause` (**halt**): blocks order intents until cooldown elapses
+- **Audit log**: emits `event_type=risk.drawdown_velocity_halt` when blocking
+
 ## Key Components
 
 ### CircuitBreakerManager

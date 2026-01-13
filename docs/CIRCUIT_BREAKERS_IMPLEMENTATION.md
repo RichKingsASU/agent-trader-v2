@@ -93,6 +93,85 @@ tests/
 └── test_circuit_breakers.py      # Comprehensive test suite
 ```
 
+## Drawdown Circuit Breaker (Intraday Loss Acceleration)
+
+In addition to the three signal-level circuit breakers above, the execution engine includes an **intraday drawdown velocity guard** that can **halt paper trading** when behavior degrades intraday.
+
+### What it protects
+
+- **Scope**: execution-time (order intent routing), independent of strategy logic.
+- **Effect**: when triggered, order intents are blocked (`allowed=False`) with a structured audit log event.
+
+### High Water Mark (HWM) tracking
+
+The guard computes drawdown relative to the **High Water Mark equity within a rolling window**:
+
+- \( \text{drawdown\_pct} = \max\left(0, \frac{\text{HWM} - \text{equity}}{\text{HWM}}\right)\times 100 \)
+- **HWM** is the maximum equity observed in the window.
+
+### Drawdown velocity logic
+
+Velocity is computed conservatively as **positive-only loss acceleration**:
+
+- Compute drawdown at the window start and end (relative to the window HWM)
+- \( \text{velocity\_pp\_per\_min} = \max(0, \text{dd\_end} - \text{dd\_start}) / \Delta t_{\text{min}} \)
+
+This intentionally **does not penalize recoveries** (velocity floors at 0).
+
+### Thresholds (defaults)
+
+Defined in `backend/risk/loss_acceleration_guard.py` (`LossAccelerationConfig`):
+
+- **window**: `600s` (10 minutes)
+- **min_points**: `3`
+- **min_drawdown_to_act_pct**: `0.50` (%)
+- **throttle**: `0.10` pp/min (e.g., ~1% added drawdown over 10 minutes)
+- **pause (halt)**: `0.25` pp/min (e.g., ~2.5% added drawdown over 10 minutes)
+- **throttle_min_interval_seconds**: `120s`
+- **pause_cooldown_seconds**: `1800s` (30 minutes)
+
+Environment overrides:
+
+- `LOSS_ACCEL_ENABLED`
+- `LOSS_ACCEL_WINDOW_S`
+- `LOSS_ACCEL_MIN_POINTS`
+- `LOSS_ACCEL_MIN_DRAWDOWN_TO_ACT_PCT`
+- `LOSS_ACCEL_THROTTLE_DD_VELOCITY_PCT_PER_MIN`
+- `LOSS_ACCEL_PAUSE_DD_VELOCITY_PCT_PER_MIN`
+- `LOSS_ACCEL_THROTTLE_MIN_INTERVAL_S`
+- `LOSS_ACCEL_PAUSE_COOLDOWN_S`
+
+### Explicit halt log event
+
+When the guard blocks an intent (`pause` or `throttle`), the execution engine emits a structured log event:
+
+- **event_type**: `risk.drawdown_velocity_halt`
+- **severity**: `CRITICAL` for `pause`, `WARNING` for `throttle`
+
+Example (shape):
+
+```json
+{
+  "event_type": "risk.drawdown_velocity_halt",
+  "severity": "CRITICAL",
+  "correlation_id": "corr-123",
+  "execution_id": "exec-999",
+  "strategy_id": "gamma_scalper",
+  "symbol": "SPY",
+  "side": "buy",
+  "qty": 1,
+  "action": "pause",
+  "reason": "loss_acceleration_pause",
+  "window_seconds": 600,
+  "pause_velocity_pct_per_min": 0.25,
+  "hwm_equity": 10000.0,
+  "current_equity": 9700.0,
+  "current_drawdown_pct": 3.0,
+  "drawdown_velocity_pct_per_min": 0.30,
+  "pause_until": "2026-01-13T20:15:00+00:00"
+}
+```
+
 ### Data Flow
 
 ```

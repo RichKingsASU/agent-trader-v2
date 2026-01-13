@@ -34,6 +34,7 @@ from backend.risk.capital_reservation import (
 )
 from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
 from backend.observability.risk_signals import risk_correlation_id
+from backend.common.logging import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -1613,6 +1614,50 @@ class RiskManager:
                 }
             )
             if decision.action in {"pause", "throttle"}:
+                # Explicit structured event for auditability (requested: "drawdown halt logs an explicit event").
+                # This is the actual "paper trading stop" point: the order intent is blocked.
+                try:
+                    corr = risk_correlation_id(
+                        correlation_id=str(intent.metadata.get("correlation_id") or "").strip() or None
+                    )
+                    execution_id = str(intent.metadata.get("execution_id") or intent.client_intent_id or "").strip() or None
+                    cfg = guard.config
+                    log_event(
+                        logger,
+                        "risk.drawdown_velocity_halt",
+                        severity="CRITICAL" if decision.action == "pause" else "WARNING",
+                        correlation_id=corr,
+                        execution_id=execution_id,
+                        strategy_id=intent.strategy_id,
+                        broker_account_id=intent.broker_account_id,
+                        symbol=intent.symbol,
+                        side=intent.side,
+                        qty=intent.qty,
+                        uid=uid,
+                        action=decision.action,
+                        reason=decision.reason,
+                        retry_after_seconds=decision.retry_after_seconds,
+                        pause_until=decision.pause_until.isoformat() if decision.pause_until else None,
+                        # Active thresholds (env-resolved)
+                        window_seconds=cfg.window_seconds,
+                        min_points=cfg.min_points,
+                        min_drawdown_to_act_pct=cfg.min_drawdown_to_act_pct,
+                        throttle_velocity_pct_per_min=cfg.throttle_velocity_pct_per_min,
+                        pause_velocity_pct_per_min=cfg.pause_velocity_pct_per_min,
+                        throttle_min_interval_seconds=cfg.throttle_min_interval_seconds,
+                        pause_cooldown_seconds=cfg.pause_cooldown_seconds,
+                        # Metrics (HWM-based within window)
+                        hwm_equity=m.hwm_equity if m else None,
+                        current_equity=m.current_equity if m else None,
+                        current_drawdown_pct=m.current_drawdown_pct if m else None,
+                        drawdown_velocity_pct_per_min=m.velocity_pct_per_min if m else None,
+                        points_used=m.points_used if m else None,
+                        window_start=m.window_start.isoformat() if m else None,
+                        window_end=m.window_end.isoformat() if m else None,
+                    )
+                except Exception:
+                    # Never fail the risk gate due to logging.
+                    pass
                 return RiskDecision(allowed=False, reason=decision.reason or "loss_acceleration", checks=checks)
         except Exception as e:
             # Best-effort: never block if telemetry/reads fail.
