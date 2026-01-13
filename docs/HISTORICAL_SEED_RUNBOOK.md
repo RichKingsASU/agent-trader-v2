@@ -42,7 +42,7 @@ export ALPACA_SYMBOLS="SPY,QQQ,AAPL"
 export ALPACA_FEED="iex"
 export ALPACA_BACKFILL_TRADING_DAYS="30"
 
-python -m backend.streams.alpaca_backfill_bars
+python3 -m backend.streams.alpaca_backfill_bars
 ```
 
 Notes:

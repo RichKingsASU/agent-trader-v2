@@ -33,7 +33,7 @@ pip install -r functions/requirements.txt
 Example: GammaScalper on 3 symbols, 5m bars:
 
 ```bash
-python scripts/run_backtest.py \
+python3 scripts/run_backtest.py \
   --strategy GammaScalper \
   --symbols SPY,QQQ,AAPL \
   --start 2025-12-01 \
