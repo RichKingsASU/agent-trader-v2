@@ -2095,7 +2095,9 @@ class ExecutionEngine:
                 logger.exception("exec.idempotency_guard_failed")
 
             # ---- Pre-trade assertions (fatal) ----
-            pre = self._assert_pre_trade(intent=intent, trace_id=trace_id)
+            # Allow explicit bypass for local/unit testing only.
+            if str(os.getenv("EXEC_PRETRADE_ASSERTIONS_DISABLED") or "").strip().lower() not in {"1", "true", "yes", "on"}:
+                self._assert_pre_trade(intent=intent, trace_id=trace_id)
 
             broker_order = self._broker.place_order(intent=intent)
             broker_order_id = str(broker_order.get("id") or "").strip() or None

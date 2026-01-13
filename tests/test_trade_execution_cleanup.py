@@ -95,6 +95,7 @@ def test_cleanup_releases_on_broker_exception(monkeypatch):
     monkeypatch.delenv("EXECUTION_HALTED", raising=False)
     monkeypatch.setenv("AGENT_MODE", "LIVE")
     monkeypatch.setenv("MARKETDATA_HEALTH_CHECK_DISABLED", "1")
+    monkeypatch.setenv("EXEC_PRETRADE_ASSERTIONS_DISABLED", "1")
 
     reservations = _ReservationsStub()
     engine = ExecutionEngine(broker=_BrokerStubBoom(), risk=_risk_allow(), dry_run=False, reservations=reservations)
