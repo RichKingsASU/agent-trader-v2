@@ -25,6 +25,13 @@ from backend.common.runtime_execution_prevention import fatal_if_execution_reach
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.common.freshness import check_freshness
 from backend.time.nyse_time import is_trading_day, market_open_dt, parse_ts, to_nyse
+from backend.execution.reservations import (
+    BestEffortReservationManager,
+    NoopReservation,
+    ReservationHandle,
+    ReservationManager,
+    resolve_tenant_id_from_metadata,
+)
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.risk.capital_reservation import (
     CapitalReservationError,
@@ -67,26 +74,6 @@ def _to_jsonable(value: Any) -> Any:
     if hasattr(value, "__dict__"):
         return _to_jsonable(vars(value))
     return str(value)
-
-
-def resolve_tenant_id_from_metadata(metadata: Mapping[str, Any] | None) -> str | None:
-    """
-    Best-effort tenant id resolver.
-
-    This is used for *non-critical* pre-trade helpers like in-flight reservations
-    where missing tenant_id should degrade gracefully rather than crash.
-    """
-    md = dict(metadata or {})
-    v = (
-        md.get("tenant_id")
-        or md.get("tenantId")
-        or md.get("tenant")
-        or os.getenv("EXEC_TENANT_ID")
-        or os.getenv("TENANT_ID")
-        or ""
-    )
-    s = str(v).strip()
-    return s or None
 
 
 class InvariantViolation(RuntimeError):
@@ -1852,6 +1839,7 @@ class ExecutionEngine:
         self._router = router  # Lazy initialization if None and smart routing enabled
         self._ledger = ledger
         self._broker_name = broker_name
+        self._reservations = BestEffortReservationManager(reservations)
         self._dry_run = bool(dry_run) if dry_run is not None else bool(
             str(get_env("EXEC_DRY_RUN", "1")).strip().lower() in {"1", "true", "yes", "on"}
         )
