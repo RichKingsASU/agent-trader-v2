@@ -8,6 +8,8 @@ import alpaca_trade_api as tradeapi
 from alpaca_trade_api.stream import Stream
 from firebase_admin import credentials, firestore, initialize_app
 
+from functions.utils.apca_env import assert_paper_alpaca_base_url
+
 """
 Strategy VIII: Institutional Order Flow (Whale Consolidator)
 
@@ -37,10 +39,13 @@ class WhaleConsolidator:
         """
         # --- API and DB Initialization ---
         try:
+            base_url = assert_paper_alpaca_base_url(
+                os.environ.get("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
+            )
             self.api = tradeapi.REST(
                 key_id=os.environ.get('APCA_API_KEY_ID'),
                 secret_key=os.environ.get('APCA_API_SECRET_KEY'),
-                base_url=os.environ.get('APCA_API_BASE_URL', 'https://paper-api.alpaca.markets')
+                base_url=base_url
             )
             
             # Note: This script is deployed in 'venv_ingest', which requires firebase-admin.
@@ -169,10 +174,13 @@ class WhaleConsolidator:
             return
 
         print("🚀 WHALE ENGINE LIVE: Connecting to options data stream...")
+        base_url = assert_paper_alpaca_base_url(
+            os.environ.get("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
+        )
         stream = Stream(
             key_id=os.environ.get('APCA_API_KEY_ID'),
             secret_key=os.environ.get('APCA_API_SECRET_KEY'),
-            base_url=os.environ.get('APCA_API_BASE_URL', 'https://paper-api.alpaca.markets'),
+            base_url=base_url,
             data_feed='opra' # OPRA feed for options
         )
 

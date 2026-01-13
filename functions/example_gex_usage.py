@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import alpaca_trade_api as tradeapi
 from functions.utils.gex_engine import calculate_net_gex, get_market_regime_summary
+from functions.utils.apca_env import assert_paper_alpaca_base_url
 
 
 def main():
@@ -48,6 +49,7 @@ def main():
         print("  export APCA_API_BASE_URL='https://paper-api.alpaca.markets'")
         sys.exit(1)
     
+    base_url = assert_paper_alpaca_base_url(base_url)
     print(f"Connecting to Alpaca API: {base_url}")
     api = tradeapi.REST(
         key_id=key_id,
