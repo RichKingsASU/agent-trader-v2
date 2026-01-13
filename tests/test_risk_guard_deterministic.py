@@ -15,6 +15,9 @@ def _base_trade(**overrides):
         symbol="AAPL",
         side="buy",
         qty=10.0,
+        asset_class="EQUITY",
+        contract_multiplier=1.0,
+        greeks_gamma=None,
         estimated_price_usd=100.0,
         estimated_notional_usd=1000.0,
     )
@@ -192,4 +195,63 @@ def test_max_per_symbol_exposure_requires_current_qty_when_enabled():
     )
     assert decision.allowed is False
     assert "current_position_qty_missing" in decision.reject_reason_codes
+
+
+def test_max_contracts_per_symbol_blocks_when_projected_contracts_exceed_limit():
+    # Current: 4 contracts, buy 2 => 6 (block at 5)
+    decision = evaluate_risk_guard(
+        trade=_base_trade(symbol="SPY240119C00450000", asset_class="OPTIONS", qty=2.0),
+        state=_base_state(current_position_qty=4.0),
+        limits=RiskGuardLimits(max_contracts_per_symbol=5),
+    )
+    assert decision.allowed is False
+    assert "max_contracts_per_symbol_exceeded" in decision.reject_reason_codes
+
+    # Sell reduces exposure => allow
+    decision2 = evaluate_risk_guard(
+        trade=_base_trade(symbol="SPY240119C00450000", asset_class="OPTIONS", side="sell", qty=2.0),
+        state=_base_state(current_position_qty=4.0),
+        limits=RiskGuardLimits(max_contracts_per_symbol=5),
+    )
+    assert decision2.allowed is True
+
+
+def test_max_gamma_exposure_blocks_when_incremental_gamma_exceeds_limit_requires_gamma_when_enabled():
+    # Missing gamma fails closed when rule enabled
+    decision_missing = evaluate_risk_guard(
+        trade=_base_trade(symbol="SPY240119C00450000", asset_class="OPTIONS", qty=1.0),
+        state=_base_state(),
+        limits=RiskGuardLimits(max_gamma_exposure_abs=5.0),
+    )
+    assert decision_missing.allowed is False
+    assert "gamma_missing" in decision_missing.reject_reason_codes
+
+    # gamma=0.08 per contract, qty=1, multiplier=100 => 8.0 (block at 5.0)
+    decision_block = evaluate_risk_guard(
+        trade=_base_trade(
+            symbol="SPY240119C00450000",
+            asset_class="OPTIONS",
+            qty=1.0,
+            contract_multiplier=100.0,
+            greeks_gamma=0.08,
+        ),
+        state=_base_state(),
+        limits=RiskGuardLimits(max_gamma_exposure_abs=5.0),
+    )
+    assert decision_block.allowed is False
+    assert "max_gamma_exposure_exceeded" in decision_block.reject_reason_codes
+
+    # Lower gamma is allowed
+    decision_ok = evaluate_risk_guard(
+        trade=_base_trade(
+            symbol="SPY240119C00450000",
+            asset_class="OPTIONS",
+            qty=1.0,
+            contract_multiplier=100.0,
+            greeks_gamma=0.02,
+        ),
+        state=_base_state(),
+        limits=RiskGuardLimits(max_gamma_exposure_abs=5.0),
+    )
+    assert decision_ok.allowed is True
 

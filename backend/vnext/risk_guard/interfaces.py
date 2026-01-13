@@ -33,6 +33,11 @@ class RiskGuardLimits:
     max_order_notional_usd: float | None = None
     max_trades_per_day: int | None = None
     max_per_symbol_exposure_usd: float | None = None
+    # Options-specific constraints (enforced only when enabled by callers).
+    # - `max_contracts_per_symbol`: absolute contract count cap for a single option symbol.
+    # - `max_gamma_exposure_abs`: absolute gamma exposure cap for a single *order* (incremental).
+    max_contracts_per_symbol: int | None = None
+    max_gamma_exposure_abs: float | None = None
 
     def normalized(self) -> "RiskGuardLimits":
         def _f(x: float | None) -> float | None:
@@ -62,6 +67,8 @@ class RiskGuardLimits:
             max_order_notional_usd=_f(self.max_order_notional_usd),
             max_trades_per_day=_i(self.max_trades_per_day),
             max_per_symbol_exposure_usd=_f(self.max_per_symbol_exposure_usd),
+            max_contracts_per_symbol=_i(self.max_contracts_per_symbol),
+            max_gamma_exposure_abs=_f(self.max_gamma_exposure_abs),
         )
 
 
@@ -97,6 +104,11 @@ class RiskGuardTrade:
     qty: float
     estimated_price_usd: float
     estimated_notional_usd: float
+    asset_class: str = "EQUITY"  # "EQUITY" | "FOREX" | "CRYPTO" | "OPTIONS"
+    # For options, contracts typically represent 100 shares (multiplier=100).
+    contract_multiplier: float = 1.0
+    # Options greeks (optional; required when an options-specific rule is enabled).
+    greeks_gamma: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +156,7 @@ def evaluate_risk_guard(
 
     symbol = (trade.symbol or "").strip().upper()
     side = (trade.side or "").strip().lower()
+    asset_class = (trade.asset_class or "EQUITY").strip().upper()
 
     # ---- Structural validation (always enforced) ----
     if not symbol:
@@ -350,6 +363,96 @@ def evaluate_risk_guard(
             )
             if not allowed:
                 rejects.append("max_per_symbol_exposure_exceeded")
+
+    # ---- Rule: max contracts per symbol (OPTIONS) ----
+    if lim.max_contracts_per_symbol is not None:
+        cq = state.current_position_qty
+        if cq is None:
+            results.append(
+                RiskGuardRuleResult(
+                    rule_id="max_contracts_per_symbol",
+                    allowed=False,
+                    reason_code="current_position_qty_missing",
+                    message="current_position_qty is required to enforce max_contracts_per_symbol.",
+                    metadata={"symbol": symbol, "limit_contracts": int(lim.max_contracts_per_symbol)},
+                )
+            )
+            rejects.append("current_position_qty_missing")
+        else:
+            try:
+                current_qty = float(cq)
+            except Exception:
+                current_qty = 0.0
+            delta = qty if side == "buy" else -qty
+            projected_qty = current_qty + delta
+            allowed = abs(projected_qty) <= int(lim.max_contracts_per_symbol)
+            results.append(
+                RiskGuardRuleResult(
+                    rule_id="max_contracts_per_symbol",
+                    allowed=allowed,
+                    reason_code=None if allowed else "max_contracts_per_symbol_exceeded",
+                    message=("OK" if allowed else "Contract count would exceed configured max_contracts_per_symbol."),
+                    metadata={
+                        "symbol": symbol,
+                        "asset_class": asset_class,
+                        "current_contracts": current_qty,
+                        "projected_contracts": projected_qty,
+                        "limit_contracts": int(lim.max_contracts_per_symbol),
+                    },
+                )
+            )
+            if not allowed:
+                rejects.append("max_contracts_per_symbol_exceeded")
+
+    # ---- Rule: max gamma exposure (OPTIONS) ----
+    # Note: enforced as a per-order (incremental) cap to keep the contract deterministic
+    # without requiring a full portfolio greeks snapshot.
+    if lim.max_gamma_exposure_abs is not None:
+        # Fail closed if a caller enables the rule but doesn't supply gamma.
+        if trade.greeks_gamma is None:
+            results.append(
+                RiskGuardRuleResult(
+                    rule_id="max_gamma_exposure",
+                    allowed=False,
+                    reason_code="gamma_missing",
+                    message="greeks_gamma is required to enforce max_gamma_exposure_abs.",
+                    metadata={"symbol": symbol, "asset_class": asset_class},
+                )
+            )
+            rejects.append("gamma_missing")
+        else:
+            try:
+                gamma = float(trade.greeks_gamma)
+            except Exception:
+                gamma = 0.0
+            try:
+                mult = float(trade.contract_multiplier)
+            except Exception:
+                mult = 1.0
+            if mult <= 0:
+                mult = 1.0
+            signed_qty = qty if side == "buy" else -qty
+            incremental_gamma = gamma * signed_qty * mult
+            allowed = abs(incremental_gamma) <= float(lim.max_gamma_exposure_abs) + 1e-9
+            results.append(
+                RiskGuardRuleResult(
+                    rule_id="max_gamma_exposure",
+                    allowed=allowed,
+                    reason_code=None if allowed else "max_gamma_exposure_exceeded",
+                    message=("OK" if allowed else "Incremental gamma exposure exceeds configured max_gamma_exposure_abs."),
+                    metadata={
+                        "symbol": symbol,
+                        "asset_class": asset_class,
+                        "greeks_gamma": gamma,
+                        "contract_multiplier": mult,
+                        "signed_qty": signed_qty,
+                        "incremental_gamma_exposure": incremental_gamma,
+                        "limit_abs": float(lim.max_gamma_exposure_abs),
+                    },
+                )
+            )
+            if not allowed:
+                rejects.append("max_gamma_exposure_exceeded")
 
     allowed = len(rejects) == 0
     msg = "ok" if allowed else f"blocked: {', '.join(sorted(set(rejects)))}"

@@ -1688,6 +1688,22 @@ class RiskManager:
             )
             if abs(projected_qty) > self._config.max_position_qty:
                 return RiskDecision(allowed=False, reason="max_position_size_exceeded", checks=checks)
+
+            # Options-specific: max contracts per symbol (distinct from equity share caps).
+            asset_class = (intent.asset_class or "EQUITY").strip().upper()
+            max_contracts = _as_int_or_none(os.getenv("EXEC_MAX_CONTRACTS_PER_SYMBOL"))
+            if asset_class == "OPTIONS" and max_contracts is not None:
+                checks.append(
+                    {
+                        "check": "max_contracts_per_symbol",
+                        "symbol": intent.symbol,
+                        "current_contracts": current_qty,
+                        "projected_contracts": projected_qty,
+                        "limit_abs_contracts": int(max_contracts),
+                    }
+                )
+                if abs(projected_qty) > int(max_contracts):
+                    return RiskDecision(allowed=False, reason="max_contracts_per_symbol_exceeded", checks=checks)
         except Exception as e:
             checks.append({"check": "max_position_size", "error": str(e)})
             if not self._config.fail_open:
@@ -2303,6 +2319,106 @@ class ExecutionEngine:
         except Exception:
             logger.critical("%s (payload_unserializable)", event)
 
+    def _best_effort_enable_kill_switch(
+        self,
+        *,
+        reason: str,
+        intent: OrderIntent,
+        trace_id: str | None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Best-effort Firestore-backed kill-switch activation.
+
+        Note:
+        - The canonical kill-switch is env/file driven (see `backend.common.kill_switch`).
+        - This method supports an operator-configured Firestore doc path so a *breach*
+          can flip the switch for the entire execution fleet.
+        """
+        try:
+            path = str(os.getenv("EXECUTION_HALTED_DOC") or os.getenv("EXEC_KILL_SWITCH_DOC") or "").strip().strip("/")
+            if not path:
+                return
+            parts = path.split("/")
+            if len(parts) != 2:
+                return
+            col, doc = parts
+            from backend.persistence.firebase_client import get_firestore_client  # noqa: WPS433
+            from google.cloud import firestore  # noqa: WPS433
+
+            db = get_firestore_client()
+            payload = {
+                "enabled": True,
+                "reason": str(reason),
+                "source": "execution_engine.risk_breach",
+                "triggered_at": firestore.SERVER_TIMESTAMP,
+                "trace_id": trace_id,
+                "intent": _to_jsonable(intent),
+            }
+            if extra:
+                payload["extra"] = _to_jsonable(extra)
+            db.collection(col).document(doc).set(payload, merge=True)
+        except Exception:
+            # Never crash the execution path because the kill-switch doc is unavailable.
+            return
+
+    def _best_effort_halt_strategy(
+        self,
+        *,
+        intent: OrderIntent,
+        reason: str,
+        trace_id: str | None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Best-effort per-strategy halt (switch execution mode to SHADOW_MODE).
+        """
+        try:
+            tenant_id = str(intent.metadata.get("tenant_id") or os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip()
+            uid = str(intent.metadata.get("uid") or intent.metadata.get("user_id") or os.getenv("EXEC_UID") or "").strip()
+            strategy_id = str(intent.strategy_id or "").strip()
+            if not tenant_id or not uid or not strategy_id:
+                return
+            from backend.persistence.firebase_client import get_firestore_client  # noqa: WPS433
+            from google.cloud import firestore  # noqa: WPS433
+
+            db = get_firestore_client()
+            ref = (
+                db.collection("tenants")
+                .document(tenant_id)
+                .collection("users")
+                .document(uid)
+                .collection("strategies")
+                .document(strategy_id)
+            )
+            update = {
+                "execution_mode": "SHADOW_MODE",
+                "shadow_mode_reason": str(reason),
+                "shadow_mode_activated_at": firestore.SERVER_TIMESTAMP,
+                "shadow_mode_trace_id": trace_id,
+            }
+            if extra:
+                update["shadow_mode_extra"] = _to_jsonable(extra)
+            ref.set(update, merge=True)
+        except Exception:
+            return
+
+    def _on_risk_breach(
+        self,
+        *,
+        intent: OrderIntent,
+        reason: str,
+        trace_id: str | None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Breach response policy:
+        - trigger global kill-switch (when configured)
+        - halt the strategy (best-effort)
+        """
+        self._best_effort_halt_strategy(intent=intent, reason=reason, trace_id=trace_id, extra=extra)
+        self._best_effort_enable_kill_switch(reason=reason, intent=intent, trace_id=trace_id, extra=extra)
+
     def _env_float(self, name: str, default: float | None = None) -> float | None:
         v = os.getenv(name)
         if v is None or str(v).strip() == "":
@@ -2395,7 +2511,18 @@ class ExecutionEngine:
         if est_price is None or est_price <= 0:
             raise PreTradeAssertionError("unable_to_estimate_price")
 
-        est_notional = float(intent.qty) * float(est_price)
+        # Options notional must account for contract multiplier (typically 100 shares/contract).
+        asset_class = (intent.asset_class or "EQUITY").strip().upper()
+        contract_multiplier = _as_float_or_none(intent.metadata.get("contract_multiplier"))
+        if contract_multiplier is None:
+            try:
+                contract_multiplier = float(os.getenv("EXEC_OPTIONS_CONTRACT_MULTIPLIER") or "100") if asset_class == "OPTIONS" else 1.0
+            except Exception:
+                contract_multiplier = 100.0 if asset_class == "OPTIONS" else 1.0
+        if contract_multiplier <= 0:
+            contract_multiplier = 100.0 if asset_class == "OPTIONS" else 1.0
+
+        est_notional = float(intent.qty) * float(est_price) * (contract_multiplier if asset_class == "OPTIONS" else 1.0)
         if est_notional <= 0:
             raise PreTradeAssertionError("estimated_notional_non_positive")
 
@@ -2429,6 +2556,7 @@ class ExecutionEngine:
 
         # ---- Risk Guard (deterministic tool boundary) ----
         # Enforces: max daily loss, max order notional, max trades/day, max per-symbol exposure.
+        # Options extras: max contracts per symbol, max gamma exposure (incremental).
         # Inputs are strict/explicit; missing required state fails closed (when limits are enabled).
         try:
             # Baseline (env) limits (existing behavior).
@@ -2436,6 +2564,8 @@ class ExecutionEngine:
             max_order_notional = self._env_float("EXEC_MAX_ORDER_NOTIONAL", None)
             max_trades_per_day = _as_int_or_none(os.getenv("EXEC_MAX_DAILY_TRADES"))
             max_per_symbol_exposure_env = self._env_float("EXEC_MAX_PER_SYMBOL_EXPOSURE_USD", None)
+            max_contracts_per_symbol_env = _as_int_or_none(os.getenv("EXEC_MAX_CONTRACTS_PER_SYMBOL"))
+            max_gamma_exposure_abs_env = self._env_float("EXEC_MAX_GAMMA_EXPOSURE_ABS", None)
 
             # Provided by earlier risk validation when available (see execute_intent()).
             trades_today = _as_int_or_none(intent.metadata.get("_risk_trades_today"))
@@ -2457,11 +2587,25 @@ class ExecutionEngine:
             )
             execution_id = str(intent.metadata.get("execution_id") or intent.client_intent_id or "").strip() or None
 
+            # Best-effort gamma extraction for OPTIONS. If the rule is enabled and gamma is missing,
+            # the deterministic risk guard will fail closed with reason_code=gamma_missing.
+            greeks_gamma = None
+            if asset_class == "OPTIONS":
+                md = dict(intent.metadata or {})
+                greeks = md.get("greeks")
+                if isinstance(greeks, dict) and greeks.get("gamma") is not None:
+                    greeks_gamma = _as_float_or_none(greeks.get("gamma"))
+                if greeks_gamma is None and md.get("gamma") is not None:
+                    greeks_gamma = _as_float_or_none(md.get("gamma"))
+
             decision = evaluate_risk_guard(
                 trade=RiskGuardTrade(
                     symbol=intent.symbol,
                     side=intent.side,
                     qty=float(intent.qty),
+                    asset_class=asset_class,
+                    contract_multiplier=float(contract_multiplier or 1.0),
+                    greeks_gamma=greeks_gamma,
                     estimated_price_usd=float(est_price),
                     estimated_notional_usd=float(est_notional),
                 ),
@@ -2475,10 +2619,13 @@ class ExecutionEngine:
                     strategy_id=intent.strategy_id,
                 ),
                 limits=RiskGuardLimits(
-                    max_daily_loss_usd=max_daily_loss,
+                    max_daily_loss_usd=max_daily_loss_env,
                     max_order_notional_usd=max_order_notional,
                     max_trades_per_day=max_trades_per_day,
-                    max_per_symbol_exposure_usd=max_per_symbol_exposure,
+                    max_per_symbol_exposure_usd=max_per_symbol_exposure_env,
+                    # Options-specific limits are only applied to options intents.
+                    max_contracts_per_symbol=max_contracts_per_symbol_env if asset_class == "OPTIONS" else None,
+                    max_gamma_exposure_abs=max_gamma_exposure_abs_env if asset_class == "OPTIONS" else None,
                 ),
             )
             logger.info(
@@ -2495,6 +2642,32 @@ class ExecutionEngine:
                 ),
             )
             if not decision.allowed:
+                # Breach response policy:
+                # - Always halt the strategy (best-effort) when the deterministic risk boundary denies.
+                # - Only trigger the global kill-switch for *configured* critical breaches:
+                #   - max daily loss
+                #   - options gamma exposure cap
+                #   - options contracts-per-symbol cap
+                try:
+                    codes = set(decision.reject_reason_codes or ())
+                    if "max_daily_loss_exceeded" in codes or (
+                        asset_class == "OPTIONS" and (codes & {"max_gamma_exposure_exceeded", "max_contracts_per_symbol_exceeded"})
+                    ):
+                        self._on_risk_breach(
+                            intent=intent,
+                            reason="risk_guard_critical_breach",
+                            trace_id=trace_id,
+                            extra={"risk_guard": decision.to_dict()},
+                        )
+                    else:
+                        self._best_effort_halt_strategy(
+                            intent=intent,
+                            reason="risk_guard_blocked",
+                            trace_id=trace_id,
+                            extra={"risk_guard": decision.to_dict()},
+                        )
+                except Exception:
+                    pass
                 payload = {
                     "reason": "risk_guard_blocked",
                     "correlation_id": corr,
