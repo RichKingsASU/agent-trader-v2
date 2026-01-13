@@ -41,6 +41,15 @@ def try_write_contract_violation_alert(
     if not project_id:
         return None
 
+    # Safety: never write to production Firestore from local execution unless explicitly allowed.
+    try:
+        from backend.persistence.firebase_client import is_local_execution  # local import to avoid cycles
+    except Exception:
+        is_local_execution = None  # type: ignore[assignment]
+    if is_local_execution is not None and is_local_execution():
+        if not (os.getenv("FIRESTORE_EMULATOR_HOST") or "").strip() and (os.getenv("ALLOW_PROD_FIRESTORE") or "").strip() != "1":
+            return None
+
     try:
         from google.cloud import firestore  # type: ignore
     except Exception:

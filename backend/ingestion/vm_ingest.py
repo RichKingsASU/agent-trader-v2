@@ -218,6 +218,9 @@ def _maybe_apply_secret_config(cfg: Config) -> Config:
 
 
 def _firestore_client(project_id: Optional[str]) -> firestore.Client:
+    from backend.persistence.firebase_client import require_firestore_emulator_or_allow_prod
+
+    require_firestore_emulator_or_allow_prod(caller="backend.ingestion.vm_ingest._firestore_client")
     if project_id:
         return firestore.Client(project=project_id)
     return firestore.Client()

@@ -135,6 +135,11 @@ def _fetch_market_regime_from_firestore() -> None:
     try:
         # Import Firestore client (only when needed to avoid import overhead)
         from google.cloud import firestore
+
+        from backend.persistence.firebase_client import require_firestore_emulator_or_allow_prod
+        require_firestore_emulator_or_allow_prod(
+            caller="backend.strategy_runner.examples.gamma_scalper_0dte.strategy._fetch_market_regime_from_firestore"
+        )
         
         # Initialize Firestore client
         db = firestore.Client()
