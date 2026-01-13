@@ -22,6 +22,9 @@ import { Target, ChevronDown, ChevronUp } from "lucide-react";
 import { toast } from "sonner";
 import { useLayout } from "@/contexts/LayoutContext";
 import { useLiveAccount } from "@/hooks/useLiveAccount";
+import { ConfidenceSignalPanel } from "@/components/ConfidenceSignalPanel";
+import { useAlpacaAccountSnapshot } from "@/hooks/useAlpacaAccountSnapshot";
+import { usePaperTradingConfidence } from "@/hooks/usePaperTradingConfidence";
 
 interface AccountData {
   account_id: string;
@@ -68,6 +71,8 @@ const Index = () => {
   const [newsPanelOpen, setNewsPanelOpen] = useState(true);
   const [notesPanelOpen, setNotesPanelOpen] = useState(true);
   const { equity, buyingPower, cash } = useLiveAccount();
+  const { snapshot: alpacaSnap } = useAlpacaAccountSnapshot();
+  const paper = usePaperTradingConfidence();
 
   const effectiveAccountData = useMemo(() => {
     if (!accountData) return null;
@@ -79,24 +84,28 @@ const Index = () => {
     };
   }, [accountData, buyingPower, cash, equity]);
 
-  // Mock data fetching - replace with actual API calls
   useEffect(() => {
-    // Mock account data
+    // Use Firestore warm-cache snapshot when available (operator-facing, non-mocked).
+    const effectiveEquity = alpacaSnap?.equity && alpacaSnap.equity > 0 ? alpacaSnap.equity : equity;
+    const effectiveBuyingPower =
+      alpacaSnap?.buying_power && alpacaSnap.buying_power > 0 ? alpacaSnap.buying_power : buyingPower;
+    const effectiveCash = alpacaSnap?.cash && alpacaSnap.cash > 0 ? alpacaSnap.cash : cash;
+
     setAccountData({
-      account_id: "XYZ123",
-      environment: "production" as const,
-      market: "US Equities & Options",
-      equity,
-      day_pnl: 650.75,
-      day_pnl_pct: 0.52,
-      unrealized_pnl: 300.10,
-      realized_pnl: 350.65,
-      settled_cash: 40000.0,
-      buying_power: buyingPower,
-      margin_available: 150000.00,
-      portfolio_delta: 35.2,
-      portfolio_theta: -18.5,
-      portfolio_vega: 42.3,
+      account_id: "alpaca", // display label; real external ID is stored in Firestore raw payload
+      environment: "sandbox" as const,
+      market: "Paper Trading (Shadow Mode)",
+      equity: effectiveEquity,
+      day_pnl: paper.daily_pnl,
+      day_pnl_pct: paper.base_equity_usd ? (paper.daily_pnl / paper.base_equity_usd) * 100 : 0,
+      unrealized_pnl: paper.unrealized_pnl,
+      realized_pnl: paper.daily_pnl - paper.unrealized_pnl,
+      settled_cash: effectiveCash,
+      buying_power: effectiveBuyingPower,
+      margin_available: effectiveBuyingPower,
+      portfolio_delta: 0,
+      portfolio_theta: 0,
+      portfolio_vega: 0,
     });
 
     // Mock bot status
@@ -140,7 +149,7 @@ const Index = () => {
       day_bias: "Bullish",
       setup_quality_score: 78,
     });
-  }, [currentSymbol, equity, buyingPower]);
+  }, [alpacaSnap?.buying_power, alpacaSnap?.cash, alpacaSnap?.equity, buyingPower, cash, currentSymbol, equity, paper.base_equity_usd, paper.daily_pnl, paper.unrealized_pnl]);
 
   const handleSymbolChange = (symbol: string) => {
     setCurrentSymbol(symbol);
@@ -174,7 +183,7 @@ const Index = () => {
         currentSymbol={currentSymbol}
         onSymbolChange={handleSymbolChange}
         environment={accountData?.environment || "production"}
-        equity={equity}
+        equity={accountData?.equity || equity}
         dayPnl={accountData?.day_pnl || 0}
         dayPnlPct={accountData?.day_pnl_pct || 0}
       />
@@ -249,6 +258,15 @@ const Index = () => {
           {(layout.showAccountPanel || layout.showBotStatus || layout.showOptionsPositions || 
             layout.showOrderTicket || layout.showNews || layout.showNotes) && (
             <div className="space-y-4 transition-all duration-300 animate-fade-in">
+              <div className="transition-all duration-300 animate-fade-in">
+                <h3 className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wider ui-label neon-glow-blue">
+                  Paper Trading
+                </h3>
+                <div className="glass-card p-4">
+                  <ConfidenceSignalPanel />
+                </div>
+              </div>
+
               {layout.showAccountPanel && (
                 <div className="transition-all duration-300 animate-fade-in">
                   <h3 className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wider ui-label neon-glow-blue">Account & Risk</h3>
