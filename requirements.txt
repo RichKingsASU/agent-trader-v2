@@ -2,6 +2,6 @@
 #
 # Keep this file lightweight and explicit; it should include the deps needed to
 # run tests/compile checks and the Firebase Python functions.
--r backend/requirements.txt
+-r backend/requirements_ci.txt
 -r functions/requirements.txt
 -r base_requirements.txt

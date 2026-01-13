@@ -1,3 +1,11 @@
+# CI dependency subset (repo-level test runner)
+#
+# This intentionally excludes `google-genai` because it requires `websockets>=13`,
+# while `alpaca-trade-api` (used by `functions/`) pins `websockets<11`. Installing
+# both stacks together is unsatisfiable and prevents CI from running tests.
+#
+# Production services should continue using `backend/requirements.txt`.
+
 fastapi==0.126.0
 uvicorn==0.38.0
 
@@ -7,7 +15,6 @@ websockets
 httpx
 requests
 tenacity
-google-genai
 google-cloud-pubsub
 
 # Firebase / Firestore
@@ -30,3 +37,4 @@ psycopg2-binary==2.9.9
 
 # Repo blueprint generator (k8s/cloudbuild YAML parsing)
 PyYAML==6.0.1
+
