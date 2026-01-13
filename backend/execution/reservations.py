@@ -6,9 +6,17 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Protocol, runtime_checkable
 
-from backend.persistence.firestore_retry import with_firestore_retry
-
 logger = logging.getLogger(__name__)
+
+
+def _with_firestore_retry(fn):
+    """
+    Lazy import wrapper to avoid requiring Firestore/google deps for modules that
+    only need the in-memory reservation helpers (e.g., unit tests).
+    """
+    from backend.persistence.firestore_retry import with_firestore_retry
+
+    return with_firestore_retry(fn)
 
 
 def _utc_now() -> datetime:
@@ -107,7 +115,7 @@ class _FirestoreReservationHandle(ReservationHandle):
             return
         self._released = True
         try:
-            with_firestore_retry(
+            _with_firestore_retry(
                 lambda: self._doc_ref.set(
                     {
                         "status": "released",
@@ -198,7 +206,7 @@ class FirestoreReservationManager:
                     merge=True,
                 )
 
-        with_firestore_retry(_create_or_merge)
+        _with_firestore_retry(_create_or_merge)
         return _FirestoreReservationHandle(doc_ref=doc_ref, reservation_id=client_intent_id)
 
 
