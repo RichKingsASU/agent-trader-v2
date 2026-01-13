@@ -25,7 +25,6 @@ from backend.common.replay_events import build_replay_event, dumps_replay_event,
 from backend.common.freshness import check_freshness
 from backend.time.nyse_time import parse_ts
 from backend.streams.alpaca_env import load_alpaca_env
-from backend.execution.reservations import resolve_tenant_id_from_metadata
 from backend.risk.capital_reservation import (
     CapitalReservationError,
     InsufficientBuyingPowerError,
@@ -36,6 +35,58 @@ from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState,
 from backend.observability.risk_signals import risk_correlation_id
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_tenant_id_from_metadata(metadata: dict[str, Any] | None) -> str | None:
+    """
+    Lightweight tenant resolver (no Firestore imports).
+
+    NOTE: ExecutionEngine must remain importable in unit tests without google-cloud
+    dependencies. Do not import Firestore client code from here.
+    """
+    md = dict(metadata or {})
+    tenant_id = str(md.get("tenant_id") or "").strip()
+    if not tenant_id:
+        tenant_id = str(os.getenv("EXEC_TENANT_ID") or os.getenv("TENANT_ID") or "").strip()
+    return tenant_id or None
+
+
+@runtime_checkable
+class ReservationHandle(Protocol):
+    def release(self, *, outcome: str, error: str | None = None) -> None: ...
+
+
+@runtime_checkable
+class ReservationManager(Protocol):
+    def reserve(
+        self,
+        *,
+        tenant_id: str,
+        broker_account_id: str,
+        client_intent_id: str,
+        amount_usd: float,
+        ttl_seconds: int = 300,
+        meta: dict | None = None,
+    ) -> ReservationHandle: ...
+
+
+class NoopReservation:
+    def release(self, *, outcome: str, error: str | None = None) -> None:  # noqa: ARG002
+        return
+
+
+class NoopReservations:
+    def reserve(
+        self,
+        *,
+        tenant_id: str,  # noqa: ARG002
+        broker_account_id: str,  # noqa: ARG002
+        client_intent_id: str,  # noqa: ARG002
+        amount_usd: float,  # noqa: ARG002
+        ttl_seconds: int = 300,  # noqa: ARG002
+        meta: dict | None = None,  # noqa: ARG002
+    ) -> ReservationHandle:
+        return NoopReservation()
 
 
 def _utc_now() -> datetime:
@@ -1787,6 +1838,7 @@ class ExecutionEngine:
         self._enable_smart_routing = enable_smart_routing
         self._capital_provider: _FirestoreCapitalProvider | None = None
         self._risk_limits_provider: _FirestoreRiskLimitsProvider | None = None
+        self._reservations: ReservationManager = reservations or NoopReservations()
 
         # Replay marker: engine constructed (startup-ish for this component).
         try:
@@ -1818,9 +1870,13 @@ class ExecutionEngine:
     def execute_intent(self, *, intent: OrderIntent) -> ExecutionResult:
         intent = intent.normalized()
 
+        # Absolute safety boundary: refuse immediately while kill-switch is enabled.
+        # Must happen before reservations, idempotency, or any broker/network side effects.
+        require_kill_switch_off(operation="execution_engine.execute_intent")
+
         # --- In-flight reservation (best-effort) ---
         # Reserve *during processing only* (not a long-lived open-order hold).
-        tenant_id = resolve_tenant_id_from_metadata(intent.metadata)
+        tenant_id = _resolve_tenant_id_from_metadata(intent.metadata)
         reservation: ReservationHandle = NoopReservation()
         try:
             amount_usd = 0.0
