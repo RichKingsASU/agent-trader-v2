@@ -18,7 +18,11 @@ from dataclasses import dataclass
 from enum import Enum
 from decimal import Decimal
 
-from firebase_admin import firestore
+try:
+    # Optional in local/unit-test environments.
+    from firebase_admin import firestore  # type: ignore
+except Exception:  # noqa: BLE001
+    firestore = None  # type: ignore[assignment]
 from strategies.base_strategy import BaseStrategy, TradingSignal, SignalType
 from strategies.loader import load_strategies
 
@@ -131,7 +135,7 @@ class ConsensusEngine:
         self,
         consensus_threshold: float = 0.7,
         strategy_weights: Optional[Dict[str, float]] = None,
-        db: Optional[firestore.Client] = None
+        db: Optional[Any] = None
     ):
         """
         Initialize the Consensus Engine.
@@ -572,8 +576,8 @@ class ConsensusEngine:
         try:
             consensus_doc = {
                 **result.to_dict(),
-                "timestamp": firestore.SERVER_TIMESTAMP,
-                "user_id": user_id or "system"
+                "timestamp": getattr(firestore, "SERVER_TIMESTAMP", None),
+                "user_id": user_id or "system",
             }
             
             # Log to consensusSignals collection
@@ -608,7 +612,7 @@ class ConsensusEngine:
                 "consensus_score": result.consensus_score,
                 "vote_summary": result._get_vote_summary(),
                 "votes": [vote.to_dict() for vote in result.votes],
-                "timestamp": firestore.SERVER_TIMESTAMP,
+                "timestamp": getattr(firestore, "SERVER_TIMESTAMP", None),
                 "user_id": user_id or "system",
                 "threshold": self.consensus_threshold,
                 "should_execute": result.should_execute
