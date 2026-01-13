@@ -192,6 +192,7 @@ class Backtester:
         symbol: str = "SPY",
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
+        timeframe: str = "1m",
         initial_capital: float = 100000.0,
         commission: float = 0.0,
         slippage: float = 0.0,
@@ -206,6 +207,7 @@ class Backtester:
             symbol: Symbol to backtest (default: SPY)
             start_date: Start date in YYYY-MM-DD format (default: 30 days ago)
             end_date: End date in YYYY-MM-DD format (default: today)
+            timeframe: Bar timeframe: "1m", "5m", or "15m" (default: "1m")
             initial_capital: Starting capital in USD
             commission: Commission per trade (not yet implemented)
             slippage: Slippage in decimal (not yet implemented)
@@ -214,6 +216,7 @@ class Backtester:
         """
         self.strategy = strategy
         self.symbol = symbol.upper()
+        self.timeframe = str(timeframe).strip().lower()
         self.initial_capital = Decimal(str(initial_capital))
         self.commission = Decimal(str(commission))
         self.slippage = Decimal(str(slippage))
@@ -249,26 +252,36 @@ class Backtester:
         self.benchmark_equity_curve: List[Dict[str, Any]] = []
         
         logger.info(
-            f"Backtester initialized: {self.symbol} from {self.start_date} to {self.end_date}, "
+            f"Backtester initialized: {self.symbol} {self.timeframe} from {self.start_date} to {self.end_date}, "
             f"Capital: ${float(self.initial_capital):,.2f}"
         )
     
     def fetch_data(self) -> List[Dict[str, Any]]:
         """
-        Fetch historical 1-minute bar data from Alpaca.
+        Fetch historical bar data from Alpaca.
         
         Returns:
             List of bar dictionaries with timestamp, open, high, low, close, volume
         """
-        logger.info(f"Fetching historical data for {self.symbol}...")
+        logger.info(f"Fetching historical data for {self.symbol} ({self.timeframe})...")
 
         # Lazy import: keep module importable in minimal CI environments.
         from alpaca.data.requests import StockBarsRequest  # type: ignore
-        from alpaca.data.timeframe import TimeFrame  # type: ignore
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit  # type: ignore
+
+        tf = self.timeframe
+        if tf in ("1m", "1min", "1minute", "minute"):
+            alpaca_tf = TimeFrame.Minute
+        elif tf in ("5m", "5min", "5minute"):
+            alpaca_tf = TimeFrame(5, TimeFrameUnit.Minute)
+        elif tf in ("15m", "15min", "15minute"):
+            alpaca_tf = TimeFrame(15, TimeFrameUnit.Minute)
+        else:
+            raise ValueError(f"Unsupported timeframe: {self.timeframe!r} (expected 1m/5m/15m)")
 
         request = StockBarsRequest(
             symbol_or_symbols=self.symbol,
-            timeframe=TimeFrame.Minute,
+            timeframe=alpaca_tf,
             start=datetime.combine(self.start_date, datetime.min.time()).replace(tzinfo=timezone.utc),
             end=datetime.combine(self.end_date, datetime.max.time()).replace(tzinfo=timezone.utc),
         )

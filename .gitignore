@@ -25,6 +25,8 @@ service-account-key.json
 !tsconfig.json
 !tsconfig.*.json
 !tsconfig*.json
+# Allow committed example artifacts / fixtures.
+!audit_artifacts/**/*.json
 *.pem
 *.key
 deploy_logs/

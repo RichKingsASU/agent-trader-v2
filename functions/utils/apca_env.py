@@ -30,16 +30,19 @@ def get_apca_env() -> ApcaEnv:
     """
     Load APCA_* env vars and normalize the base URL (strip trailing slash).
     """
-    key_id = _get_required("APCA_API_KEY_ID")
-    secret_key = _get_required("APCA_API_SECRET_KEY")
-    base_url = _get_required("APCA_API_BASE_URL")
+    # Prefer shared backend env helpers for consistency.
+    key_id = get_alpaca_key_id(required=True)
+    secret_key = get_alpaca_secret_key(required=True)
+    base_url = get_alpaca_api_base_url(required=True)
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
-    
-    base_url = assert_valid_alpaca_base_url(
-        url=base_url,
-        agent_mode=agent_mode,
-        trading_mode=trading_mode,
-    )
+
+    agent_mode = get_agent_mode()
+    trading_mode = str(os.getenv("TRADING_MODE") or "").strip().lower()
+    if not trading_mode:
+        # Keep the error message explicit and stable (used by ops/CI).
+        raise RuntimeError("Missing required env var: TRADING_MODE")
+
+    base_url = assert_valid_alpaca_base_url(url=base_url, agent_mode=agent_mode, trading_mode=trading_mode)
     return ApcaEnv(api_key_id=key_id, api_secret_key=secret_key, api_base_url=base_url)
 
 
