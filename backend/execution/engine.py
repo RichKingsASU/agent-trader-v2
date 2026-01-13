@@ -14,6 +14,7 @@ from typing import Any, Optional, Protocol, runtime_checkable
 import requests
 
 from backend.common.env import get_env
+from backend.execution.order_lifecycle import OrderLifecycleError, OrderLifecycleTracker
 from backend.common.agent_mode import require_live_mode as require_trading_live_mode
 from backend.common.kill_switch import (
     ExecutionHaltedError,
@@ -1787,6 +1788,11 @@ class ExecutionEngine:
         self._enable_smart_routing = enable_smart_routing
         self._capital_provider: _FirestoreCapitalProvider | None = None
         self._risk_limits_provider: _FirestoreRiskLimitsProvider | None = None
+        # Order lifecycle validation (in-memory).
+        self._order_lifecycle = OrderLifecycleTracker()
+        # Best-effort partial-fill delta tracking (in-memory; avoids double-counting cumulative filled_qty snapshots).
+        self._fill_progress_lock = threading.Lock()
+        self._cum_filled_qty_by_order_id: dict[str, float] = {}
 
         # Replay marker: engine constructed (startup-ish for this component).
         try:
@@ -2101,6 +2107,33 @@ class ExecutionEngine:
         self._assert_post_trade_order_response(
             intent=intent, broker_order=broker_order, broker_order_id=broker_order_id, trace_id=trace_id
         )
+        # --- Order lifecycle tracking (NEW -> accepted/active) ---
+        try:
+            if broker_order_id:
+                self._order_lifecycle.start_new(
+                    broker_order_id=broker_order_id,
+                    meta={"source": "execute_intent", "client_intent_id": intent.client_intent_id, "asset_class": intent.asset_class},
+                )
+                self._order_lifecycle.apply_from_broker_order(
+                    broker_order_id=broker_order_id,
+                    broker_status=broker_order.get("status"),
+                    filled_qty=broker_order.get("filled_qty"),
+                    order_qty=broker_order.get("qty") or intent.qty,
+                    meta={"source": "execute_intent"},
+                    strict=True,
+                )
+        except OrderLifecycleError as e:
+            # Treat invalid lifecycle transitions as a post-trade contract breach.
+            payload = {
+                "reason": "order_lifecycle_invalid",
+                "error": str(e),
+                "broker_order_id": broker_order_id,
+                "order": _to_jsonable(broker_order),
+                "intent": _to_jsonable(intent),
+                "trace_id": trace_id,
+            }
+            self._critical("exec.posttrade_assertion_failed", payload=payload)
+            raise PostTradeAssertionError("order_lifecycle_invalid")
         logger.info(
             "exec.order_placed %s",
             json.dumps(_to_jsonable({"broker": self._broker_name, "broker_order_id": broker_order_id, "order": broker_order})),
@@ -2151,8 +2184,9 @@ class ExecutionEngine:
             status = str(broker_order.get("status") or "").lower()
             filled_qty = float(broker_order.get("filled_qty") or 0.0)
             if status in {"filled", "partially_filled"} or filled_qty > 0:
-                self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
-                self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
+                fill_payload = self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
+                if fill_payload is not None:
+                    self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=fill_payload)
                 # If we reserved for this intent, release on first observed fill.
                 if reserved and tenant_id_for_reservation and uid_for_reservation:
                     try:
@@ -2208,6 +2242,19 @@ class ExecutionEngine:
         # --- PAPER TRADING OVERRIDE (END) ---
         resp = self._broker.cancel_order(broker_order_id=broker_order_id)
         logger.info("exec.cancel_response %s", json.dumps(_to_jsonable(resp)))
+        # Best-effort lifecycle update (CANCELLED terminal).
+        try:
+            self._order_lifecycle.apply_from_broker_order(
+                broker_order_id=str(broker_order_id),
+                broker_status=resp.get("status"),
+                filled_qty=resp.get("filled_qty"),
+                order_qty=resp.get("qty"),
+                meta={"source": "cancel"},
+                strict=True,
+            )
+        except Exception:
+            # Never block cancel return path; lifecycle tracking is best-effort here.
+            pass
         # Best-effort: attempt to release reservation keyed by broker_order_id if caller uses it as trade_id.
         # NOTE: The canonical reservation key is client_intent_id; without it we cannot reliably release here.
         return resp
@@ -2248,6 +2295,23 @@ class ExecutionEngine:
 
         status = str(order.get("status") or "").lower()
         filled_qty = float(order.get("filled_qty") or 0.0)
+        # Best-effort lifecycle update on every poll.
+        try:
+            self._order_lifecycle.start_new(broker_order_id=str(broker_order_id), meta={"source": "sync"})
+            self._order_lifecycle.apply_from_broker_order(
+                broker_order_id=str(broker_order_id),
+                broker_status=status,
+                filled_qty=filled_qty,
+                order_qty=order.get("qty"),
+                meta={"source": "sync"},
+                strict=True,
+            )
+        except OrderLifecycleError as e:
+            logger.error(
+                "exec.order_lifecycle_invalid %s",
+                json.dumps(_to_jsonable({"broker_order_id": broker_order_id, "error": str(e), "order": order})),
+            )
+
         if status in {"filled", "partially_filled"} or filled_qty > 0:
             # We need the original intent to write a complete ledger record.
             # Best-effort: reconstruct from broker payload + metadata.
@@ -2265,8 +2329,9 @@ class ExecutionEngine:
                 created_at=_utc_now(),
                 metadata={"reconstructed": True},
             ).normalized()
-            self._write_ledger_fill(intent=intent, broker_order=order, fill=order)
-            self._write_portfolio_history(intent=intent, broker_order=order, fill=order)
+            fill_payload = self._write_ledger_fill(intent=intent, broker_order=order, fill=order)
+            if fill_payload is not None:
+                self._write_portfolio_history(intent=intent, broker_order=order, fill=fill_payload)
             # Best-effort: release reservation if client_intent_id matches reservation trade_id.
             try:
                 if self._ledger is None:
@@ -2708,15 +2773,41 @@ class ExecutionEngine:
 
     def _write_ledger_fill(
         self, *, intent: OrderIntent, broker_order: dict[str, Any], fill: dict[str, Any]
-    ) -> None:
+    ) -> dict[str, Any] | None:
         if self._ledger is None:
             self._ledger = _FirestoreLedger()
+        broker_order_id = str(broker_order.get("id") or "").strip()
+        if not broker_order_id:
+            return None
+
+        # If the broker payload uses cumulative filled_qty (common), compute delta to avoid double-counting.
+        # This is best-effort and only guaranteed within the lifetime of this process.
+        try:
+            cum = float((fill or {}).get("filled_qty") or broker_order.get("filled_qty") or 0.0)
+        except Exception:
+            cum = 0.0
+        if cum <= 0:
+            return None
+        with self._fill_progress_lock:
+            prev = float(self._cum_filled_qty_by_order_id.get(broker_order_id, 0.0) or 0.0)
+            delta = max(0.0, cum - prev)
+            # Store the new cumulative even if delta is zero (monotonic).
+            if cum > prev:
+                self._cum_filled_qty_by_order_id[broker_order_id] = cum
+        if delta <= 0:
+            return None
+
+        fill_payload = dict(fill or {})
+        fill_payload["filled_qty"] = delta
+        # Keep cum for audit/debugging.
+        fill_payload["cum_filled_qty"] = cum
         self._ledger.write_fill(
             intent=intent,
             broker=self._broker_name,
             broker_order=broker_order,
-            fill=fill,
+            fill=fill_payload,
         )
+        return fill_payload
     
     def _write_portfolio_history(
         self, *, intent: OrderIntent, broker_order: dict[str, Any], fill: dict[str, Any]

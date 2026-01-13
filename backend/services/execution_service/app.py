@@ -78,6 +78,10 @@ class ExecuteIntentRequest(BaseModel):
     order_type: str = Field(default="market", description="market|limit|...")
     time_in_force: str = Field(default="day", description="day|gtc|...")
     limit_price: Optional[float] = Field(default=None, description="Required for limit orders")
+    asset_class: Optional[str] = Field(
+        default=None,
+        description='Optional asset class override: "EQUITY" | "FOREX" | "CRYPTO" | "OPTIONS"',
+    )
 
     client_intent_id: Optional[str] = Field(
         default=None, description="Optional idempotency/audit identifier"
@@ -415,6 +419,7 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
         order_type=req.order_type,
         time_in_force=req.time_in_force,
         limit_price=req.limit_price,
+        asset_class=(req.asset_class or "EQUITY"),
         client_intent_id=idempotency_key,
         metadata=req.metadata,
     )
