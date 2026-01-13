@@ -522,41 +522,53 @@ class AlpacaBroker:
         }
         self._timeout = request_timeout_s
 
-    def place_order(self, *, intent: OrderIntent) -> dict[str, Any]:
-        # Absolute safety boundary: never attempt broker-side order placement while halted.
-        # This ensures retries/replays cannot bypass upstream guards.
-        require_kill_switch_off(operation="alpaca.place_order")
-        # --- PAPER TRADING OVERRIDE (START) ---
+    def _preflight_broker_side_effect(
+        self,
+        *,
+        operation: str,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Fail-closed *immediately before* any broker/network side effect.
+
+        Concurrency/race posture:
+        - Kill-switch and env flags can change at runtime (or between checks).
+        - We re-check right before the HTTP request so mid-execution flips block.
+        """
+        require_kill_switch_off(operation=operation)
         # Allow paper trading if TRADING_MODE is 'paper' and Alpaca base URL is paper.
         is_paper_mode = os.getenv("TRADING_MODE", "").strip().lower() == "paper"
         is_alpaca_paper_url = "paper-api.alpaca.markets" in self._alpaca.trading_base_v2
-
         if is_paper_mode and is_alpaca_paper_url:
-            logger.info(
-                "Paper trading enabled: Bypassing fatal_if_execution_reached for alpaca.place_order "
-                "(TRADING_MODE=paper and APCA_API_BASE_URL is paper-api.alpaca.markets)"
-            )
-        else:
-            fatal_if_execution_reached(
-                operation="alpaca.place_order",
-                explicit_message=(
-                    "Runtime execution is forbidden in agent-trader-v2. "
-                    "A broker submission attempt reached AlpacaBroker.place_order; aborting."
-                ),
-                context={
-                    "broker": "alpaca",
-                    "symbol": getattr(intent, "symbol", None),
-                    "side": getattr(intent, "side", None),
-                    "qty": getattr(intent, "qty", None),
-                    "client_intent_id": getattr(intent, "client_intent_id", None),
-                    "strategy_id": getattr(intent, "strategy_id", None),
-                    "broker_account_id": getattr(intent, "broker_account_id", None),
-                    "is_paper_mode": is_paper_mode,
-                    "is_alpaca_paper_url": is_alpaca_paper_url,
-                    "alpaca_base_url": self._alpaca.trading_base_v2,
-                },
-            )
-        # --- PAPER TRADING OVERRIDE (END) ---
+            return
+        fatal_if_execution_reached(
+            operation=operation,
+            explicit_message=(
+                "Runtime execution is forbidden in agent-trader-v2. "
+                f"A broker-side action reached {operation}; aborting."
+            ),
+            context={
+                **(context or {}),
+                "broker": "alpaca",
+                "is_paper_mode": is_paper_mode,
+                "is_alpaca_paper_url": is_alpaca_paper_url,
+                "alpaca_base_url": self._alpaca.trading_base_v2,
+            },
+        )
+
+    def place_order(self, *, intent: OrderIntent) -> dict[str, Any]:
+        # Fast-fail if already halted/forbidden.
+        self._preflight_broker_side_effect(
+            operation="alpaca.place_order",
+            context={
+                "symbol": getattr(intent, "symbol", None),
+                "side": getattr(intent, "side", None),
+                "qty": getattr(intent, "qty", None),
+                "client_intent_id": getattr(intent, "client_intent_id", None),
+                "strategy_id": getattr(intent, "strategy_id", None),
+                "broker_account_id": getattr(intent, "broker_account_id", None),
+            },
+        )
         payload: dict[str, Any] = {
             "symbol": intent.symbol,
             "qty": str(intent.qty),
@@ -571,6 +583,20 @@ class AlpacaBroker:
                 raise ValueError("limit_price is required for limit orders")
             payload["limit_price"] = str(intent.limit_price)
 
+        # Re-check right before the side effect to close mid-execution races:
+        # - kill switch flips
+        # - env var mutation (TRADING_MODE, etc.)
+        self._preflight_broker_side_effect(
+            operation="alpaca.place_order",
+            context={
+                "symbol": getattr(intent, "symbol", None),
+                "side": getattr(intent, "side", None),
+                "qty": getattr(intent, "qty", None),
+                "client_intent_id": getattr(intent, "client_intent_id", None),
+                "strategy_id": getattr(intent, "strategy_id", None),
+                "broker_account_id": getattr(intent, "broker_account_id", None),
+            },
+        )
         r = requests.post(
             f"{self._base}/orders",
             headers=self._headers,
@@ -581,28 +607,15 @@ class AlpacaBroker:
         return r.json()
 
     def cancel_order(self, *, broker_order_id: str) -> dict[str, Any]:
-        # Even cancellations are broker-side actions; refuse while halted.
-        require_kill_switch_off(operation="alpaca.cancel_order")
-        # --- PAPER TRADING OVERRIDE (START) ---
-        # Allow paper trading if TRADING_MODE is 'paper' and Alpaca base URL is paper.
-        is_paper_mode = os.getenv("TRADING_MODE", "").strip().lower() == "paper"
-        is_alpaca_paper_url = "paper-api.alpaca.markets" in self._alpaca.trading_base_v2
-
-        if is_paper_mode and is_alpaca_paper_url:
-            logger.info(
-                "Paper trading enabled: Bypassing fatal_if_execution_reached for alpaca.cancel_order "
-                "(TRADING_MODE=paper and APCA_API_BASE_URL is paper-api.alpaca.markets)"
-            )
-        else:
-            fatal_if_execution_reached(
-                operation="alpaca.cancel_order",
-                explicit_message=(
-                    "Runtime execution is forbidden in agent-trader-v2. "
-                    "A broker cancel attempt reached AlpacaBroker.cancel_order; aborting."
-                ),
-                context={"broker": "alpaca", "broker_order_id": str(broker_order_id)},
-            )
-        # --- PAPER TRADING OVERRIDE (END) ---
+        self._preflight_broker_side_effect(
+            operation="alpaca.cancel_order",
+            context={"broker_order_id": str(broker_order_id)},
+        )
+        # Re-check right before side effect.
+        self._preflight_broker_side_effect(
+            operation="alpaca.cancel_order",
+            context={"broker_order_id": str(broker_order_id)},
+        )
         r = requests.delete(
             f"{self._base}/orders/{broker_order_id}",
             headers=self._headers,
@@ -615,28 +628,15 @@ class AlpacaBroker:
         return r.json()
 
     def get_order_status(self, *, broker_order_id: str) -> dict[str, Any]:
-        # Status polls are not executions, but they do hit the broker API; keep halt semantics consistent.
-        require_kill_switch_off(operation="alpaca.get_order_status")
-        # --- PAPER TRADING OVERRIDE (START) ---
-        # Allow paper trading if TRADING_MODE is 'paper' and Alpaca base URL is paper.
-        is_paper_mode = os.getenv("TRADING_MODE", "").strip().lower() == "paper"
-        is_alpaca_paper_url = "paper-api.alpaca.markets" in self._alpaca.trading_base_v2
-
-        if is_paper_mode and is_alpaca_paper_url:
-            logger.info(
-                "Paper trading enabled: Bypassing fatal_if_execution_reached for alpaca.get_order_status "
-                "(TRADING_MODE=paper and APCA_API_BASE_URL is paper-api.alpaca.markets)"
-            )
-        else:
-            fatal_if_execution_reached(
-                operation="alpaca.get_order_status",
-                explicit_message=(
-                    "Runtime execution is forbidden in agent-trader-v2. "
-                    "A broker status poll reached AlpacaBroker.get_order_status; aborting."
-                ),
-                context={"broker": "alpaca", "broker_order_id": str(broker_order_id)},
-            )
-        # --- PAPER TRADING OVERRIDE (END) ---
+        self._preflight_broker_side_effect(
+            operation="alpaca.get_order_status",
+            context={"broker_order_id": str(broker_order_id)},
+        )
+        # Re-check right before side effect.
+        self._preflight_broker_side_effect(
+            operation="alpaca.get_order_status",
+            context={"broker_order_id": str(broker_order_id)},
+        )
         r = requests.get(
             f"{self._base}/orders/{broker_order_id}",
             headers=self._headers,
