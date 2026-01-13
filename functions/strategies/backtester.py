@@ -12,10 +12,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 import pytz
 
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
-
 from .base_strategy import BaseStrategy, SignalType
 
 logger = logging.getLogger(__name__)
@@ -30,6 +26,23 @@ class BacktestConfig:
     slippage_bps: int = 1  # 0.01% slippage per trade
     commission_per_trade: Decimal = Decimal("0.00")  # Commission if any
     position_size_pct: Decimal = Decimal("1.0")  # Max 100% allocation
+
+    # ---- Fill model controls (esp. important for OPTIONS backtests) ----
+    # Slippage model:
+    # - "bps": legacy behavior (price +/- slippage_bps)
+    # - "worst_side_plus_spread": cross to worst-side (ask/bid) + spread penalty
+    fill_model: str = "worst_side_plus_spread"
+
+    # If bid/ask is missing, we synthesize a spread around `price` using these defaults.
+    equity_default_spread_pct: Decimal = Decimal("0.0005")  # 5 bps
+    equity_min_spread_abs: Decimal = Decimal("0.01")  # $0.01
+
+    options_default_spread_pct: Decimal = Decimal("0.05")  # 5% of premium (conservative)
+    options_min_spread_abs: Decimal = Decimal("0.05")  # $0.05 (typical options tick)
+
+    # Additional adverse selection penalty in units of spread.
+    # Example (BUY): fill = ask + (spread_penalty_mult * spread)
+    spread_penalty_mult: Decimal = Decimal("0.25")
     
 
 @dataclass
@@ -195,11 +208,11 @@ class Backtester:
         self.strategy = strategy
         self.config = config
         
+        # Lazy import: keep module importable in minimal CI/unit-test environments.
+        from alpaca.data.historical import StockHistoricalDataClient  # type: ignore
+
         # Initialize Alpaca client for historical data
-        self.data_client = StockHistoricalDataClient(
-            api_key=alpaca_api_key,
-            secret_key=alpaca_secret_key
-        )
+        self.data_client = StockHistoricalDataClient(api_key=alpaca_api_key, secret_key=alpaca_secret_key)
         
         # State tracking
         self.trades: List[Trade] = []
@@ -229,6 +242,10 @@ class Backtester:
             f"from {start_date.date()} to {end_date.date()}"
         )
         
+        # Lazy imports: allow importing this module without Alpaca SDK installed.
+        from alpaca.data.requests import StockBarsRequest  # type: ignore
+        from alpaca.data.timeframe import TimeFrame  # type: ignore
+
         request_params = StockBarsRequest(
             symbol_or_symbols=self.config.symbol,
             timeframe=TimeFrame.Minute,
@@ -257,27 +274,95 @@ class Backtester:
         except Exception as e:
             logger.error(f"Error fetching historical data: {e}")
             raise
+
+    def _synthesize_quote(self, *, price: Decimal, asset_class: str, metadata: Dict[str, Any]) -> Dict[str, Decimal]:
+        """
+        Build a bid/ask quote for fill modeling.
+
+        Priority:
+        1) explicit bid/ask in metadata (e.g., coming from recorded options quotes)
+        2) synthesize around `price` using configured spread defaults
+        """
+        bid_raw = metadata.get("bid")
+        ask_raw = metadata.get("ask")
+
+        bid = Decimal(str(bid_raw)) if bid_raw is not None else Decimal("0")
+        ask = Decimal(str(ask_raw)) if ask_raw is not None else Decimal("0")
+
+        if bid > 0 and ask > 0 and ask >= bid:
+            spread = ask - bid
+            mid = (ask + bid) / Decimal("2")
+            return {"bid": bid, "ask": ask, "mid": mid, "spread": spread}
+
+        # Fall back to synthetic spread.
+        if str(asset_class).upper() == "OPTIONS":
+            spread_pct = self.config.options_default_spread_pct
+            min_spread = self.config.options_min_spread_abs
+        else:
+            spread_pct = self.config.equity_default_spread_pct
+            min_spread = self.config.equity_min_spread_abs
+
+        mid = price if price > 0 else Decimal("0")
+        spread = max(mid * spread_pct, min_spread) if mid > 0 else min_spread
+        half = spread / Decimal("2")
+        bid = max(Decimal("0"), mid - half)
+        ask = max(Decimal("0"), mid + half)
+        return {"bid": bid, "ask": ask, "mid": mid, "spread": spread}
+
+    def _compute_fill_price(
+        self,
+        *,
+        action: str,
+        reference_price: Decimal,
+        asset_class: str,
+        metadata: Dict[str, Any],
+    ) -> Tuple[Decimal, Decimal]:
+        """
+        Compute executed price and signed slippage vs reference.
+
+        For fill_model="worst_side_plus_spread":
+          BUY  fill = ask + spread_penalty_mult * spread
+          SELL fill = bid - spread_penalty_mult * spread
+        """
+        action_u = str(action).upper().strip()
+        model = str(self.config.fill_model or "bps").strip().lower()
+
+        # Legacy bps model (no bid/ask needed).
+        if model == "bps":
+            slippage_pct = Decimal(str(self.config.slippage_bps)) / Decimal("10000")
+            slippage_amt = reference_price * slippage_pct
+            slippage = slippage_amt if action_u == "BUY" else -slippage_amt
+            return (reference_price + slippage, slippage)
+
+        # Spread-aware worst-side model (default).
+        q = self._synthesize_quote(price=reference_price, asset_class=asset_class, metadata=metadata)
+        bid, ask, spread = q["bid"], q["ask"], q["spread"]
+        penalty = max(Decimal("0"), self.config.spread_penalty_mult) * max(Decimal("0"), spread)
+
+        if action_u == "BUY":
+            fill = ask + penalty
+        elif action_u == "SELL":
+            fill = max(Decimal("0"), bid - penalty)
+        else:
+            fill = reference_price
+
+        slippage = fill - reference_price
+        return (fill, slippage)
     
     def calculate_slippage(self, price: Decimal, action: str) -> Decimal:
         """
-        Calculate slippage based on action.
-        
-        Slippage simulates the difference between expected and actual execution price.
-        - BUY: Pay slightly more (positive slippage)
-        - SELL: Receive slightly less (negative slippage)
-        
-        Args:
-            price: Intended execution price
-            action: BUY or SELL
-        
-        Returns:
-            Slippage amount in dollars
+        Back-compat shim: returns signed slippage vs `price` using the configured fill model.
+
+        Prefer `_compute_fill_price()` in new code (it returns both fill and slippage).
         """
-        slippage_pct = Decimal(str(self.config.slippage_bps)) / Decimal("10000")
-        slippage_amt = price * slippage_pct
-        
-        # BUY pays more, SELL receives less
-        return slippage_amt if action == "BUY" else -slippage_amt
+        fill, slip = self._compute_fill_price(
+            action=action,
+            reference_price=price,
+            asset_class="EQUITY",
+            metadata={},
+        )
+        _ = fill
+        return slip
     
     def execute_trade(
         self,
@@ -322,10 +407,16 @@ class Backtester:
             confidence = metadata.get("confidence", 0.5)
             allocation_pct = Decimal(str(confidence)) * self.config.position_size_pct
             available_capital = self.account_state.get_buying_power()
-            
-            # Calculate quantity (account for slippage in advance)
-            slippage = self.calculate_slippage(price, "BUY")
-            effective_price = price + slippage
+
+            asset_class = str(metadata.get("asset_class") or "EQUITY").upper().strip()
+
+            # Calculate quantity (account for fill model in advance)
+            effective_price, _ = self._compute_fill_price(
+                action="BUY",
+                reference_price=price,
+                asset_class=asset_class,
+                metadata=metadata,
+            )
             max_quantity = int((available_capital * allocation_pct) / effective_price)
             
             if max_quantity <= 0:
@@ -363,8 +454,13 @@ class Backtester:
         metadata: Dict[str, Any]
     ) -> Trade:
         """Execute a BUY order."""
-        slippage = self.calculate_slippage(price, "BUY")
-        effective_price = price + slippage
+        asset_class = str(metadata.get("asset_class") or "EQUITY").upper().strip()
+        effective_price, slippage = self._compute_fill_price(
+            action="BUY",
+            reference_price=price,
+            asset_class=asset_class,
+            metadata=metadata,
+        )
         commission = self.config.commission_per_trade
         
         total_cost = effective_price * Decimal(str(quantity)) + commission
@@ -395,7 +491,7 @@ class Backtester:
             timestamp=timestamp,
             action="BUY",
             symbol=symbol,
-            price=price,
+            price=effective_price,
             quantity=quantity,
             commission=commission,
             slippage=slippage,
@@ -406,8 +502,8 @@ class Backtester:
         
         self.trades.append(trade)
         logger.info(
-            f"BUY: {quantity} {symbol} @ ${price} "
-            f"(slippage: ${slippage:.4f}, total: ${total_cost:.2f})"
+            f"BUY: {quantity} {symbol} @ ${effective_price} "
+            f"(ref: ${price}, slippage: ${slippage:.4f}, total: ${total_cost:.2f})"
         )
         
         return trade
@@ -422,8 +518,13 @@ class Backtester:
         metadata: Dict[str, Any]
     ) -> Trade:
         """Execute a SELL order."""
-        slippage = self.calculate_slippage(price, "SELL")
-        effective_price = price + slippage  # slippage is negative for SELL
+        asset_class = str(metadata.get("asset_class") or "EQUITY").upper().strip()
+        effective_price, slippage = self._compute_fill_price(
+            action="SELL",
+            reference_price=price,
+            asset_class=asset_class,
+            metadata=metadata,
+        )
         commission = self.config.commission_per_trade
         
         total_proceeds = effective_price * Decimal(str(quantity)) - commission
@@ -444,7 +545,7 @@ class Backtester:
             timestamp=timestamp,
             action="SELL",
             symbol=symbol,
-            price=price,
+            price=effective_price,
             quantity=quantity,
             commission=commission,
             slippage=slippage,
@@ -455,8 +556,8 @@ class Backtester:
         
         self.trades.append(trade)
         logger.info(
-            f"SELL: {quantity} {symbol} @ ${price} "
-            f"(slippage: ${slippage:.4f}, proceeds: ${total_proceeds:.2f})"
+            f"SELL: {quantity} {symbol} @ ${effective_price} "
+            f"(ref: ${price}, slippage: ${slippage:.4f}, proceeds: ${total_proceeds:.2f})"
         )
         
         return trade
@@ -525,9 +626,21 @@ class Backtester:
             
             # Prepare market data for strategy (NO LOOK-AHEAD BIAS)
             # Only use data available at this timestamp
+            # Note: we synthesize bid/ask so strategies can downgrade on spreads and
+            # so fills can be modeled conservatively.
+            q = self._synthesize_quote(
+                price=price,
+                asset_class="EQUITY",
+                metadata={},
+            )
+            spread_pct = float(q["spread"] / q["mid"]) if q["mid"] > 0 else 0.0
             market_data = {
                 "symbol": self.config.symbol,
                 "price": float(price),
+                "bid": float(q["bid"]),
+                "ask": float(q["ask"]),
+                "spread": float(q["spread"]),
+                "spread_pct": spread_pct,
                 "timestamp": timestamp.isoformat(),
                 "greeks": self.greeks_sim.simulate_greeks(
                     underlying_price=float(price),
@@ -560,6 +673,9 @@ class Backtester:
                         reasoning=signal.reasoning,
                         metadata={
                             "confidence": signal.confidence,
+                            "asset_class": signal.asset_class.value,
+                            "bid": market_data.get("bid"),
+                            "ask": market_data.get("ask"),
                             **signal.metadata
                         }
                     )
@@ -591,7 +707,13 @@ class Backtester:
                 "symbol": self.config.symbol,
                 "start_capital": float(self.config.start_capital),
                 "lookback_days": self.config.lookback_days,
-                "slippage_bps": self.config.slippage_bps
+                "slippage_bps": self.config.slippage_bps,
+                "fill_model": self.config.fill_model,
+                "spread_penalty_mult": float(self.config.spread_penalty_mult),
+                "equity_default_spread_pct": float(self.config.equity_default_spread_pct),
+                "equity_min_spread_abs": float(self.config.equity_min_spread_abs),
+                "options_default_spread_pct": float(self.config.options_default_spread_pct),
+                "options_min_spread_abs": float(self.config.options_min_spread_abs),
             },
             "strategy": self.strategy.get_strategy_name(),
             "trades": [self._trade_to_dict(t) for t in self.trades],

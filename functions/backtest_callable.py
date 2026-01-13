@@ -99,6 +99,12 @@ def run_backtest(req: https_fn.CallableRequest) -> Dict[str, Any]:
                 - lookback_days: Days of historical data (default: 30)
                 - start_capital: Starting capital (default: 100000)
                 - slippage_bps: Slippage in basis points (default: 1)
+                - fill_model: "bps" or "worst_side_plus_spread" (default: worst_side_plus_spread)
+                - spread_penalty_mult: Additional penalty as multiple of spread (default: 0.25)
+                - equity_default_spread_pct: Synthetic spread pct when no bid/ask (default: 0.0005)
+                - equity_min_spread_abs: Synthetic min spread in $ (default: 0.01)
+                - options_default_spread_pct: Synthetic options spread pct when no bid/ask (default: 0.05)
+                - options_min_spread_abs: Synthetic options min spread in $ (default: 0.05)
                 - regime: Market regime to test (optional)
     
     Returns:
@@ -152,7 +158,13 @@ def run_backtest(req: https_fn.CallableRequest) -> Dict[str, Any]:
             symbol=backtest_config_dict.get("symbol", "SPY"),
             start_capital=Decimal(str(backtest_config_dict.get("start_capital", 100000))),
             lookback_days=backtest_config_dict.get("lookback_days", 30),
-            slippage_bps=backtest_config_dict.get("slippage_bps", 1)
+            slippage_bps=backtest_config_dict.get("slippage_bps", 1),
+            fill_model=backtest_config_dict.get("fill_model", "worst_side_plus_spread"),
+            spread_penalty_mult=Decimal(str(backtest_config_dict.get("spread_penalty_mult", "0.25"))),
+            equity_default_spread_pct=Decimal(str(backtest_config_dict.get("equity_default_spread_pct", "0.0005"))),
+            equity_min_spread_abs=Decimal(str(backtest_config_dict.get("equity_min_spread_abs", "0.01"))),
+            options_default_spread_pct=Decimal(str(backtest_config_dict.get("options_default_spread_pct", "0.05"))),
+            options_min_spread_abs=Decimal(str(backtest_config_dict.get("options_min_spread_abs", "0.05"))),
         )
         
         # Get Alpaca credentials
