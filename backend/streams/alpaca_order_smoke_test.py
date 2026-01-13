@@ -5,6 +5,7 @@ import logging
 
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.common.logging import init_structured_logging
+from backend.execution.engine import AlpacaBroker, OrderIntent
 
 init_structured_logging(service="alpaca-order-smoke-test")
 logger = logging.getLogger(__name__)
@@ -59,16 +60,23 @@ def place_test_order():
         )
 
     logger.warning("Placing test order...", extra={"event_type": "alpaca.place_test_order"})
-    payload = {
-        "symbol": "SPY",
-        "qty": "1",
-        "side": "buy",
-        "type": "market",
-        "time_in_force": "day"
-    }
-    r = requests.post(f"{BASE}/orders", headers=HEADERS, json=payload)
-    r.raise_for_status()
-    order_info = r.json()
+    broker = AlpacaBroker(request_timeout_s=10.0)
+    intent = OrderIntent(
+        strategy_id="alpaca_order_smoke_test",
+        broker_account_id="paper",
+        symbol="SPY",
+        side="buy",
+        qty=1,
+        order_type="market",
+        time_in_force="day",
+        metadata={
+            # Provide the confirm token via env if you intend to run this script.
+            # - Expected: EXECUTION_CONFIRM_TOKEN
+            # - Provided: EXECUTION_CONFIRM_TOKEN_PROVIDED
+            "source": "alpaca_order_smoke_test",
+        },
+    )
+    order_info = broker.place_order(intent=intent)
     logger.info(
         "Test order result",
         extra={

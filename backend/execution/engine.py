@@ -15,11 +15,16 @@ import requests
 
 from backend.common.env import get_env
 from backend.common.agent_mode import require_live_mode as require_trading_live_mode
+from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.kill_switch import (
     ExecutionHaltedError,
     get_kill_switch_state,
     is_kill_switch_enabled,
     require_live_mode as require_kill_switch_off,
+)
+from backend.common.execution_confirm import (
+    ExecutionConfirmTokenError,
+    require_confirm_token_for_live_execution,
 )
 from backend.common.runtime_execution_prevention import fatal_if_execution_reached
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
@@ -36,6 +41,35 @@ from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState,
 from backend.observability.risk_signals import risk_correlation_id
 
 logger = logging.getLogger(__name__)
+
+def _provided_exec_confirm_token_from_env() -> str | None:
+    """
+    Best-effort extraction of an operator-provided confirm token for non-HTTP callers.
+
+    Canonical HTTP header name is `X-Exec-Confirm-Token` (handled by services).
+    For direct/CLI/script usage, allow providing via env var.
+    """
+    # Back-compat / convenience: allow multiple env var names.
+    for name in ("EXECUTION_CONFIRM_TOKEN_PROVIDED", "X_EXEC_CONFIRM_TOKEN", "X_EXEC_CONFIRM_TOKEN_VALUE"):
+        v = os.getenv(name)
+        if v is not None and str(v).strip() != "":
+            return str(v).strip()
+    return None
+
+
+def _require_confirm_token_or_fatal(*, operation: str, provided_token: str | None, context: dict[str, Any]) -> None:
+    """
+    Enforce the execution confirm token gate, but fail with the repo-standard fatal boundary
+    to make bypass detection unambiguous.
+    """
+    try:
+        require_confirm_token_for_live_execution(provided_token=provided_token)
+    except ExecutionConfirmTokenError as e:
+        fatal_if_execution_reached(
+            operation=operation,
+            explicit_message=f"Refusing broker-side action: confirmation token gate failed ({e}).",
+            context=context,
+        )
 
 
 def _utc_now() -> datetime:
@@ -523,40 +557,27 @@ class AlpacaBroker:
         self._timeout = request_timeout_s
 
     def place_order(self, *, intent: OrderIntent) -> dict[str, Any]:
+        # Enforce the startup paper-trading hard lock and forbid unsafe agent modes.
+        # This prevents direct calls to AlpacaBroker from bypassing process startup guards.
+        enforce_agent_mode_guard()
         # Absolute safety boundary: never attempt broker-side order placement while halted.
         # This ensures retries/replays cannot bypass upstream guards.
         require_kill_switch_off(operation="alpaca.place_order")
-        # --- PAPER TRADING OVERRIDE (START) ---
-        # Allow paper trading if TRADING_MODE is 'paper' and Alpaca base URL is paper.
-        is_paper_mode = os.getenv("TRADING_MODE", "").strip().lower() == "paper"
-        is_alpaca_paper_url = "paper-api.alpaca.markets" in self._alpaca.trading_base_v2
-
-        if is_paper_mode and is_alpaca_paper_url:
-            logger.info(
-                "Paper trading enabled: Bypassing fatal_if_execution_reached for alpaca.place_order "
-                "(TRADING_MODE=paper and APCA_API_BASE_URL is paper-api.alpaca.markets)"
-            )
-        else:
-            fatal_if_execution_reached(
-                operation="alpaca.place_order",
-                explicit_message=(
-                    "Runtime execution is forbidden in agent-trader-v2. "
-                    "A broker submission attempt reached AlpacaBroker.place_order; aborting."
-                ),
-                context={
-                    "broker": "alpaca",
-                    "symbol": getattr(intent, "symbol", None),
-                    "side": getattr(intent, "side", None),
-                    "qty": getattr(intent, "qty", None),
-                    "client_intent_id": getattr(intent, "client_intent_id", None),
-                    "strategy_id": getattr(intent, "strategy_id", None),
-                    "broker_account_id": getattr(intent, "broker_account_id", None),
-                    "is_paper_mode": is_paper_mode,
-                    "is_alpaca_paper_url": is_alpaca_paper_url,
-                    "alpaca_base_url": self._alpaca.trading_base_v2,
-                },
-            )
-        # --- PAPER TRADING OVERRIDE (END) ---
+        _require_confirm_token_or_fatal(
+            operation="alpaca.place_order",
+            provided_token=str((intent.metadata or {}).get("exec_confirm_token") or "").strip()
+            or _provided_exec_confirm_token_from_env(),
+            context={
+                "broker": "alpaca",
+                "symbol": getattr(intent, "symbol", None),
+                "side": getattr(intent, "side", None),
+                "qty": getattr(intent, "qty", None),
+                "client_intent_id": getattr(intent, "client_intent_id", None),
+                "strategy_id": getattr(intent, "strategy_id", None),
+                "broker_account_id": getattr(intent, "broker_account_id", None),
+                "alpaca_base_url": self._alpaca.trading_base_v2,
+            },
+        )
         payload: dict[str, Any] = {
             "symbol": intent.symbol,
             "qty": str(intent.qty),
@@ -581,28 +602,15 @@ class AlpacaBroker:
         return r.json()
 
     def cancel_order(self, *, broker_order_id: str) -> dict[str, Any]:
+        # Enforce the startup paper-trading hard lock and forbid unsafe agent modes.
+        enforce_agent_mode_guard()
         # Even cancellations are broker-side actions; refuse while halted.
         require_kill_switch_off(operation="alpaca.cancel_order")
-        # --- PAPER TRADING OVERRIDE (START) ---
-        # Allow paper trading if TRADING_MODE is 'paper' and Alpaca base URL is paper.
-        is_paper_mode = os.getenv("TRADING_MODE", "").strip().lower() == "paper"
-        is_alpaca_paper_url = "paper-api.alpaca.markets" in self._alpaca.trading_base_v2
-
-        if is_paper_mode and is_alpaca_paper_url:
-            logger.info(
-                "Paper trading enabled: Bypassing fatal_if_execution_reached for alpaca.cancel_order "
-                "(TRADING_MODE=paper and APCA_API_BASE_URL is paper-api.alpaca.markets)"
-            )
-        else:
-            fatal_if_execution_reached(
-                operation="alpaca.cancel_order",
-                explicit_message=(
-                    "Runtime execution is forbidden in agent-trader-v2. "
-                    "A broker cancel attempt reached AlpacaBroker.cancel_order; aborting."
-                ),
-                context={"broker": "alpaca", "broker_order_id": str(broker_order_id)},
-            )
-        # --- PAPER TRADING OVERRIDE (END) ---
+        _require_confirm_token_or_fatal(
+            operation="alpaca.cancel_order",
+            provided_token=_provided_exec_confirm_token_from_env(),
+            context={"broker": "alpaca", "broker_order_id": str(broker_order_id)},
+        )
         r = requests.delete(
             f"{self._base}/orders/{broker_order_id}",
             headers=self._headers,
@@ -615,28 +623,15 @@ class AlpacaBroker:
         return r.json()
 
     def get_order_status(self, *, broker_order_id: str) -> dict[str, Any]:
+        # Enforce the startup paper-trading hard lock and forbid unsafe agent modes.
+        enforce_agent_mode_guard()
         # Status polls are not executions, but they do hit the broker API; keep halt semantics consistent.
         require_kill_switch_off(operation="alpaca.get_order_status")
-        # --- PAPER TRADING OVERRIDE (START) ---
-        # Allow paper trading if TRADING_MODE is 'paper' and Alpaca base URL is paper.
-        is_paper_mode = os.getenv("TRADING_MODE", "").strip().lower() == "paper"
-        is_alpaca_paper_url = "paper-api.alpaca.markets" in self._alpaca.trading_base_v2
-
-        if is_paper_mode and is_alpaca_paper_url:
-            logger.info(
-                "Paper trading enabled: Bypassing fatal_if_execution_reached for alpaca.get_order_status "
-                "(TRADING_MODE=paper and APCA_API_BASE_URL is paper-api.alpaca.markets)"
-            )
-        else:
-            fatal_if_execution_reached(
-                operation="alpaca.get_order_status",
-                explicit_message=(
-                    "Runtime execution is forbidden in agent-trader-v2. "
-                    "A broker status poll reached AlpacaBroker.get_order_status; aborting."
-                ),
-                context={"broker": "alpaca", "broker_order_id": str(broker_order_id)},
-            )
-        # --- PAPER TRADING OVERRIDE (END) ---
+        _require_confirm_token_or_fatal(
+            operation="alpaca.get_order_status",
+            provided_token=_provided_exec_confirm_token_from_env(),
+            context={"broker": "alpaca", "broker_order_id": str(broker_order_id)},
+        )
         r = requests.get(
             f"{self._base}/orders/{broker_order_id}",
             headers=self._headers,

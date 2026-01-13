@@ -406,6 +406,13 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
                 "required": "Provide client_intent_id or metadata.correlation_id (recommended) for replay-safe execution.",
             },
         ) from e
+    # Thread an explicit execution confirmation token into the intent metadata.
+    # This ensures downstream broker execution cannot be triggered without an operator-supplied token.
+    md = dict(req.metadata or {})
+    header_token = str(request.headers.get("X-Exec-Confirm-Token") or "").strip()
+    if header_token:
+        md["exec_confirm_token"] = header_token
+
     intent = OrderIntent(
         strategy_id=req.strategy_id,
         broker_account_id=req.broker_account_id,
@@ -416,7 +423,7 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
         time_in_force=req.time_in_force,
         limit_price=req.limit_price,
         client_intent_id=idempotency_key,
-        metadata=req.metadata,
+        metadata=md,
     )
 
     # --- Daily capital snapshot guard (no trade before/after window; no date drift) ---
