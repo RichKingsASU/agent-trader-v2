@@ -35,6 +35,13 @@ from backend.risk.capital_reservation import (
 from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
 from backend.observability.risk_signals import risk_correlation_id
 
+from backend.execution.option_liquidity import (
+    is_option_contract_symbol,
+    load_thresholds_from_env as _load_option_liquidity_thresholds,
+    extract_liquidity_metrics as _extract_option_liquidity_metrics,
+    evaluate_option_liquidity as _evaluate_option_liquidity,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -465,6 +472,59 @@ class MarketDataProvider:
                 # Forex uses different format (remove slash)
                 forex_symbol = symbol.replace("/", "")
                 endpoint = f"{self._data_base}/forex/{forex_symbol}/quotes/latest"
+            elif asset_class == "OPTIONS":
+                # Options quotes are not on the v2 data base; use v1beta1 snapshots endpoint.
+                # We intentionally use snapshots because we also need OI/volume for liquidity rules.
+                endpoint = "https://data.alpaca.markets/v1beta1/options/snapshots"
+                r = requests.get(
+                    endpoint,
+                    headers=self._headers,
+                    params={"symbols": str(symbol).strip().upper()},
+                    timeout=self._timeout,
+                )
+                r.raise_for_status()
+                data = r.json() or {}
+                snaps = data.get("snapshots") if isinstance(data.get("snapshots"), dict) else None
+                snap = (snaps or {}).get(str(symbol).strip().upper()) if snaps else None
+                if not isinstance(snap, dict):
+                    raise RuntimeError("options_snapshot_unavailable")
+
+                # Best-effort parse of Alpaca snapshot shape
+                latest_quote = snap.get("latestQuote") or snap.get("latest_quote") or {}
+                if not isinstance(latest_quote, dict):
+                    latest_quote = {}
+                bid = float(latest_quote.get("bp") or latest_quote.get("bid_price") or latest_quote.get("bidPrice") or 0.0)
+                ask = float(latest_quote.get("ap") or latest_quote.get("ask_price") or latest_quote.get("askPrice") or 0.0)
+
+                if bid > 0 and ask > 0:
+                    spread = ask - bid
+                    mid_price = (bid + ask) / 2.0
+                    spread_pct = spread / mid_price if mid_price > 0 else 0.0
+                else:
+                    spread = 0.0
+                    spread_pct = 0.0
+                    mid_price = bid or ask or 0.0
+
+                # Liquidity fields (best-effort)
+                oi = snap.get("openInterest") or snap.get("open_interest") or snap.get("oi")
+                daily_bar = snap.get("dailyBar") or snap.get("daily_bar") or {}
+                if not isinstance(daily_bar, dict):
+                    daily_bar = {}
+                vol = daily_bar.get("v") or daily_bar.get("volume") or snap.get("volume")
+
+                return {
+                    "bid": bid,
+                    "ask": ask,
+                    "spread": spread,
+                    "spread_pct": spread_pct,
+                    "mid_price": mid_price,
+                    "timestamp": latest_quote.get("t") or latest_quote.get("timestamp") or snap.get("updatedAt") or snap.get("updated_at"),
+                    # Liquidity extras (used by option liquidity gate)
+                    "open_interest": oi,
+                    "volume": vol,
+                    # Attach raw snapshot for deeper extraction if needed
+                    "option_snapshot": snap,
+                }
             else:
                 # Default to stocks
                 endpoint = f"{self._data_base}/stocks/{symbol}/quotes/latest"
@@ -2019,6 +2079,112 @@ class ExecutionEngine:
                     routing=routing_decision,
                     message=risk.reason,
                 )
+
+            # ---- Option liquidity gate (hard reject) ----
+            # Goal: prevent paper trades on illiquid/misleading option contracts.
+            # We treat "missing liquidity data" as fail-closed for OPTIONS.
+            try:
+                looks_like_option = (intent.asset_class == "OPTIONS") or is_option_contract_symbol(intent.symbol)
+                if looks_like_option:
+                    thresholds = _load_option_liquidity_thresholds()
+                    # Prefer caller-supplied metadata (deterministic) if present.
+                    md = dict(intent.metadata or {})
+                    liquidity_src: dict[str, Any] = {}
+                    if isinstance(md.get("liquidity"), dict):
+                        liquidity_src.update(md.get("liquidity") or {})
+                    # Common flattened keys
+                    for k in (
+                        "bid",
+                        "ask",
+                        "bid_price",
+                        "ask_price",
+                        "open_interest",
+                        "openInterest",
+                        "oi",
+                        "volume",
+                        "vol",
+                    ):
+                        if k in md:
+                            liquidity_src[k] = md.get(k)
+                    # Optional embedded snapshot
+                    if isinstance(md.get("option_snapshot"), dict):
+                        liquidity_src.update(md.get("option_snapshot") or {})
+
+                    # If metadata isn't sufficient, attempt a best-effort Alpaca snapshot fetch.
+                    if not liquidity_src:
+                        quote = MarketDataProvider().get_quote(symbol=intent.symbol, asset_class="OPTIONS")
+                        liquidity_src = dict(quote or {})
+
+                    metrics = _extract_option_liquidity_metrics(source=liquidity_src)
+                    allowed_liq, reason_codes, details = _evaluate_option_liquidity(
+                        symbol=intent.symbol, thresholds=thresholds, metrics=metrics
+                    )
+                    if not allowed_liq:
+                        checks = list(risk.checks or [])
+                        checks.append(
+                            {
+                                "check": "option_liquidity",
+                                "allowed": False,
+                                "reasons": list(reason_codes),
+                                **details,
+                            }
+                        )
+                        logger.warning(
+                            "exec.option_liquidity_rejected %s",
+                            json.dumps(
+                                _to_jsonable(
+                                    {
+                                        "correlation_id": corr,
+                                        "execution_id": str(intent.metadata.get("execution_id") or intent.client_intent_id or "").strip() or None,
+                                        "strategy_id": intent.strategy_id,
+                                        "symbol": intent.symbol,
+                                        "asset_class": intent.asset_class,
+                                        "reasons": list(reason_codes),
+                                        "thresholds": thresholds.to_dict(),
+                                        "metrics": metrics,
+                                    }
+                                )
+                            ),
+                        )
+                        outcome = "rejected"
+                        return ExecutionResult(
+                            status="rejected",
+                            risk=RiskDecision(allowed=False, reason="option_liquidity_rejected", checks=checks),
+                            routing=routing_decision,
+                            message=";".join(reason_codes),
+                        )
+            except Exception as e:
+                # Fail-closed for OPTIONS: if we cannot evaluate liquidity, reject.
+                try:
+                    looks_like_option = (intent.asset_class == "OPTIONS") or is_option_contract_symbol(intent.symbol)
+                except Exception:
+                    looks_like_option = False
+                if looks_like_option:
+                    checks = list(risk.checks or [])
+                    checks.append({"check": "option_liquidity", "allowed": False, "error": f"{type(e).__name__}: {e}"})
+                    logger.warning(
+                        "exec.option_liquidity_rejected %s",
+                        json.dumps(
+                            _to_jsonable(
+                                {
+                                    "correlation_id": corr,
+                                    "execution_id": str(intent.metadata.get("execution_id") or intent.client_intent_id or "").strip() or None,
+                                    "strategy_id": intent.strategy_id,
+                                    "symbol": intent.symbol,
+                                    "asset_class": intent.asset_class,
+                                    "reasons": ["liquidity_data_unavailable"],
+                                    "error": f"{type(e).__name__}: {e}",
+                                }
+                            )
+                        ),
+                    )
+                    outcome = "rejected"
+                    return ExecutionResult(
+                        status="rejected",
+                        risk=RiskDecision(allowed=False, reason="option_liquidity_data_unavailable", checks=checks),
+                        routing=routing_decision,
+                        message="liquidity_data_unavailable",
+                    )
 
             if self._dry_run:
                 outcome = "dry_run"

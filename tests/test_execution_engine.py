@@ -64,6 +64,44 @@ def test_dry_run_does_not_place_order(monkeypatch):
     assert broker.place_calls == 0
 
 
+def test_option_liquidity_rules_reject_illiquid_contract(monkeypatch):
+    """
+    Liquidity gate is enforced before any broker placement (including dry-run),
+    to prevent paper trades on illiquid/misleading option contracts.
+    """
+    monkeypatch.delenv("EXECUTION_HALTED", raising=False)
+    # Defaults (documented in option_liquidity.py):
+    # - OPTIONS_MIN_OPEN_INTEREST=100
+    # - OPTIONS_MIN_VOLUME=10
+    # - OPTIONS_MAX_SPREAD_PCT=0.25
+    broker = _BrokerStub()
+    risk = RiskManager(
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True),
+        ledger=_LedgerStub(trades_today=0),
+        positions=_PositionsStub(qty=0),
+    )
+    engine = ExecutionEngine(broker=broker, risk=risk, dry_run=True)
+
+    result = engine.execute_intent(
+        intent=OrderIntent(
+            strategy_id="s1",
+            broker_account_id="acct1",
+            symbol="SPY240119C00475000",
+            side="buy",
+            qty=1,
+            asset_class="OPTIONS",
+            metadata={
+                # Provide deterministic liquidity inputs (no network calls).
+                "liquidity": {"open_interest": 0, "volume": 0, "bid": 1.0, "ask": 2.0},
+            },
+        )
+    )
+    assert result.status == "rejected"
+    assert result.risk.reason == "option_liquidity_rejected"
+    assert broker.place_calls == 0
+    assert any((c or {}).get("check") == "option_liquidity" for c in (result.risk.checks or []))
+
+
 def test_kill_switch_rejects(monkeypatch):
     monkeypatch.setenv("EXECUTION_HALTED", "1")
     broker = _BrokerStub()
