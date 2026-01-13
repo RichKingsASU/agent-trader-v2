@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import firebase_admin
 from firebase_admin import credentials, firestore
+from backend.persistence.firebase_client import require_firestore_emulator_or_allow_prod
 
 # Sample sector data with realistic market caps and sentiment scores
 SECTOR_DATA = [
@@ -106,6 +107,7 @@ def initialize_firebase():
     if not firebase_admin._apps:
         # Try to use Application Default Credentials first
         try:
+            require_firestore_emulator_or_allow_prod(caller="scripts.seed_sentiment_data.initialize_firebase")
             firebase_admin.initialize_app()
             print("✓ Initialized Firebase with Application Default Credentials")
         except Exception as e:

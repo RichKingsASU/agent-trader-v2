@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 def _get_firestore() -> firestore.Client:
     """Get Firestore client, initializing Firebase if needed."""
     if not firebase_admin._apps:
+        from functions.utils.firestore_guard import require_firestore_emulator_or_allow_prod
+        require_firestore_emulator_or_allow_prod(caller="functions.backtest_callable._get_firestore")
         firebase_admin.initialize_app()
     return firestore.client()
 

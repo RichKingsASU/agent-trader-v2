@@ -2,9 +2,11 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from decimal import Decimal
 import uuid
+from functions.utils.firestore_guard import require_firestore_emulator_or_allow_prod
 
 # Initialize Firebase Admin
 # Assumes GOOGLE_APPLICATION_CREDENTIALS environment variable is set
+require_firestore_emulator_or_allow_prod(caller="functions.init_multitenant_db")
 firebase_admin.initialize_app()
 db = firestore.client()
 

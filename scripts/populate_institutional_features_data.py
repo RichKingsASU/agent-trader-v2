@@ -17,6 +17,14 @@ Requirements:
     - Service account credentials configured
 """
 
+import os
+import sys
+from pathlib import Path
+
+# Add project root to path for backend imports (guardrails, shared helpers)
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime, timedelta
@@ -29,6 +37,8 @@ def initialize_firebase():
     if not firebase_admin._apps:
         # Use default credentials or specify path
         # cred = credentials.Certificate('path/to/serviceAccountKey.json')
+        from backend.persistence.firebase_client import require_firestore_emulator_or_allow_prod
+        require_firestore_emulator_or_allow_prod(caller="scripts.populate_institutional_features_data.initialize_firebase")
         firebase_admin.initialize_app()
     
     return firestore.client()

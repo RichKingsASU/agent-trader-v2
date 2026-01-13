@@ -14,6 +14,9 @@ import firebase_admin
 from firebase_admin import firestore
 from firebase_functions import scheduler_fn
 
+from functions.utils.firestore_guard import require_firestore_emulator_or_allow_prod
+
+require_firestore_emulator_or_allow_prod(caller="functions.main")
 firebase_admin.initialize_app()
 logger = logging.getLogger(__name__)
 

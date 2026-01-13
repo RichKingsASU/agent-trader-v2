@@ -257,7 +257,10 @@ def _save_to_firestore(
     """
     try:
         from google.cloud import firestore
-        
+
+        from functions.utils.firestore_guard import require_firestore_emulator_or_allow_prod
+        require_firestore_emulator_or_allow_prod(caller="functions.stress_test_runner._save_to_firestore")
+
         db = firestore.Client()
         
         # Determine collection path

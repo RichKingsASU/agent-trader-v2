@@ -4,6 +4,8 @@ import json
 
 # Initialize
 if not firebase_admin._apps:
+    from functions.utils.firestore_guard import require_firestore_emulator_or_allow_prod
+    require_firestore_emulator_or_allow_prod(caller="functions.verify_pipeline_data")
     firebase_admin.initialize_app()
 
 db = firestore.client()

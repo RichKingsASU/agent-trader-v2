@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 def _get_firestore() -> firestore.Client:
     """Get or initialize Firestore client."""
     if not firebase_admin._apps:
+        from functions.utils.firestore_guard import require_firestore_emulator_or_allow_prod
+        require_firestore_emulator_or_allow_prod(caller="functions.scheduled_vix_ingestion._get_firestore")
         firebase_admin.initialize_app()
     return firestore.client()
 

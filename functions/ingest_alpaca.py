@@ -3,9 +3,11 @@ import time
 import random
 import firebase_admin
 from firebase_admin import credentials, firestore
+from functions.utils.firestore_guard import require_firestore_emulator_or_allow_prod
 
 # --- Initialize Firebase ---
 cred = credentials.ApplicationDefault()
+require_firestore_emulator_or_allow_prod(caller="functions.ingest_alpaca")
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 

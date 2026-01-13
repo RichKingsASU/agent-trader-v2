@@ -16,6 +16,7 @@ from decimal import Decimal
 from google.cloud import firestore
 
 from backend.time.nyse_time import utc_now
+from backend.persistence.firebase_client import require_firestore_emulator_or_allow_prod
 
 # Sample symbols
 SYMBOLS = ["SPY", "QQQ", "IWM", "AAPL", "TSLA", "NVDA", "MSFT", "AMZN", "GOOGL", "META"]
@@ -204,6 +205,7 @@ def seed_data(tenant_id: str, num_trades: int = 50, num_golden_sweeps: int = 5):
     print(f"📊 Generating {num_trades} regular trades + {num_golden_sweeps} golden sweeps")
     
     # Initialize Firestore
+    require_firestore_emulator_or_allow_prod(caller="scripts.seed_whale_flow_data.seed_data")
     db = firestore.Client()
     
     # Base prices for symbols

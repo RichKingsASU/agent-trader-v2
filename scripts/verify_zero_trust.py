@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "functions"))
 import firebase_admin
 from firebase_admin import firestore
 import logging
+from utils.firestore_guard import require_firestore_emulator_or_allow_prod
 
 # Configure logging
 logging.basicConfig(
@@ -40,6 +41,7 @@ class ZeroTrustVerifier:
         """Initialize Firebase and components."""
         try:
             if not firebase_admin._apps:
+                require_firestore_emulator_or_allow_prod(caller="scripts.verify_zero_trust.ZeroTrustVerifier.__init__")
                 firebase_admin.initialize_app()
             self.db = firestore.client()
             logger.info("✅ Firebase initialized")

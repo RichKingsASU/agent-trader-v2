@@ -400,6 +400,8 @@ async def main():
     # Initialize Firestore (assumes firebase_admin is initialized)
     import firebase_admin
     if not firebase_admin._apps:
+        from functions.utils.firestore_guard import require_firestore_emulator_or_allow_prod
+        require_firestore_emulator_or_allow_prod(caller="functions.strategies.example_maestro_integration.main")
         firebase_admin.initialize_app()
     
     db = firestore.client()

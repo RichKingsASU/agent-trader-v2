@@ -23,6 +23,8 @@ from functions.utils.apca_env import get_apca_env
 def _get_firestore() -> firestore.Client:
     """Initialize and return Firestore client."""
     if not firebase_admin._apps:
+        from functions.utils.firestore_guard import require_firestore_emulator_or_allow_prod
+        require_firestore_emulator_or_allow_prod(caller="functions.ticker_service._get_firestore")
         firebase_admin.initialize_app()
     return firestore.client()
 

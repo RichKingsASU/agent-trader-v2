@@ -71,6 +71,8 @@ def _firestore_client(*, project_id: str):
     from google.cloud import firestore  # type: ignore
 
     # Firestore emulator is selected via FIRESTORE_EMULATOR_HOST env var.
+    from backend.persistence.firebase_client import require_firestore_emulator_or_allow_prod
+    require_firestore_emulator_or_allow_prod(caller="scripts.data_plane_smoke_test._firestore_client")
     return firestore.Client(project=project_id)
 
 

@@ -793,6 +793,8 @@ def create_macro_coordinator(
     
     # Create Firestore client if not provided
     if db_client is None:
+        from functions.utils.firestore_guard import require_firestore_emulator_or_allow_prod
+        require_firestore_emulator_or_allow_prod(caller="functions.utils.macro_scraper.create_macro_coordinator")
         db_client = firestore.Client()
     
     # Get credentials from environment if not provided

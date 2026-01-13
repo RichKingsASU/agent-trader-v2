@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
-from google.cloud import firestore
+import firebase_admin
+from firebase_admin import firestore
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,8 @@ class RiskCheckResult:
 def _get_firestore() -> firestore.Client:
     """Get or initialize Firestore client."""
     if not firebase_admin._apps:
+        from functions.utils.firestore_guard import require_firestore_emulator_or_allow_prod
+        require_firestore_emulator_or_allow_prod(caller="functions.risk_manager._get_firestore")
         firebase_admin.initialize_app()
     return firestore.client()
 

@@ -37,6 +37,7 @@ import firebase_admin
 from firebase_admin import firestore
 
 from strategies.sector_rotation import SectorRotationStrategy
+from utils.firestore_guard import require_firestore_emulator_or_allow_prod
 
 # Configure logging
 logging.basicConfig(
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 def init_firebase() -> firestore.Client:
     """Initialize Firebase and return Firestore client."""
     if not firebase_admin._apps:
+        require_firestore_emulator_or_allow_prod(caller="scripts.run_sector_rotation_strategy.init_firebase")
         firebase_admin.initialize_app()
     return firestore.client()
 

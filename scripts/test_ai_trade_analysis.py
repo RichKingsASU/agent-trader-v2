@@ -23,6 +23,7 @@ from uuid import uuid4
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from google.cloud import firestore
+from backend.persistence.firebase_client import require_firestore_emulator_or_allow_prod
 
 
 def create_test_shadow_trade(db: firestore.Client, user_id: str = "test_user_123") -> str:
@@ -180,6 +181,7 @@ def main():
     
     # Initialize Firestore
     try:
+        require_firestore_emulator_or_allow_prod(caller="scripts.test_ai_trade_analysis.main")
         db = firestore.Client()
         print("✅ Connected to Firestore\n")
     except Exception as e:

@@ -4,6 +4,7 @@ from firebase_admin import credentials, firestore
 import google.cloud.aiplatform as aip
 import random
 import time
+from functions.utils.firestore_guard import require_firestore_emulator_or_allow_prod
 
 # --- Configuration ---
 PROJECT_ID = os.environ.get("GCLOUD_PROJECT", "agenttrader-prod")
@@ -12,6 +13,7 @@ MODEL_NAME = "gemini-1.5-pro-001"
 
 # --- Initialize Firebase ---
 cred = credentials.ApplicationDefault()
+require_firestore_emulator_or_allow_prod(caller="functions.run_gemini_analysis")
 firebase_admin.initialize_app(cred, {
     'projectId': PROJECT_ID,
 })

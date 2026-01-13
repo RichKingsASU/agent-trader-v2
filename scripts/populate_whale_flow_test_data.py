@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
+from backend.persistence.firebase_client import require_firestore_emulator_or_allow_prod
 
 # Sample tickers with varying activity levels
 TICKERS = [
@@ -125,6 +126,7 @@ def populate_test_data(num_trades: int = 30):
     if not firebase_admin._apps:
         # Try to use default credentials
         try:
+            require_firestore_emulator_or_allow_prod(caller="scripts.populate_whale_flow_test_data.populate_test_data")
             firebase_admin.initialize_app()
             print("✅ Initialized Firebase Admin SDK with default credentials")
         except Exception as e:
