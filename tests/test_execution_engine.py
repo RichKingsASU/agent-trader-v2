@@ -192,3 +192,34 @@ def test_agent_mode_halted_refuses_trading(monkeypatch):
         pass
     assert broker.place_calls == 0
 
+
+def test_per_symbol_cooldown_blocks_rapid_retrade(monkeypatch):
+    monkeypatch.delenv("EXECUTION_HALTED", raising=False)
+    monkeypatch.delenv("EXEC_KILL_SWITCH", raising=False)
+    monkeypatch.setenv("EXEC_PER_SYMBOL_TRADE_COOLDOWN_SECONDS", "600")
+    monkeypatch.setenv("EXEC_PER_SYMBOL_TRADE_COOLDOWN_ASSET_CLASSES", "OPTIONS")
+
+    broker = _BrokerStub()
+    risk = RiskManager(
+        config=RiskConfig.from_env(),
+        ledger=_LedgerStub(trades_today=0),
+        positions=_PositionsStub(qty=0),
+    )
+    engine = ExecutionEngine(broker=broker, risk=risk, dry_run=True)
+
+    intent = OrderIntent(
+        strategy_id="s1",
+        broker_account_id="acct1",
+        symbol="SPY_20260117C00500000",
+        side="buy",
+        qty=1,
+        asset_class="OPTIONS",
+    )
+
+    r1 = engine.execute_intent(intent=intent)
+    assert r1.status == "dry_run"
+
+    r2 = engine.execute_intent(intent=intent)
+    assert r2.status == "rejected"
+    assert r2.risk.reason == "symbol_cooldown_active"
+

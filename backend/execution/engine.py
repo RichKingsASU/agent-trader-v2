@@ -42,6 +42,101 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def resolve_tenant_id_from_metadata(metadata: dict[str, Any] | None) -> str | None:
+    """
+    Lightweight tenant_id resolution that avoids optional Firestore deps.
+
+    Priority:
+    - intent.metadata["tenant_id"] / ["tenantId"]
+    - EXEC_TENANT_ID / TENANT_ID env vars
+    """
+    md = dict(metadata or {})
+    tenant_id = str(md.get("tenant_id") or md.get("tenantId") or "").strip()
+    if not tenant_id:
+        tenant_id = str(os.getenv("EXEC_TENANT_ID") or os.getenv("TENANT_ID") or "").strip()
+    return tenant_id or None
+
+
+@runtime_checkable
+class ReservationHandle(Protocol):
+    """
+    Handle for an in-flight reservation.
+
+    Contract:
+    - release() MUST be safe to call multiple times
+    - release() MUST NOT raise (best-effort cleanup)
+    """
+
+    def release(self, *, outcome: str, error: str | None = None) -> None: ...
+
+
+@runtime_checkable
+class ReservationManager(Protocol):
+    """
+    Best-effort reservation manager for in-flight trade processing.
+    """
+
+    def reserve(
+        self,
+        *,
+        tenant_id: str,
+        broker_account_id: str,
+        client_intent_id: str,
+        amount_usd: float,
+        ttl_seconds: int = 300,
+        meta: dict[str, Any] | None = None,
+    ) -> ReservationHandle: ...
+
+
+@dataclass
+class NoopReservation(ReservationHandle):
+    def release(self, *, outcome: str, error: str | None = None) -> None:  # noqa: ARG002
+        return
+
+
+class BestEffortReservationManager:
+    """
+    Wrap a ReservationManager so reserve/release never raises.
+
+    This keeps ExecutionEngine usable in local/unit-test environments without optional
+    Firestore dependencies.
+    """
+
+    def __init__(self, inner: ReservationManager | None):
+        self._inner = inner
+
+    def reserve(
+        self,
+        *,
+        tenant_id: str,
+        broker_account_id: str,
+        client_intent_id: str,
+        amount_usd: float,
+        ttl_seconds: int = 300,
+        meta: dict[str, Any] | None = None,
+    ) -> ReservationHandle:
+        if self._inner is None:
+            return NoopReservation()
+        try:
+            return self._inner.reserve(
+                tenant_id=str(tenant_id),
+                broker_account_id=str(broker_account_id),
+                client_intent_id=str(client_intent_id),
+                amount_usd=float(amount_usd or 0.0),
+                ttl_seconds=int(ttl_seconds),
+                meta=dict(meta or {}),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "exec.reservation.reserve_failed tenant_id=%s broker_account_id=%s client_intent_id=%s error=%s",
+                str(tenant_id),
+                str(broker_account_id),
+                str(client_intent_id),
+                f"{type(e).__name__}: {e}",
+            )
+            return NoopReservation()
+
+
 def _iso_date_utc(dt: datetime | None = None) -> str:
     d = (dt or _utc_now()).astimezone(timezone.utc).date()
     return d.isoformat()
@@ -281,6 +376,10 @@ class RiskConfig:
     max_position_qty: float = 100.0
     max_daily_trades: int = 50
     fail_open: bool = False  # default fail-closed for safety
+    # Per-symbol cooldown to prevent rapid-fire trades (seconds). Set to 0 to disable.
+    per_symbol_trade_cooldown_seconds: int = 600
+    # Comma-separated list of asset classes to apply cooldown to (e.g. "OPTIONS" or "OPTIONS,EQUITY" or "ALL").
+    per_symbol_trade_cooldown_asset_classes: str = "OPTIONS"
 
     @staticmethod
     def from_env() -> "RiskConfig":
@@ -302,10 +401,26 @@ class RiskConfig:
                 return default
             return int(v)
 
+        # Cooldown accepts either seconds or minutes env vars; seconds wins if both are set.
+        def _cooldown_seconds(default_seconds: int) -> int:
+            raw_s = os.getenv("EXEC_PER_SYMBOL_TRADE_COOLDOWN_SECONDS")
+            if raw_s is not None and str(raw_s).strip() != "":
+                return int(float(str(raw_s).strip()))
+            raw_m = os.getenv("EXEC_PER_SYMBOL_TRADE_COOLDOWN_MINUTES")
+            if raw_m is not None and str(raw_m).strip() != "":
+                minutes = float(str(raw_m).strip())
+                return int(minutes * 60)
+            return int(default_seconds)
+
         return RiskConfig(
             max_position_qty=_float("EXEC_MAX_POSITION_QTY", 100.0),
             max_daily_trades=_int("EXEC_MAX_DAILY_TRADES", 50),
             fail_open=_bool("EXEC_RISK_FAIL_OPEN", False),
+            per_symbol_trade_cooldown_seconds=_cooldown_seconds(600),
+            per_symbol_trade_cooldown_asset_classes=str(
+                os.getenv("EXEC_PER_SYMBOL_TRADE_COOLDOWN_ASSET_CLASSES") or "OPTIONS"
+            ).strip()
+            or "OPTIONS",
         )
 
 
@@ -969,6 +1084,16 @@ class RiskManager:
         self._ledger = ledger
         self._positions = positions
 
+        # --- Per-symbol trade cooldown (local, per-process) ---
+        self._cooldown_seconds = max(int(self._config.per_symbol_trade_cooldown_seconds or 0), 0)
+        raw_classes = str(self._config.per_symbol_trade_cooldown_asset_classes or "").strip().upper()
+        if not raw_classes:
+            raw_classes = "OPTIONS"
+        self._cooldown_asset_classes = {c.strip().upper() for c in raw_classes.split(",") if c.strip()}
+        self._symbol_cooldown_lock = threading.Lock()
+        # Keyed by tenant|broker_account|asset_class|symbol -> (last_seen_mono, last_seen_iso)
+        self._symbol_last_trade: dict[str, tuple[float, str]] = {}
+
         # --- Per-agent execution budgets (silent safety) ---
         self._budgets_enabled = str(os.getenv("EXEC_AGENT_BUDGETS_ENABLED") or "false").strip().lower() in {
             "1",
@@ -1022,6 +1147,34 @@ class RiskManager:
         # Local fallback usage store (also used in unit tests). Keyed by tenant|agent|date.
         self._budget_usage_lock = threading.Lock()
         self._budget_usage_local: dict[str, _AgentBudgetUsage] = {}
+
+    def _cooldown_applies(self, *, intent: OrderIntent) -> bool:
+        if self._cooldown_seconds <= 0:
+            return False
+        if "ALL" in self._cooldown_asset_classes:
+            return True
+        return str(intent.asset_class or "").strip().upper() in self._cooldown_asset_classes
+
+    def _cooldown_key(self, *, intent: OrderIntent) -> str:
+        # "Per-symbol" in practice should be stable across strategies within the same tenant/account.
+        tenant_id = self._resolve_tenant_id_from_intent(intent=intent) or "default"
+        return f"{tenant_id}|{intent.broker_account_id}|{intent.asset_class}|{intent.symbol}"
+
+    def record_trade_execution(self, *, intent: OrderIntent) -> None:
+        """
+        Record a trade execution attempt for cooldown enforcement.
+
+        This is called by ExecutionEngine after an intent passes risk and is accepted for execution
+        (including dry-run), so subsequent intents for the same symbol are throttled.
+        """
+        intent = intent.normalized()
+        if not self._cooldown_applies(intent=intent):
+            return
+        key = self._cooldown_key(intent=intent)
+        now_mono = time.monotonic()
+        now_iso = _utc_now().isoformat()
+        with self._symbol_cooldown_lock:
+            self._symbol_last_trade[key] = (now_mono, now_iso)
 
     def _firestore_consume_budget_usage(
         self,
@@ -1581,6 +1734,43 @@ class RiskManager:
         if enabled:
             return RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
 
+        # Per-symbol cooldown (local, per-process)
+        if self._cooldown_applies(intent=intent):
+            key = self._cooldown_key(intent=intent)
+            now_mono = time.monotonic()
+            last = None
+            with self._symbol_cooldown_lock:
+                last = self._symbol_last_trade.get(key)
+            if last is not None:
+                last_mono, last_iso = last
+                elapsed_s = max(0.0, float(now_mono - float(last_mono)))
+                if elapsed_s < float(self._cooldown_seconds):
+                    retry_after_s = max(0, int(float(self._cooldown_seconds) - elapsed_s))
+                    payload = {
+                        "check": "per_symbol_cooldown",
+                        "symbol": intent.symbol,
+                        "asset_class": intent.asset_class,
+                        "broker_account_id": intent.broker_account_id,
+                        "cooldown_seconds": int(self._cooldown_seconds),
+                        "last_trade_at": last_iso,
+                        "elapsed_seconds": elapsed_s,
+                        "retry_after_seconds": retry_after_s,
+                    }
+                    checks.append(payload)
+                    logger.warning("exec.symbol_cooldown_block %s", json.dumps(_to_jsonable(payload)))
+                    return RiskDecision(allowed=False, reason="symbol_cooldown_active", checks=checks)
+            else:
+                checks.append(
+                    {
+                        "check": "per_symbol_cooldown",
+                        "symbol": intent.symbol,
+                        "asset_class": intent.asset_class,
+                        "broker_account_id": intent.broker_account_id,
+                        "cooldown_seconds": int(self._cooldown_seconds),
+                        "status": "no_recent_trade",
+                    }
+                )
+
         # Loss acceleration guard (rolling drawdown velocity)
         # Operates independently of strategy logic: pure risk gate on intent routing.
         try:
@@ -1781,6 +1971,7 @@ class ExecutionEngine:
         self._router = router  # Lazy initialization if None and smart routing enabled
         self._ledger = ledger
         self._broker_name = broker_name
+        self._reservations = BestEffortReservationManager(reservations)
         self._dry_run = bool(dry_run) if dry_run is not None else bool(
             str(get_env("EXEC_DRY_RUN", "1")).strip().lower() in {"1", "true", "yes", "on"}
         )
@@ -2022,6 +2213,13 @@ class ExecutionEngine:
 
             if self._dry_run:
                 outcome = "dry_run"
+                # Record cooldown on accepted execution (dry-run still counts as an execution attempt).
+                try:
+                    if hasattr(self._risk, "record_trade_execution"):
+                        self._risk.record_trade_execution(intent=intent)
+                except Exception:
+                    # Cooldown tracking must never block execution.
+                    logger.exception("exec.symbol_cooldown_record_failed (dry_run)")
                 return ExecutionResult(
                     status="dry_run",
                     risk=risk,
@@ -2097,6 +2295,12 @@ class ExecutionEngine:
         pre = self._assert_pre_trade(intent=intent, trace_id=trace_id)
 
         broker_order = self._broker.place_order(intent=intent)
+        # Record cooldown once broker placement succeeds.
+        try:
+            if hasattr(self._risk, "record_trade_execution"):
+                self._risk.record_trade_execution(intent=intent)
+        except Exception:
+            logger.exception("exec.symbol_cooldown_record_failed (placed)")
         broker_order_id = str(broker_order.get("id") or "").strip() or None
         self._assert_post_trade_order_response(
             intent=intent, broker_order=broker_order, broker_order_id=broker_order_id, trace_id=trace_id
