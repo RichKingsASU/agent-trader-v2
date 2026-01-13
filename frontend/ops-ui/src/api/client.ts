@@ -13,9 +13,18 @@ function normalizeBaseUrl(raw: string): string {
 }
 
 function getBaseUrl(): string {
-  const runtime = window.__OPS_UI_CONFIG__?.missionControlBaseUrl;
-  const env = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MISSION_CONTROL_BASE_URL;
-  return normalizeBaseUrl(runtime || env || "http://agenttrader-mission-control");
+  // Prefer runtime config (container-injected `config.js`).
+  // Support both names during migration: __OPS_UI_CONFIG__ (legacy) and __OPS_DASHBOARD_CONFIG__ (current).
+  const runtime =
+    window.__OPS_UI_CONFIG__?.missionControlBaseUrl || window.__OPS_DASHBOARD_CONFIG__?.missionControlBaseUrl;
+
+  // Build-time env (Vite).
+  const env = import.meta.env.VITE_MISSION_CONTROL_BASE_URL;
+
+  // Safe default for local dev: same-origin proxy path (see vite.config.ts).
+  const fallback = import.meta.env.DEV ? "/mission-control" : "";
+
+  return normalizeBaseUrl(runtime || env || fallback);
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
