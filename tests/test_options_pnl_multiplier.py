@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 import pytest
 
 from backend.ledger.models import LedgerTrade
-from backend.ledger.pnl import compute_fifo_pnl
+from backend.ledger.pnl import compute_fifo_pnl, compute_pnl_fifo
 from backend.ledger.options_attribution import GreeksSnapshot, attribute_option_mtm
 
 
@@ -58,6 +58,32 @@ def test_options_multiplier_inferred_from_occ_symbol_realized() -> None:
     # Realized = (1.49 - 1.01) * 1 * 100 = 48.0
     assert row.realized_pnl == pytest.approx(48.0)
     assert row.unrealized_pnl == pytest.approx(0.0)
+
+    # Also validate the dict-based FIFO engine (realized-only) supports multiplier correctly.
+    dict_trades = [
+        {
+            "trade_id": "t1",
+            "symbol": sym,
+            "side": "buy",
+            "qty": 1,
+            "price": 1.00,
+            "ts": _dt("2025-12-30T14:00:00Z"),
+            "fees": 1.00,
+            "multiplier": 100.0,
+        },
+        {
+            "trade_id": "t2",
+            "symbol": sym,
+            "side": "sell",
+            "qty": 1,
+            "price": 1.50,
+            "ts": _dt("2025-12-30T14:10:00Z"),
+            "fees": 1.00,
+            "multiplier": 100.0,
+        },
+    ]
+    res = compute_pnl_fifo(dict_trades, trade_id_field="trade_id", sort_by_ts=True)
+    assert res.realized_pnl_net == pytest.approx(48.0)
 
 
 def test_options_multiplier_applies_to_unrealized_mtm() -> None:

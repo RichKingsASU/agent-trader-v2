@@ -35,6 +35,7 @@ class _Lot:
     qty: float
     price: float
     fees_per_unit: float
+    multiplier: float
     ts: datetime
     trade_id: str
 
@@ -143,13 +144,21 @@ def compute_pnl_fifo(
         price = _req_num_pos(t, "price")
         ts = _req_ts(t, "ts")
         fees = _req_num_nonneg(t, "fees")
+        mult_raw = t.get("multiplier", 1.0)
+        if not isinstance(mult_raw, (int, float)) or float(mult_raw) <= 0:
+            raise ValueError("trade[multiplier] must be a positive number")
+        multiplier = float(mult_raw)
 
         trade_id = t.get(trade_id_field)
         if not isinstance(trade_id, str) or not trade_id.strip():
             trade_id = f"t_{i}"
         trade_id = trade_id.strip()
 
-        fees_per_unit = fees / qty
+        # Allocate fees across the full economic size:
+        # - equities: qty shares, multiplier=1
+        # - options: qty contracts, multiplier=100 (typical)
+        # fees_per_unit is per *quoted* unit (e.g. $/share premium unit).
+        fees_per_unit = fees / (qty * multiplier)
         realized_gross = 0.0
         realized_fees = 0.0
 
@@ -158,16 +167,27 @@ def compute_pnl_fifo(
             # Close shorts first (buy-to-cover), then open/extend long inventory.
             while remaining > 0 and shorts:
                 lot = shorts[0]
+                if float(lot.multiplier) != multiplier:
+                    raise ValueError("Mixed multipliers within one symbol inventory are not supported")
                 match = min(remaining, lot.qty)
-                realized_gross += (lot.price - price) * match
-                realized_fees += (lot.fees_per_unit + fees_per_unit) * match
+                realized_gross += (lot.price - price) * match * multiplier
+                realized_fees += (lot.fees_per_unit + fees_per_unit) * match * multiplier
                 lot.qty -= match
                 remaining -= match
                 if lot.qty <= 0:
                     shorts.popleft()
 
             if remaining > 0:
-                longs.append(_Lot(qty=remaining, price=price, fees_per_unit=fees_per_unit, ts=ts, trade_id=trade_id))
+                longs.append(
+                    _Lot(
+                        qty=remaining,
+                        price=price,
+                        fees_per_unit=fees_per_unit,
+                        multiplier=multiplier,
+                        ts=ts,
+                        trade_id=trade_id,
+                    )
+                )
 
             position_qty += qty
 
@@ -175,16 +195,27 @@ def compute_pnl_fifo(
             # Close longs first (sell-to-close), then open/extend short inventory.
             while remaining > 0 and longs:
                 lot = longs[0]
+                if float(lot.multiplier) != multiplier:
+                    raise ValueError("Mixed multipliers within one symbol inventory are not supported")
                 match = min(remaining, lot.qty)
-                realized_gross += (price - lot.price) * match
-                realized_fees += (lot.fees_per_unit + fees_per_unit) * match
+                realized_gross += (price - lot.price) * match * multiplier
+                realized_fees += (lot.fees_per_unit + fees_per_unit) * match * multiplier
                 lot.qty -= match
                 remaining -= match
                 if lot.qty <= 0:
                     longs.popleft()
 
             if remaining > 0:
-                shorts.append(_Lot(qty=remaining, price=price, fees_per_unit=fees_per_unit, ts=ts, trade_id=trade_id))
+                shorts.append(
+                    _Lot(
+                        qty=remaining,
+                        price=price,
+                        fees_per_unit=fees_per_unit,
+                        multiplier=multiplier,
+                        ts=ts,
+                        trade_id=trade_id,
+                    )
+                )
 
             position_qty -= qty
 
@@ -213,6 +244,7 @@ def compute_pnl_fifo(
             "qty": l.qty,
             "price": l.price,
             "fees_per_unit": l.fees_per_unit,
+            "multiplier": l.multiplier,
             "ts": l.ts,
             "trade_id": l.trade_id,
         }
