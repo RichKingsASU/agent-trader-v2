@@ -45,6 +45,8 @@ class LedgerTrade:
     slippage: float = 0.0
 
     account_id: Optional[str] = None
+    asset_class: Optional[str] = None  # "EQUITY" | "OPTIONS" | "CRYPTO" | "FOREX" (best-effort)
+    multiplier: float = 1.0  # e.g. 100 for US equity options; 1 for equities
 
     def __post_init__(self) -> None:
         if not self.tenant_id:
@@ -72,6 +74,26 @@ class LedgerTrade:
             raise ValueError("fees must be >= 0")
         if self.slippage < 0:
             raise ValueError("slippage must be >= 0")
+
+        # Options P&L must be multiplied by contract size (usually 100).
+        # We infer multiplier=100 when either:
+        # - asset_class explicitly indicates OPTIONS, OR
+        # - the symbol looks like an OCC-style contract symbol (e.g. SPY251230C00500000).
+        mult = float(self.multiplier)
+        if mult <= 0:
+            raise ValueError("multiplier must be > 0")
+        ac = (self.asset_class or "").strip().upper()
+        sym_u = sym  # already normalized
+        looks_like_occ = (
+            len(sym_u) >= 15
+            and any(c in sym_u for c in ("C", "P"))
+            and sym_u[-9:-8] in ("C", "P")  # ...{C|P}{strike8}
+            and sym_u[-8:].isdigit()
+            and sym_u[-15:-9].isdigit()  # yymmdd
+        )
+        if mult == 1.0 and (ac == "OPTIONS" or looks_like_occ):
+            mult = 100.0
+            object.__setattr__(self, "multiplier", mult)
 
         object.__setattr__(self, "ts", _as_utc(self.ts))
 

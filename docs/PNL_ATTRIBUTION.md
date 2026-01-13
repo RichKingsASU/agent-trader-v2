@@ -119,6 +119,46 @@ This implementation uses **FIFO (first-in-first-out)** lots per `(tenant_id, uid
 
 This makes the costs automatically flow into realized/unrealized P&L in a consistent way.
 
+## Options: premium + 100x contract multiplier
+
+Options fills are typically quoted as **premium per underlying share**, while the position size is in **contracts**.
+US equity/index options are usually **100 shares per contract**, so P&L must be multiplied by **100**.
+
+In code we support this by carrying a `multiplier` on `LedgerTrade` (default `1.0`), and we **infer**
+`multiplier=100` when:
+
+- `asset_class == "OPTIONS"`, or
+- the symbol looks like an OCC-style contract symbol (e.g. `SPY251230C00500000`)
+
+This ensures:
+
+- **premium paid/received** is correctly reflected in cost basis (opening lots)
+- **realized close** P&L is correct when closing lots (sell-to-close / buy-to-cover)
+- **unrealized MTM** scales correctly by contract size
+
+### Quick realized example (long call)
+
+BUY 1 `SPY251230C00500000` @ 1.00, fees=1.00  
+SELL 1 `SPY251230C00500000` @ 1.50, fees=1.00
+
+- Effective buy: \( 1.00 + \frac{1}{1 \times 100} = 1.01 \)
+- Effective sell: \( 1.50 - \frac{1}{1 \times 100} = 1.49 \)
+- **Realized P&L**: \( (1.49 - 1.01) \times 1 \times 100 = 48.00 \)
+
+## Options MTM greek attribution (delta/gamma/vega/theta + residual)
+
+For explainability, we provide a deterministic decomposition of **observed option price changes**
+into greek-style components using two snapshots (start/end):
+
+- Total MTM: \( \Delta P \times q \times m \)
+- Delta: \( \Delta \times \Delta S \times q \times m \)
+- Gamma: \( \frac{1}{2}\Gamma (\Delta S)^2 \times q \times m \)
+- Vega: \( \nu \times \Delta IV \times q \times m \)
+- Theta: \( \Theta \times \Delta t_\text{days} \times q \times m \)
+- Residual: Total - (Delta+Gamma+Vega+Theta)
+
+Code pointer: `backend/ledger/options_attribution.py`
+
 ## Worked example (deterministic)
 
 Tenant `t1`, user `u1`, strategy `s1`, run `r1`, symbol `AAPL`:

@@ -238,6 +238,7 @@ from .models import LedgerTrade
 class Lot:
     qty: float
     price: float  # effective price including fees/slippage allocation (USD/share)
+    multiplier: float  # e.g. 100 for options, 1 for equities
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,7 +272,11 @@ def _effective_price_per_unit(trade: LedgerTrade) -> float:
     - SELL: proceeds decrease effective price: px_eff = px - cost/qty
     """
     cost = float(trade.fees or 0.0) + float(trade.slippage or 0.0)
-    per_unit = cost / float(trade.qty)
+    # For options, `price` is typically quoted per underlying share; total cashflow is:
+    #   price * qty_contracts * multiplier
+    # Fees/slippage are in USD total, so we allocate them per *quoted unit*:
+    #   per_unit_cost = cost / (qty * multiplier)
+    per_unit = cost / (float(trade.qty) * float(trade.multiplier or 1.0))
     if trade.side == "buy":
         return float(trade.price) + per_unit
     return float(trade.price) - per_unit
@@ -322,6 +327,9 @@ def compute_fifo_pnl(
 
         qty = float(t.qty)
         px_eff = _effective_price_per_unit(t)
+        mult = float(getattr(t, "multiplier", 1.0) or 1.0)
+        if mult <= 0:
+            raise ValueError("trade.multiplier must be > 0")
 
         if t.side == "buy":
             qty_to_buy = qty
@@ -329,8 +337,10 @@ def compute_fifo_pnl(
             # Cover shorts first (FIFO).
             while qty_to_buy > 0 and short_lots:
                 lot = short_lots[0]
+                if float(lot.multiplier) != mult:
+                    raise ValueError("Mixed multipliers within one symbol group are not supported")
                 cover = min(qty_to_buy, lot.qty)
-                realized += (lot.price - px_eff) * cover
+                realized += (lot.price - px_eff) * cover * mult
                 lot.qty -= cover
                 qty_to_buy -= cover
                 if lot.qty <= 0:
@@ -338,7 +348,7 @@ def compute_fifo_pnl(
 
             # Remaining becomes new long lot.
             if qty_to_buy > 0:
-                long_lots.append(Lot(qty=qty_to_buy, price=px_eff))
+                long_lots.append(Lot(qty=qty_to_buy, price=px_eff, multiplier=mult))
 
         else:  # sell
             qty_to_sell = qty
@@ -346,8 +356,10 @@ def compute_fifo_pnl(
             # Close longs first (FIFO).
             while qty_to_sell > 0 and long_lots:
                 lot = long_lots[0]
+                if float(lot.multiplier) != mult:
+                    raise ValueError("Mixed multipliers within one symbol group are not supported")
                 close = min(qty_to_sell, lot.qty)
-                realized += (px_eff - lot.price) * close
+                realized += (px_eff - lot.price) * close * mult
                 lot.qty -= close
                 qty_to_sell -= close
                 if lot.qty <= 0:
@@ -355,7 +367,7 @@ def compute_fifo_pnl(
 
             # Remaining becomes new short lot.
             if qty_to_sell > 0:
-                short_lots.append(Lot(qty=qty_to_sell, price=px_eff))
+                short_lots.append(Lot(qty=qty_to_sell, price=px_eff, multiplier=mult))
 
         state["realized"] = realized
 
@@ -369,8 +381,8 @@ def compute_fifo_pnl(
         unreal = 0.0
         if isinstance(mark, (int, float)):
             m = float(mark)
-            unreal += sum((m - lot.price) * lot.qty for lot in long_lots)
-            unreal += sum((lot.price - m) * lot.qty for lot in short_lots)
+            unreal += sum((m - lot.price) * lot.qty * float(lot.multiplier) for lot in long_lots)
+            unreal += sum((lot.price - m) * lot.qty * float(lot.multiplier) for lot in short_lots)
 
         position_qty = sum(lot.qty for lot in long_lots) - sum(lot.qty for lot in short_lots)
         out.append(
