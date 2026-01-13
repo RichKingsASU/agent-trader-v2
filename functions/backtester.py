@@ -229,7 +229,8 @@ class Backtester:
         else:
             self.start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
         
-        # Alpaca client
+        # Alpaca credentials (client is created lazily in fetch_data so tests can run
+        # without alpaca-py installed when fetch_data is mocked).
         api_key = alpaca_api_key or os.getenv("APCA_API_KEY_ID")
         secret_key = alpaca_secret_key or os.getenv("APCA_API_SECRET_KEY")
         
@@ -238,11 +239,9 @@ class Backtester:
                 "Alpaca API credentials required. Set APCA_API_KEY_ID and "
                 "APCA_API_SECRET_KEY environment variables or pass as parameters."
             )
-
-        # Lazy import: keep pure account/position models usable without Alpaca SDK installed.
-        from alpaca.data.historical import StockHistoricalDataClient  # type: ignore
-
-        self.data_client = StockHistoricalDataClient(api_key, secret_key)
+        self._alpaca_api_key = api_key
+        self._alpaca_secret_key = secret_key
+        self.data_client: Optional[Any] = None
         
         # Results storage
         self.account: Optional[BacktestAccount] = None
@@ -263,8 +262,12 @@ class Backtester:
         logger.info(f"Fetching historical data for {self.symbol}...")
 
         # Lazy import: keep module importable in minimal CI environments.
+        from alpaca.data.historical import StockHistoricalDataClient  # type: ignore
         from alpaca.data.requests import StockBarsRequest  # type: ignore
         from alpaca.data.timeframe import TimeFrame  # type: ignore
+
+        if self.data_client is None:
+            self.data_client = StockHistoricalDataClient(self._alpaca_api_key, self._alpaca_secret_key)
 
         request = StockBarsRequest(
             symbol_or_symbols=self.symbol,

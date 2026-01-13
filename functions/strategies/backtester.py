@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
-import pytz
+from datetime import timezone
 
 from .base_strategy import BaseStrategy, SignalType
 
@@ -276,7 +276,7 @@ class Backtester:
         1) config.start_date/config.end_date (if provided)
         2) now - lookback_days .. now
         """
-        utc = pytz.UTC
+        utc = timezone.utc
 
         def _parse_date(s: str) -> datetime:
             s = str(s).strip()
@@ -549,7 +549,7 @@ class Backtester:
         
         # Initialize account state
         self.account_state = AccountState(
-            timestamp=datetime.now(pytz.UTC),
+            timestamp=datetime.now(timezone.utc),
             cash=self.config.start_capital,
             equity=self.config.start_capital
         )

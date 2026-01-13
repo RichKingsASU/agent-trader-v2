@@ -46,17 +46,30 @@ class TradingSignal:
     def __init__(
         self,
         signal_type: SignalType,
-        symbol: str,
+        symbol: Optional[str] = None,
         asset_class: AssetClass = AssetClass.EQUITY,
         confidence: float = 0.0,
         reasoning: str = "",
         estimated_slippage: Optional[float] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
     ):
         self.signal_type = signal_type
-        self.symbol = symbol.upper().strip()
+        # Backwards compatibility:
+        # Older code/tests used TradingSignal(signal_type, confidence, reasoning)
+        # Newer code prefers explicit symbol/asset_class.
+        #
+        # If the second positional arg is a float (confidence) and the third positional
+        # arg (asset_class param) is actually a string (reasoning), interpret it as the
+        # legacy calling convention.
+        if isinstance(symbol, (int, float)) and isinstance(asset_class, str):
+            confidence = float(symbol)
+            reasoning = str(asset_class)
+            asset_class = AssetClass.EQUITY
+            symbol = None
+
+        self.symbol = (symbol or "UNKNOWN").upper().strip()
         self.asset_class = asset_class
-        self.confidence = max(0.0, min(1.0, confidence))  # Clamp between 0 and 1
+        self.confidence = max(0.0, min(1.0, float(confidence)))  # Clamp between 0 and 1
         self.reasoning = reasoning
         self.estimated_slippage = estimated_slippage
         self.metadata = metadata or {}

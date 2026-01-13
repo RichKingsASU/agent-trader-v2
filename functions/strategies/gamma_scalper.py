@@ -9,10 +9,10 @@ hedging flows. It implements:
 """
 
 import logging
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
-import pytz
+from zoneinfo import ZoneInfo
 
 from .base_strategy import BaseStrategy, SignalType, TradingSignal
 
@@ -29,7 +29,7 @@ class GammaScalper(BaseStrategy):
     # Default configuration
     DEFAULT_HEDGING_THRESHOLD = Decimal("0.15")
     MARKET_CLOSE_TIME = time(15, 45, 0)  # 15:45 EST
-    EST_TIMEZONE = pytz.timezone("America/New_York")
+    EST_TIMEZONE = ZoneInfo("America/New_York")
     
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """
@@ -84,7 +84,16 @@ class GammaScalper(BaseStrategy):
         """
         try:
             # Step 1: Time-Based Exit Rule
-            current_time = datetime.now(self.EST_TIMEZONE).time()
+            # Use the event timestamp for backtests (no wall-clock dependency).
+            ts = market_data.get("timestamp")
+            if ts:
+                dt = datetime.fromisoformat(str(ts))
+                if dt.tzinfo is None:
+                    # Assume UTC if missing tz
+                    dt = dt.replace(tzinfo=timezone.utc)
+                current_time = dt.astimezone(self.EST_TIMEZONE).time()
+            else:
+                current_time = datetime.now(self.EST_TIMEZONE).time()
             if current_time >= self.MARKET_CLOSE_TIME:
                 signal = TradingSignal(
                     signal_type=SignalType.CLOSE_ALL,
