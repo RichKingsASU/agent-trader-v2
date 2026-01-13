@@ -81,7 +81,7 @@ PY
 then
   echo "Installing Python dependencies..." >&2
   python3 -m pip install -U pip >/dev/null
-  python3 -m pip install -r requirements.txt -r backend/risk_service/requirements.txt
+  python3 -m pip install -r backend/requirements.txt
 fi
 
 BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
