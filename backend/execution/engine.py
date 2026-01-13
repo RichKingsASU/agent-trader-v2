@@ -7,7 +7,7 @@ import time
 import threading
 import uuid
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict, is_dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional, Protocol, runtime_checkable, Mapping
 
@@ -1797,6 +1797,11 @@ class RiskManager:
                     },
                 )
 
+        # Side-effecting per-agent budget enforcement (must run after non-budget checks pass).
+        budget_reject = self._consume_agent_budget_or_reject(intent=intent, checks=checks)
+        if budget_reject is not None:
+            return budget_reject
+
         return RiskDecision(allowed=True, reason="ok", checks=checks)
 
 
@@ -1878,7 +1883,6 @@ class ExecutionEngine:
         intent = intent.normalized()
 
         # --- In-flight reservation (best-effort) ---
-        # Reserve *during processing only* (not a long-lived open-order hold).
         tenant_id = resolve_tenant_id_from_metadata(intent.metadata)
         reservation: ReservationHandle = NoopReservation()
         try:
@@ -1938,10 +1942,16 @@ class ExecutionEngine:
 
         outcome: str = "unknown"
         release_error: str | None = None
-        # NOTE: this is intentionally not a try/except. We want exceptions to
-        # propagate (fail-closed), and we rely on explicit critical logging at
-        # the point of failure.
-        if True:
+
+        routing_decision: SmartRoutingDecision | None = None
+        risk: RiskDecision | None = None
+
+        # Defaults to avoid NameError in optional branches.
+        reserved = False
+        tenant_id_for_reservation: str | None = None
+        uid_for_reservation: str | None = None
+
+        try:
             # Replay marker (best-effort only)
             try:
                 logger.info(
@@ -1960,7 +1970,6 @@ class ExecutionEngine:
             except Exception:
                 logger.exception("exec.replay_intent_received_log_failed")
 
-            routing_decision: SmartRoutingDecision | None = None
             if self._enable_smart_routing:
                 if self._router is None:
                     self._router = SmartRouter()
@@ -1979,32 +1988,6 @@ class ExecutionEngine:
                         )
                     ),
                 )
-                try:
-                    logger.info(
-                        "%s",
-                        dumps_replay_event(
-                            build_replay_event(
-                                event="decision_checkpoint",
-                                component="backend.execution.engine",
-                                data={
-                                    "checkpoint": "smart_routing",
-                                    "should_execute": routing_decision.should_execute,
-                                    "reason": routing_decision.reason,
-                                    "spread_pct": routing_decision.spread_pct,
-                                    "estimated_slippage": routing_decision.estimated_slippage,
-                                    "downgraded": routing_decision.downgraded,
-                                    "symbol": intent.symbol,
-                                    "asset_class": intent.asset_class,
-                                },
-                                trace_id=trace_id,
-                                agent_name=os.getenv("AGENT_NAME") or "execution-engine",
-                                run_id=str(intent.metadata.get("run_id") or "").strip() or None,
-                            )
-                        ),
-                    )
-                except Exception:
-                    logger.exception("exec.replay_smart_routing_checkpoint_log_failed")
-
                 if not routing_decision.should_execute:
                     risk = RiskDecision(allowed=False, reason="smart_routing_downgrade")
                     outcome = "downgraded"
@@ -2016,17 +1999,15 @@ class ExecutionEngine:
                     )
 
             risk = self._risk.validate(intent=intent)
-            corr = risk_correlation_id(
-                correlation_id=str(intent.metadata.get("correlation_id") or "").strip() or None
-            )
-            execution_id = str(intent.metadata.get("execution_id") or intent.client_intent_id or "").strip() or None
             logger.info(
                 "exec.risk_decision %s",
                 json.dumps(
                     _to_jsonable(
                         {
-                            "correlation_id": corr,
-                            "execution_id": execution_id,
+                            "correlation_id": risk_correlation_id(
+                                correlation_id=str(intent.metadata.get("correlation_id") or "").strip() or None
+                            ),
+                            "execution_id": str(intent.metadata.get("execution_id") or intent.client_intent_id or "").strip() or None,
                             "strategy_id": intent.strategy_id,
                             "risk_decision": "ALLOW" if risk.allowed else "DENY",
                             "allowed": risk.allowed,
@@ -2036,57 +2017,14 @@ class ExecutionEngine:
                     )
                 ),
             )
-            # Best-effort: propagate key risk-state for deterministic pre-trade risk guard inputs.
-            # This avoids extra DB reads later and keeps the risk guard boundary explicit.
-            try:
-                for c in list(risk.checks or []):
-                    if c.get("check") == "max_daily_trades" and c.get("trades_today") is not None:
-                        intent.metadata["_risk_trades_today"] = int(c.get("trades_today"))
-                    if c.get("check") == "max_position_size" and c.get("current_qty") is not None:
-                        intent.metadata["_risk_current_position_qty"] = float(c.get("current_qty"))
-            except Exception:
-                pass
-            try:
-                logger.info(
-                    "%s",
-                    dumps_replay_event(
-                        build_replay_event(
-                            event="decision_checkpoint",
-                            component="backend.execution.engine",
-                            data={
-                                "checkpoint": "risk",
-                                "allowed": risk.allowed,
-                                "reason": risk.reason,
-                                "symbol": intent.symbol,
-                                "strategy_id": intent.strategy_id,
-                                "checks": risk.checks,
-                            },
-                            trace_id=trace_id,
-                            agent_name=os.getenv("AGENT_NAME") or "execution-engine",
-                            run_id=str(intent.metadata.get("run_id") or "").strip() or None,
-                        )
-                    ),
-                )
-            except Exception:
-                logger.exception("exec.replay_risk_checkpoint_log_failed")
 
             if not risk.allowed:
                 outcome = "rejected"
-                return ExecutionResult(
-                    status="rejected",
-                    risk=risk,
-                    routing=routing_decision,
-                    message=risk.reason,
-                )
+                return ExecutionResult(status="rejected", risk=risk, routing=routing_decision, message=risk.reason)
 
             if self._dry_run:
                 outcome = "dry_run"
-                return ExecutionResult(
-                    status="dry_run",
-                    risk=risk,
-                    routing=routing_decision,
-                    message="dry_run_enabled",
-                )
+                return ExecutionResult(status="dry_run", risk=risk, routing=routing_decision, message="dry_run_enabled")
 
             # Defense-in-depth: do not place broker orders unless explicitly authorized.
             require_trading_live_mode(action="broker order placement")
@@ -2098,141 +2036,104 @@ class ExecutionEngine:
                 checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
                 halted_risk = RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
                 outcome = "rejected"
-                return ExecutionResult(
-                    status="rejected",
-                    risk=halted_risk,
-                    routing=routing_decision,
-                    message="kill_switch_enabled",
-                )
+                return ExecutionResult(status="rejected", risk=halted_risk, routing=routing_decision, message="kill_switch_enabled")
 
-        # ---- Idempotency guard (engine-level, replay-safe) ----
-        # This prevents duplicate broker submissions if the same intent is processed twice.
-        try:
-            tenant_id = None
+            # ---- Idempotency guard (engine-level, replay-safe) ----
             try:
-                # Reuse the ledger's tenant resolution rules (metadata/env).
-                tenant_id = _FirestoreLedger()._resolve_tenant_id(intent=intent)  # type: ignore[attr-defined]
-            except Exception:
-                tenant_id = str(os.getenv("EXEC_TENANT_ID") or os.getenv("TENANT_ID") or "").strip() or None
+                tenant_id2 = None
+                try:
+                    tenant_id2 = _FirestoreLedger()._resolve_tenant_id(intent=intent)  # type: ignore[attr-defined]
+                except Exception:
+                    tenant_id2 = str(os.getenv("EXEC_TENANT_ID") or os.getenv("TENANT_ID") or "").strip() or None
 
-            if tenant_id:
-                from backend.persistence.idempotency_store import FirestoreIdempotencyStore
+                if tenant_id2:
+                    from backend.persistence.idempotency_store import FirestoreIdempotencyStore
 
-                idem = FirestoreIdempotencyStore(
-                    project_id=os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or None
-                )
-                acquired, rec = idem.begin(
-                    tenant_id=tenant_id,
-                    scope="execution.broker_place_order",
-                    key=str(intent.client_intent_id),
-                    payload={"symbol": intent.symbol, "side": intent.side, "qty": intent.qty},
-                )
-                if not acquired:
-                    if rec.outcome and isinstance(rec.outcome.get("broker_order"), dict):
-                        broker_order = rec.outcome.get("broker_order")
-                        broker_order_id = str(broker_order.get("id") or "").strip() or None
+                    idem = FirestoreIdempotencyStore(
+                        project_id=os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or None
+                    )
+                    acquired, rec = idem.begin(
+                        tenant_id=tenant_id2,
+                        scope="execution.broker_place_order",
+                        key=str(intent.client_intent_id),
+                        payload={"symbol": intent.symbol, "side": intent.side, "qty": intent.qty},
+                    )
+                    if not acquired:
+                        outcome = "accepted"
+                        if rec.outcome and isinstance(rec.outcome.get("broker_order"), dict):
+                            broker_order = rec.outcome.get("broker_order")
+                            broker_order_id = str(broker_order.get("id") or "").strip() or None
+                            return ExecutionResult(
+                                status=str(rec.outcome.get("status") or "placed"),
+                                risk=risk,
+                                routing=routing_decision,
+                                broker_order_id=broker_order_id,
+                                broker_order=broker_order,
+                                message="duplicate_intent_idempotent_return",
+                            )
                         return ExecutionResult(
-                            status=str(rec.outcome.get("status") or "placed"),
+                            status="accepted",
                             risk=risk,
                             routing=routing_decision,
-                            broker_order_id=broker_order_id,
-                            broker_order=broker_order,
-                            message="duplicate_intent_idempotent_return",
+                            message="duplicate_intent_in_progress",
                         )
-                    return ExecutionResult(
-                        status="accepted",
-                        risk=risk,
-                        routing=routing_decision,
-                        message="duplicate_intent_in_progress",
-                    )
-            else:
-                logger.warning("exec.idempotency_disabled missing_tenant_id client_intent_id=%s", intent.client_intent_id)
-        except Exception:
-            # Idempotency is best-effort; never break safety checks.
-            logger.exception("exec.idempotency_guard_failed")
+                else:
+                    logger.warning("exec.idempotency_disabled missing_tenant_id client_intent_id=%s", intent.client_intent_id)
+            except Exception:
+                logger.exception("exec.idempotency_guard_failed")
 
-        # ---- Pre-trade assertions (fatal) ----
-        # Must run *before* broker placement. Includes deterministic risk guard checks.
-        pre = self._assert_pre_trade(intent=intent, trace_id=trace_id)
+            # ---- Pre-trade assertions (fatal) ----
+            pre = self._assert_pre_trade(intent=intent, trace_id=trace_id)
 
-        broker_order = self._broker.place_order(intent=intent)
-        broker_order_id = str(broker_order.get("id") or "").strip() or None
-        self._assert_post_trade_order_response(
-            intent=intent, broker_order=broker_order, broker_order_id=broker_order_id, trace_id=trace_id
-        )
-        logger.info(
-            "exec.order_placed %s",
-            json.dumps(_to_jsonable({"broker": self._broker_name, "broker_order_id": broker_order_id, "order": broker_order})),
-        )
-        try:
-            # Persist idempotency outcome for replay-safe responses.
-            _idem = locals().get("idem")
-            _tenant_id = locals().get("tenant_id")
-            if _idem is not None and _tenant_id:
-                _idem.complete(
-                    tenant_id=str(_tenant_id),
-                    scope="execution.broker_place_order",
-                    key=str(intent.client_intent_id),
-                    outcome={"status": "placed", "broker_order_id": broker_order_id, "broker_order": broker_order},
-                    status="completed",
-                )
-        except Exception:
-            logger.exception("exec.idempotency_complete_failed")
-        try:
+            broker_order = self._broker.place_order(intent=intent)
+            broker_order_id = str(broker_order.get("id") or "").strip() or None
+            self._assert_post_trade_order_response(
+                intent=intent, broker_order=broker_order, broker_order_id=broker_order_id, trace_id=trace_id
+            )
             logger.info(
-                "%s",
-                dumps_replay_event(
-                    build_replay_event(
-                        event="order_intent",
-                        component="backend.execution.engine",
-                        data={
-                            "stage": "broker_placed",
-                            "broker": self._broker_name,
-                            "broker_order_id": broker_order_id,
-                            "client_intent_id": intent.client_intent_id,
-                            "symbol": intent.symbol,
-                            "side": intent.side,
-                            "qty": intent.qty,
-                            "order_type": intent.order_type,
-                        },
-                        trace_id=trace_id,
-                        agent_name=os.getenv("AGENT_NAME") or "execution-engine",
-                        run_id=str(intent.metadata.get("run_id") or "").strip() or None,
-                    )
+                "exec.order_placed %s",
+                json.dumps(
+                    _to_jsonable({"broker": self._broker_name, "broker_order_id": broker_order_id, "order": broker_order})
                 ),
             )
-        except Exception:
-            logger.exception("exec.replay_broker_placed_log_failed")
-            pass
 
-        # If immediately filled (or partially filled), write to ledger AND portfolio history.
-        try:
-            status = str(broker_order.get("status") or "").lower()
-            filled_qty = float(broker_order.get("filled_qty") or 0.0)
-            if status in {"filled", "partially_filled"} or filled_qty > 0:
-                self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
-                self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
-                # If we reserved for this intent, release on first observed fill.
-                if reserved and tenant_id_for_reservation and uid_for_reservation:
-                    try:
-                        release_capital_atomic(
-                            tenant_id=tenant_id_for_reservation,
-                            uid=uid_for_reservation,
-                            broker_account_id=intent.broker_account_id,
-                            trade_id=intent.client_intent_id,
-                        )
-                    except Exception:
-                        logger.exception("exec.capital_release_failed (filled)")
+            # If immediately filled (or partially filled), write to ledger AND portfolio history.
+            try:
+                status = str(broker_order.get("status") or "").lower()
+                filled_qty = float(broker_order.get("filled_qty") or 0.0)
+                if status in {"filled", "partially_filled"} or filled_qty > 0:
+                    self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
+                    self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
+                    if reserved and tenant_id_for_reservation and uid_for_reservation:
+                        try:
+                            release_capital_atomic(
+                                tenant_id=tenant_id_for_reservation,
+                                uid=uid_for_reservation,
+                                broker_account_id=intent.broker_account_id,
+                                trade_id=intent.client_intent_id,
+                            )
+                        except Exception:
+                            logger.exception("exec.capital_release_failed (filled)")
+            except Exception as e:
+                logger.exception("exec.ledger_write_failed: %s", e)
+
+            outcome = "placed"
+            return ExecutionResult(
+                status="placed",
+                risk=risk,
+                routing=routing_decision,
+                broker_order_id=broker_order_id,
+                broker_order=broker_order,
+            )
         except Exception as e:
-            logger.exception("exec.ledger_write_failed: %s", e)
-
-        return ExecutionResult(
-            status="placed",
-            risk=risk,
-            routing=routing_decision,
-            broker_order_id=broker_order_id,
-            broker_order=broker_order,
-        )
+            outcome = "exception"
+            release_error = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            try:
+                reservation.release(outcome=outcome, error=release_error)
+            except Exception:
+                pass
 
     def cancel(self, *, broker_order_id: str) -> dict[str, Any]:
         logger.info(
