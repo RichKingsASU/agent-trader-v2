@@ -4,10 +4,12 @@
 #
 # Required env var names (set via deploy script / gcloud flags):
 # - FIREBASE_PROJECT_ID
-# - ALPACA_API_KEY
-# - ALPACA_SECRET_KEY
+# - APCA_API_KEY_ID
+# - APCA_API_SECRET_KEY
+# - APCA_API_BASE_URL
 # - MONITORED_SYMBOLS
 # - ALPACA_DATA_FEED
+# - TRADING_MODE=paper (repo-wide hard lock)
 #
 # NOTE: Replace REPLACE_ME_* placeholders before applying.
 
@@ -34,6 +36,8 @@ spec:
               value: REPLACE_ME_GIT_SHA
             - name: AGENT_MODE
               value: "OFF"
+            - name: TRADING_MODE
+              value: "paper"
             # Soft ingest pause switch (default enabled if unset)
             # - name: INGEST_ENABLED
             #   value: "1"

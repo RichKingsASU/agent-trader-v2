@@ -10,6 +10,7 @@
 # Optional env:
 # - FIREBASE_PROJECT_ID (enables Firestore persistence via ADC)
 # - EVENT_STORE=memory (forces in-memory store)
+# - TRADING_MODE=paper (repo-wide hard lock if agent guard is imported)
 #
 # NOTE: Replace REPLACE_ME_* placeholders before applying.
 
@@ -36,6 +37,8 @@ spec:
               value: REPLACE_ME_GIT_SHA
             - name: AGENT_MODE
               value: "OFF"
+            - name: TRADING_MODE
+              value: "paper"
             # - name: FIREBASE_PROJECT_ID
             #   value: REPLACE_ME_FIREBASE_PROJECT_ID
             # - name: EVENT_STORE

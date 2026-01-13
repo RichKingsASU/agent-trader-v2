@@ -90,9 +90,18 @@ def get_alpaca_key_id(*, required: bool = True) -> str:
     Env contract (official Alpaca SDK):
     - APCA_API_KEY_ID
     """
+    # Canonical (official Alpaca SDK)
     v = get_env("APCA_API_KEY_ID", default=None, required=False)
+    # Common historical/infra aliases (normalize to canonical so Alpaca SDKs can read them).
+    v = v or get_env("ALPACA_API_KEY", default=None, required=False)
+    v = v or get_env("ALPACA_API_KEY_ID", default=None, required=False)
+    v = v or get_env("APCA_API_KEY", default=None, required=False)  # legacy
     if v:
-        return str(v)
+        s = str(v).strip()
+        if s:
+            # Ensure canonical env var is present for downstream libs (alpaca-py / alpaca-trade-api).
+            os.environ.setdefault("APCA_API_KEY_ID", s)
+            return s
 
     if required:
         raise RuntimeError("Missing required env var: APCA_API_KEY_ID")
@@ -113,9 +122,17 @@ def get_alpaca_secret_key(*, required: bool = True) -> str:
     Env contract (official Alpaca SDK):
     - APCA_API_SECRET_KEY
     """
+    # Canonical (official Alpaca SDK)
     v = get_env("APCA_API_SECRET_KEY", default=None, required=False)
+    # Common historical/infra aliases (normalize to canonical so Alpaca SDKs can read them).
+    v = v or get_env("ALPACA_SECRET_KEY", default=None, required=False)
+    v = v or get_env("ALPACA_API_SECRET_KEY", default=None, required=False)
+    v = v or get_env("APCA_API_SECRET", default=None, required=False)  # legacy
     if v:
-        return str(v)
+        s = str(v).strip()
+        if s:
+            os.environ.setdefault("APCA_API_SECRET_KEY", s)
+            return s
 
     if required:
         raise RuntimeError("Missing required env var: APCA_API_SECRET_KEY")
@@ -129,11 +146,18 @@ def get_alpaca_api_base_url(*, required: bool = True) -> str:
     Env contract (official Alpaca SDK):
     - APCA_API_BASE_URL
     """
+    # Canonical (official Alpaca SDK)
     v = get_env("APCA_API_BASE_URL", default=None, required=False)
+    # Common historical/infra aliases.
+    v = v or get_env("ALPACA_TRADING_HOST", default=None, required=False)
+    v = v or get_env("ALPACA_API_BASE_URL", default=None, required=False)
+    v = v or get_env("ALPACA_API_URL", default=None, required=False)
     if v:
         s = str(v).strip()
         s = s[:-1] if s.endswith("/") else s
-        return assert_paper_alpaca_base_url(s)
+        if s:
+            os.environ.setdefault("APCA_API_BASE_URL", s)
+            return assert_paper_alpaca_base_url(s)
     if required:
         raise RuntimeError("Missing required env var: APCA_API_BASE_URL")
     return ""
