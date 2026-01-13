@@ -56,8 +56,22 @@ Ops UI reads optional runtime config from `/config.js` (see `frontend/ops-ui/pub
 
 ## Optional: GitHub Actions deploy
 
-If you enable the workflow in `.github/workflows/firebase_ops_dashboard_deploy.yml`, it deploys **only when manually triggered** (no PR deploys).
+If you enable the workflow in `.github/workflows/firebase_ops_dashboard_deploy.yml`, it deploys **only when manually triggered** and is **locked down** so production deploys cannot happen without:
+- running from the `main` branch, and
+- explicit GitHub Environment approval (see checklist below).
 
 Required GitHub secret (repo settings → Secrets and variables → Actions):
 - `FIREBASE_SERVICE_ACCOUNT_AGENTTRADER_PROD`: a Firebase service account JSON with permission to deploy Hosting for `agenttrader-prod`
+
+### Required GitHub settings checklist (after merge)
+
+These are repo settings you must apply in GitHub (they are not fully enforceable via git alone):
+
+1) **Create GitHub Environment**: `production`
+   - **Required reviewers**: add the approver group/users who must approve every prod deploy
+   - **Deployment branches**: restrict to **selected branches** → `main` only
+
+2) **Protect `main` branch** (Settings → Branches)
+   - Require pull request reviews before merging (so workflow changes can’t be merged unreviewed)
+   - Disallow direct pushes to `main` (recommended)
 

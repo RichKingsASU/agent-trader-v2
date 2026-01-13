@@ -2,11 +2,6 @@ name: Deploy Ops Dashboard (Firebase Hosting)
 
 on:
   workflow_dispatch:
-    inputs:
-      project_id:
-        description: "Firebase project id (default matches .firebaserc)"
-        required: false
-        default: "agenttrader-prod"
 
 permissions:
   contents: read
@@ -17,8 +12,11 @@ concurrency:
 
 jobs:
   deploy:
+    # Lock production deploys to main branch only (even for manual dispatch).
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: production
 
     steps:
       - name: Checkout
@@ -46,6 +44,6 @@ jobs:
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_AGENTTRADER_PROD }}
-          projectId: ${{ inputs.project_id }}
+          projectId: agenttrader-prod
           channelId: live
 
