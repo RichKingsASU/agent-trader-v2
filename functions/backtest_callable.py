@@ -197,10 +197,12 @@ def run_backtest(req: https_fn.CallableRequest) -> Dict[str, Any]:
             for point in results["equity_curve"]
         ]
         
+        unrealized_pnl = float(results.get("unrealized_pnl", 0.0))
         metrics = metrics_calc.calculate_all_metrics(
             equity_curve=equity_curve_tuples,
             trades=results["trades"],
-            start_capital=config.start_capital
+            start_capital=config.start_capital,
+            unrealized_pnl_dollars=unrealized_pnl,
         )
         
         # Format metrics report
@@ -247,6 +249,8 @@ def run_backtest(req: https_fn.CallableRequest) -> Dict[str, Any]:
                 "max_drawdown_pct": metrics["max_drawdown_pct"],
                 "win_rate_pct": metrics["win_rate_pct"],
                 "total_trades": metrics["total_trades"],
+                "realized_pnl_dollars": metrics.get("realized_pnl_dollars", 0.0),
+                "unrealized_pnl_dollars": metrics.get("unrealized_pnl_dollars", 0.0),
                 "created_at": firestore.SERVER_TIMESTAMP,
                 "status": "completed"
             })

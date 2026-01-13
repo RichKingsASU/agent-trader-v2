@@ -36,7 +36,9 @@ class MetricsCalculator:
         self,
         equity_curve: List[Tuple[datetime, Decimal]],
         trades: List[Dict[str, Any]],
-        start_capital: Decimal
+        start_capital: Decimal,
+        *,
+        unrealized_pnl_dollars: float = 0.0,
     ) -> Dict[str, Any]:
         """
         Calculate all performance metrics.
@@ -83,6 +85,9 @@ class MetricsCalculator:
             "final_equity": float(final_equity),
             "start_capital": float(start_capital),
             "net_profit": float(final_equity - start_capital),
+            # P&L decomposition (if caller provides unrealized; realized computed from trades)
+            "realized_pnl_dollars": float(trade_metrics.get("realized_pnl_dollars", 0.0)),
+            "unrealized_pnl_dollars": float(unrealized_pnl_dollars),
             
             # Risk Metrics
             "sharpe_ratio": round(sharpe_ratio, 3),
@@ -334,7 +339,10 @@ class MetricsCalculator:
                 "largest_win": 0.0,
                 "largest_loss": 0.0,
                 "profit_factor": 0.0,
-                "avg_trade_pnl": 0.0
+                "avg_trade_pnl": 0.0,
+                "realized_pnl_dollars": 0.0,
+                "gross_profit_dollars": 0.0,
+                "gross_loss_dollars": 0.0,
             }
         
         # Separate trades into pairs (buy/sell)
@@ -377,7 +385,10 @@ class MetricsCalculator:
                 "largest_win": 0.0,
                 "largest_loss": 0.0,
                 "profit_factor": 0.0,
-                "avg_trade_pnl": 0.0
+                "avg_trade_pnl": 0.0,
+                "realized_pnl_dollars": 0.0,
+                "gross_profit_dollars": 0.0,
+                "gross_loss_dollars": 0.0,
             }
         
         # Calculate metrics
@@ -386,6 +397,7 @@ class MetricsCalculator:
         
         total_wins = sum(t["pnl"] for t in winning_trades)
         total_losses = abs(sum(t["pnl"] for t in losing_trades))
+        realized_pnl = sum(t["pnl"] for t in completed_trades)
         
         win_rate = len(winning_trades) / len(completed_trades) if completed_trades else 0
         avg_win = total_wins / len(winning_trades) if winning_trades else 0
@@ -408,7 +420,10 @@ class MetricsCalculator:
             "largest_win": round(largest_win, 2),
             "largest_loss": round(largest_loss, 2),
             "profit_factor": round(profit_factor, 3),
-            "avg_trade_pnl": round(avg_trade_pnl, 2)
+            "avg_trade_pnl": round(avg_trade_pnl, 2),
+            "realized_pnl_dollars": round(realized_pnl, 2),
+            "gross_profit_dollars": round(total_wins, 2),
+            "gross_loss_dollars": round(total_losses, 2),
         }
     
     def _calculate_period_returns(

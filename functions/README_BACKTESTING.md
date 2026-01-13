@@ -13,6 +13,20 @@ The backtesting module provides a comprehensive framework for testing trading st
 ✅ **Trade Analytics**: Detailed trade history and statistics  
 ✅ **Visual Dashboard**: Interactive React component with charts
 
+## Options Modeling in Backtests (Safety-First)
+
+Backtests in this repo are designed to be **safe** (no broker execution) and to support
+options-style strategies using progressively more realistic modeling approaches:
+
+- **Proxy Greeks (CURRENT DEFAULT)**: `functions/strategies/backtester.py` uses `GreeksSimulator`
+  to generate plausible delta/gamma/theta/vega for each timestep based on the underlying price.
+  This supports “options-like” decision logic without requiring an options chain.
+- **Real Options Snapshots (AVAILABLE AS DATA, NOT WIRED INTO BACKTESTER YET)**:
+  the ingestion pipeline fetches Alpaca options chain snapshots and stores them in
+  `public.alpaca_option_snapshots` (see `backend/streams/alpaca_options_chain_ingest.py`).
+- **Synthetic Payoff (FUTURE EXTENSION)**: strategy payoff can be modeled directly from
+  a synthetic option price model or expiry payoff. Not currently implemented.
+
 ## Quick Start
 
 ### 1. Set Environment Variables
@@ -26,6 +40,12 @@ export APCA_API_SECRET_KEY="your_secret_key"
 
 ```bash
 python scripts/run_backtest_example.py
+```
+
+### 2b. Single-Command Backtest (Strategy, Symbol, Date Range)
+
+```bash
+python scripts/backtest.py --strategy GammaScalper --symbol SPY --start 2025-12-01 --end 2025-12-31
 ```
 
 ### 3. Use in Code

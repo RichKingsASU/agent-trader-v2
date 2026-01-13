@@ -6,15 +6,11 @@ trading strategies on historical data with realistic constraints.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 import pytz
-
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
 
 from .base_strategy import BaseStrategy, SignalType
 
@@ -27,6 +23,10 @@ class BacktestConfig:
     symbol: str = "SPY"
     start_capital: Decimal = Decimal("100000.00")
     lookback_days: int = 30
+    # Optional explicit date range (YYYY-MM-DD or full ISO timestamp).
+    # If set, these take precedence over lookback_days.
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
     slippage_bps: int = 1  # 0.01% slippage per trade
     commission_per_trade: Decimal = Decimal("0.00")  # Commission if any
     position_size_pct: Decimal = Decimal("1.0")  # Max 100% allocation
@@ -181,7 +181,8 @@ class Backtester:
         strategy: BaseStrategy,
         config: BacktestConfig,
         alpaca_api_key: str,
-        alpaca_secret_key: str
+        alpaca_secret_key: str,
+        data_client: Optional[Any] = None,
     ):
         """
         Initialize backtester.
@@ -195,11 +196,17 @@ class Backtester:
         self.strategy = strategy
         self.config = config
         
-        # Initialize Alpaca client for historical data
-        self.data_client = StockHistoricalDataClient(
-            api_key=alpaca_api_key,
-            secret_key=alpaca_secret_key
-        )
+        # Initialize Alpaca client for historical data (lazy import to keep tests/CI light).
+        # Allow injection for offline tests.
+        if data_client is not None:
+            self.data_client = data_client
+        else:
+            from alpaca.data.historical import StockHistoricalDataClient  # type: ignore
+
+            self.data_client = StockHistoricalDataClient(
+                api_key=alpaca_api_key,
+                secret_key=alpaca_secret_key,
+            )
         
         # State tracking
         self.trades: List[Trade] = []
@@ -221,19 +228,22 @@ class Backtester:
         Returns:
             List of bar dictionaries with timestamp, open, high, low, close, volume
         """
-        end_date = datetime.now(pytz.UTC)
-        start_date = end_date - timedelta(days=self.config.lookback_days)
+        end_dt, start_dt = self._resolve_date_range()
         
         logger.info(
             f"Fetching historical data: {self.config.symbol} "
-            f"from {start_date.date()} to {end_date.date()}"
+            f"from {start_dt.date()} to {end_dt.date()}"
         )
         
+        # Lazy import: keep module importable without alpaca-py installed.
+        from alpaca.data.requests import StockBarsRequest  # type: ignore
+        from alpaca.data.timeframe import TimeFrame  # type: ignore
+
         request_params = StockBarsRequest(
             symbol_or_symbols=self.config.symbol,
             timeframe=TimeFrame.Minute,
-            start=start_date,
-            end=end_date
+            start=start_dt,
+            end=end_dt,
         )
         
         try:
@@ -257,6 +267,46 @@ class Backtester:
         except Exception as e:
             logger.error(f"Error fetching historical data: {e}")
             raise
+
+    def _resolve_date_range(self) -> Tuple[datetime, datetime]:
+        """
+        Resolve the effective backtest window.
+
+        Priority:
+        1) config.start_date/config.end_date (if provided)
+        2) now - lookback_days .. now
+        """
+        utc = pytz.UTC
+
+        def _parse_date(s: str) -> datetime:
+            s = str(s).strip()
+            # Prefer YYYY-MM-DD (most common in backtests).
+            try:
+                d = datetime.strptime(s, "%Y-%m-%d").date()
+                # Start of day UTC
+                return datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=utc)
+            except Exception:
+                pass
+
+            # Fallback: ISO timestamp (with or without tz).
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=utc)
+            return dt.astimezone(utc)
+
+        if self.config.start_date and self.config.end_date:
+            start_dt = _parse_date(self.config.start_date)
+            end_dt = _parse_date(self.config.end_date)
+            # If dates (YYYY-MM-DD) were provided, interpret end as end-of-day.
+            if len(str(self.config.end_date).strip()) == len("YYYY-MM-DD"):
+                end_dt = end_dt + timedelta(days=1) - timedelta(seconds=1)
+            if end_dt <= start_dt:
+                raise ValueError("BacktestConfig end_date must be after start_date")
+            return end_dt, start_dt
+
+        end_dt = datetime.now(utc)
+        start_dt = end_dt - timedelta(days=int(self.config.lookback_days))
+        return end_dt, start_dt
     
     def calculate_slippage(self, price: Decimal, action: str) -> Decimal:
         """
@@ -586,12 +636,20 @@ class Backtester:
         logger.info("=" * 80)
         
         # Compile results
+        realized_pnl = self._calculate_realized_pnl()
+        unrealized_pnl = sum(
+            (pos.unrealized_pnl for pos in self.account_state.positions.values()),
+            start=Decimal("0"),
+        )
+
         return {
             "config": {
                 "symbol": self.config.symbol,
                 "start_capital": float(self.config.start_capital),
                 "lookback_days": self.config.lookback_days,
-                "slippage_bps": self.config.slippage_bps
+                "start_date": self.config.start_date,
+                "end_date": self.config.end_date,
+                "slippage_bps": self.config.slippage_bps,
             },
             "strategy": self.strategy.get_strategy_name(),
             "trades": [self._trade_to_dict(t) for t in self.trades],
@@ -600,6 +658,8 @@ class Backtester:
                 for ts, eq in self.equity_curve
             ],
             "final_equity": float(self.account_state.equity),
+            "realized_pnl": float(realized_pnl),
+            "unrealized_pnl": float(unrealized_pnl),
             "total_trades": len(self.trades),
             "final_positions": [
                 {
@@ -612,6 +672,33 @@ class Backtester:
                 for pos in self.account_state.positions.values()
             ]
         }
+
+    def _calculate_realized_pnl(self) -> Decimal:
+        """
+        Calculate realized P&L from matched BUY/SELL round trips.
+
+        Uses Trade.total_cost convention:
+        - BUY: positive cost
+        - SELL: negative total_cost (proceeds recorded as negative)
+        """
+        if not self.trades:
+            return Decimal("0")
+
+        buy_queue: List[Trade] = []
+        realized = Decimal("0")
+
+        for t in self.trades:
+            if t.action == "BUY":
+                buy_queue.append(t)
+            elif t.action == "SELL":
+                if not buy_queue:
+                    continue
+                buy = buy_queue.pop(0)
+                buy_cost = abs(buy.total_cost)
+                sell_proceeds = abs(t.total_cost)
+                realized += (sell_proceeds - buy_cost)
+
+        return realized
     
     @staticmethod
     def _trade_to_dict(trade: Trade) -> Dict[str, Any]:
