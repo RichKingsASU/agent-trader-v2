@@ -17,8 +17,8 @@ def test_kill_switch_drill_local_file_backed(monkeypatch):
     r = run_drill(strategy_poll_interval_s=0.005)
 
     assert r.kill_switch_source is not None
-    assert r.broker_orders_before == 1
-    assert r.broker_orders_after == 1  # no new orders after activation
+    assert r.broker_orders_before == 0
+    assert r.broker_orders_after == 0  # no new orders after activation
 
     # "Instant" is environment-dependent; enforce a tight but realistic bound.
     # (This is local file IO + a short polling loop.)

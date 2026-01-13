@@ -78,6 +78,18 @@ def _to_jsonable(value: Any) -> Any:
 
 class InvariantViolation(RuntimeError):
     """
+
+
+class PreTradeAssertionError(RuntimeError):
+    """
+    Raised when a fatal pre-trade safety assertion fails (data freshness, capital, etc).
+    """
+
+
+class PostTradeAssertionError(RuntimeError):
+    """
+    Raised when a fatal post-trade accounting/assertion fails (e.g. fill exceeds bounds).
+    """
     Raised when a risk/capital invariant is violated.
 
     Important: these are *not* normal risk rejections; they indicate internal
