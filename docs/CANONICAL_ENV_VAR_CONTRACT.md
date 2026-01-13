@@ -45,8 +45,8 @@ Legend:
 
 | Variable | Canonical meaning | Required (local) | Required (prod) | Optional | Forbidden in prod | Notes / validation |
 |---|---:|---:|---:|---:|---:|---|
-| `AGENT_MODE` | runtime mode guardrail | ✅ | ✅ |  |  | Hard-fail if missing/invalid; allowed: `OFF`,`OBSERVE`,`EVAL`,`PAPER`; **`EXECUTE` hard-forbidden** |
-| `TRADING_MODE` | repo-wide trading mode | ✅ | ✅ |  |  | Hard-fail unless `TRADING_MODE=paper` **AND APCA_API_BASE_URL contains `paper-api.alpaca.markets`** (paper-trading hard lock) |
+| `AGENT_MODE` | runtime startup mode guardrail | ✅ | ✅ |  |  | **FAIL-CLOSED DEFAULT** at startup via `backend/common/agent_mode_guard.py`: missing/empty/unknown ⇒ **exit(1)**; `EXECUTE` ⇒ **exit(12)**; allowed at startup: `OFF`,`OBSERVE`,`EVAL`,`PAPER` (case-insensitive). Note: some modules also interpret `AGENT_MODE=LIVE` for “live trading authority”, but that path is **currently unreachable** without a code change because the startup guard rejects `LIVE`. |
+| `TRADING_MODE` | repo-wide trading hard lock | ✅ | ✅ |  |  | **FAIL-CLOSED DEFAULT** at startup via `backend/common/agent_mode_guard.py`: missing/empty ⇒ **exit(13)**; any value other than `paper` ⇒ **exit(13)** (unless `_ALLOW_LIVE_TRADING_CODE_CHANGE=True` in code). Note: broker-side calls additionally require `APCA_API_BASE_URL` to be the paper endpoint (see “Paper vs Live invariants”). |
 | `ENV` | environment label |  |  | ✅ |  | Used for logs; also required by `cloudrun-consumer` contract |
 | `ENVIRONMENT` | environment label alias |  |  | ✅ |  | Logging only (falls back chain includes `ENV`, `APP_ENV`, `DEPLOY_ENV`) |
 | `APP_ENV` | environment label alias |  |  | ✅ |  | Logging only |
@@ -118,12 +118,12 @@ Legend:
 | `EXECUTION_REPLICAS` | informational replicas count |  |  | ✅ |  | Ops/status only |
 | `EXECUTION_HALTED` | kill switch (preferred) |  |  | ✅ |  | Truthy halts broker actions |
 | `EXECUTION_HALTED_FILE` | kill switch via file contents |  |  | ✅ |  | Used for K8s ConfigMap mount patterns |
-| `EXECUTION_HALTED_DOC` | legacy Firestore-backed halt doc path |  |  | ✅ |  | Checked by execution engine in addition to env/file switch |
+| `EXECUTION_HALTED_DOC` | legacy Firestore-backed halt doc path |  |  | ✅ |  | Optional legacy check in `backend/execution/engine.py` risk layer (expects `collection/doc`, reads `{enabled:true}`); **not** part of the env/file kill-switch primitive used by `backend/common/kill_switch.py`. |
 | `EXEC_KILL_SWITCH` | deprecated kill switch alias |  |  | ✅ |  | Back-compat (deprecated) |
 | `EXEC_KILL_SWITCH_FILE` | deprecated kill switch file alias |  |  | ✅ |  | Back-compat (deprecated) |
 | `EXEC_KILL_SWITCH_DOC` | deprecated halt doc alias |  |  | ✅ |  | Back-compat (deprecated) |
 | `EXEC_AGENT_ADMIN_KEY` | enables admin endpoints (/state, /recover auth) |  |  | ✅ |  | If set, callers must provide matching header; keep secret |
-| `EXECUTION_CONFIRM_TOKEN` | live execution confirmation token |  |  | ✅ |  | **Future-only**: enforced only when live execution is enabled in code |
+| `EXECUTION_CONFIRM_TOKEN` | live execution confirmation token |  |  | ✅ |  | **FAIL-CLOSED DEFAULT (when used)** via `backend/common/execution_confirm.py`: missing/empty expected token ⇒ refuse; missing/incorrect provided token ⇒ refuse. **Not currently wired into any shipped runtime path** (live trading is code-disabled). |
 | `REPO_ID` | execution-agent strict gate | ✅ (exec-agent) | ✅ (exec-agent) |  |  | Must be exactly `agent-trader-v2` (case-sensitive) |
 | `AGENT_NAME` | agent identity | ✅ (exec-agent) | ✅ (exec-agent) | ✅ |  | For exec-agent gate: must be exactly `execution-agent` |
 | `AGENT_ROLE` | agent identity | ✅ (exec-agent) | ✅ (exec-agent) | ✅ |  | For exec-agent gate: must be exactly `execution` |
@@ -158,9 +158,59 @@ Compared against:
 
 ## High-risk misconfiguration warnings (operator-facing)
 
+- **FAIL-CLOSED DEFAULT**: critical safety gates are designed so that *missing/invalid configuration stops the process* instead of “guessing” a permissive default.
 - **Paper-trading hard lock is non-negotiable**: all runtime services that import `backend/common/agent_mode_guard.py` will **exit(13)** unless `TRADING_MODE=paper`. This is enforced even if other config contracts pass.
 - **`AGENT_MODE=EXECUTE` is always forbidden**: will **exit(12)** immediately.
 - **Do not use `GOOGLE_APPLICATION_CREDENTIALS` in production** (Cloud Run/GCE): it encourages keyfile deployment and increases blast radius. Prefer attached service account / ADC.
 - **Execution-agent strict gate is fail-closed**: `backend/execution_agent/gating.py` requires exact string matches (case-sensitive) and will refuse to start if any are missing or mismatched (`BROKER_EXECUTION_ENABLED` and `EXECUTION_ENABLED` must be exactly `"false"`).
 - **Mixed Alpaca env names can silently break auth**: set `APCA_*` canonically. Aliases are normalized, but relying on multiple names across deploy artifacts increases drift risk.
+
+## AGENT_MODE × TRADING_MODE matrix (as shipped)
+
+This section is intentionally **runtime-accurate** (not aspirational).
+
+### Startup guard (non-bypassable by env alone)
+
+Enforced by `backend/common/agent_mode_guard.py` for services that import it:
+
+| Setting | Outcome |
+|---|---|
+| `AGENT_MODE` missing/empty | **exit(1)** |
+| `AGENT_MODE=EXECUTE` | **exit(12)** |
+| `AGENT_MODE` not in `OFF/OBSERVE/EVAL/PAPER` | **exit(1)** |
+| `TRADING_MODE` missing/empty | **exit(13)** |
+| `TRADING_MODE` != `paper` | **exit(13)** (unless `_ALLOW_LIVE_TRADING_CODE_CHANGE=True` in code) |
+
+### “Live trading authority” (documented consumer, currently blocked)
+
+Some modules (notably `backend/common/agent_state_machine.py`) treat `AGENT_MODE=LIVE` as the “live trading allowed” mode for **non-dry-run** execution requests. **However, in the shipped repo configuration this cannot be enabled by env** because the startup guard rejects `LIVE`. This is intentional: *live trading requires a reviewed code change*.
+
+## Paper vs Live invariants (runtime behavior)
+
+- **Invariant: live trading cannot be enabled by environment variables alone.**
+  - Startup is paper-locked by `TRADING_MODE=paper` enforcement in `backend/common/agent_mode_guard.py`.
+  - Broker-side actions are additionally protected inside `backend/execution/engine.py`:
+    - `AlpacaBroker.place_order/cancel_order/get_order_status` will call `fatal_if_execution_reached(...)` **unless** both are true:
+      - `TRADING_MODE=paper`, and
+      - `APCA_API_BASE_URL` contains `paper-api.alpaca.markets`
+
+## Kill-switch semantics (runtime behavior)
+
+### Primary kill switch (env/file)
+
+Implemented by `backend/common/kill_switch.py` and used as a last-mile broker boundary check:
+
+Precedence order:
+- `EXECUTION_HALTED` truthy (`1/true/yes/on`) ⇒ **halt**
+- else `EXEC_KILL_SWITCH` truthy (deprecated) ⇒ **halt**
+- else if `EXECUTION_HALTED_FILE` (or deprecated `EXEC_KILL_SWITCH_FILE`) is set:
+  - read the **first line**; if truthy ⇒ **halt**
+  - if the file is unreadable/throws ⇒ **do not halt** (fail-safe; env var still halts)
+
+### Optional legacy Firestore doc kill switch (risk layer only)
+
+Implemented in `backend/execution/engine.py` `RiskManager._kill_switch_enabled()`:
+
+- If `EXECUTION_HALTED_DOC` (or deprecated `EXEC_KILL_SWITCH_DOC`) is set to `collection/doc` and the document contains `{ "enabled": true }` ⇒ **halt**.
+- Any parse/read error ⇒ **do not halt** (best-effort back-compat).
 
