@@ -1,13 +1,16 @@
 ## Deployment (Cloud Run)
 
-This repo supports a **multi-container** deployment model:
+This repo supports multiple **production deployment surfaces** (each with explicit safety posture):
 
-- **Backend API service**: `Dockerfile`
-- **Ingestion job (canonical)**: `infra/Dockerfile.ingest` (runs `python -m backend.ingestion.market_data_ingest`)
-- **Other deployable containers (optional)**:
-  - Strategy engine: `infra/Dockerfile.strategy_engine`
-  - Stream bridge: `infra/Dockerfile.stream_bridge`
-  - Options ingest: `infra/Dockerfile.options_ingest`
+- **Cloud Run (GCP)**: market ingestion + execution engine (authoritative: `docs/DEPLOY_GCP.md`)
+- **Kubernetes (GKE)**: “trading floor” workloads pinned to digests (see `k8s/` and `ops/PRODUCTION_LOCK.md`)
+- **Firebase Hosting**: Ops Dashboard UI (authoritative: `docs/ops/firebase_ops_dashboard_deploy.md`)
+
+### Safety posture (non-negotiable)
+
+- **Default is non-executing / observe-only**. Do not enable trading execution as part of deploy/ops work.
+- **Kill switch must remain HALTED by default**: `EXECUTION_HALTED=1` (see `docs/KILL_SWITCH.md`).
+- **Ingestion has a separate pause switch** (`INGEST_ENABLED`) for stopping the blast radius without redeploying (see `docs/INGEST_ENABLED_KILL_SWITCH_FLOW.md`).
 
 ### Build locally (ingestion)
 
@@ -37,11 +40,7 @@ These Cloud Build configs build container images (Docker build).
 - Stream bridge: `infra/cloudbuild_stream_bridge.yaml`
 - Options ingest: `infra/cloudbuild_options_ingest.yaml`
 
-Example:
-
-```bash
-
-```
+Note: the production Cloud Run deploy path is documented in `docs/DEPLOY_GCP.md` and uses scripts under `infra/cloudrun/`.
 
 ### Cloud Run Jobs (deploy ingestion)
 
@@ -76,3 +75,21 @@ Run the job:
 gcloud run jobs execute "${JOB_NAME}" --region "${REGION}" --wait
 ```
 
+---
+
+## Rollback
+
+Rollback is documented in `docs/ops/rollback.md` and follows a “return to last-known-good” posture:
+
+- **Kubernetes**: restore to `ops/lkg/` (safe-by-default; forces `EXECUTION_HALTED=1`)
+- **Cloud Run**: shift traffic back to a prior revision (services) or redeploy a prior digest (jobs)
+- **Ops Dashboard (Firebase Hosting)**: redeploy the last-known-good commit/release (no emergency edits)
+
+## Runbooks (paper vs live)
+
+- **Paper / observe-only operations**: `docs/ops/runbooks/paper_trading.md`
+- **Live trading operations (controlled unlock only)**: `docs/ops/runbooks/live_trading.md`
+
+## Incident response notes
+
+See `docs/ops/incident_response.md` (links to the relevant runbooks and evidence artifacts).

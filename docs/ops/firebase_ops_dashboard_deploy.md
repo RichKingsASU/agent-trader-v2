@@ -56,7 +56,12 @@ Ops UI reads optional runtime config from `/config.js` (see `frontend/ops-ui/pub
 
 ## Optional: GitHub Actions deploy
 
-If you enable the workflow in `.github/workflows/firebase_ops_dashboard_deploy.yml`, it deploys **only when manually triggered** (no PR deploys).
+If you enable the workflow in `.github/workflows/firebase_ops_dashboard_deploy.yml`, it deploys:
+
+- on **pushes to `main`**, and
+- when **manually triggered** via `workflow_dispatch`
+
+It does **not** deploy on pull requests.
 
 Required GitHub secret (repo settings → Secrets and variables → Actions):
 - `FIREBASE_SERVICE_ACCOUNT_AGENTTRADER_PROD`: a Firebase service account JSON with permission to deploy Hosting for `agenttrader-prod`

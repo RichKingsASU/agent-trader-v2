@@ -2,6 +2,13 @@
 
 This runbook is optimized for **fast, safe incident response** for the ingestion → Pub/Sub → consumer → Firestore paths in this repo.
 
+### Paper vs Live (runbook separation)
+
+- **Paper / observe-only operational posture**: see `docs/ops/runbooks/paper_trading.md`
+- **Live trading posture (controlled unlock only)**: see `docs/ops/runbooks/live_trading.md`
+
+This runbook is **data-plane incident response** and is safe to use under paper/observe-only posture.
+
 ### Scope (what this runbook covers)
 
 - **Ingestor failures**: producers that publish to Pub/Sub (notably `cloudrun_ingestor`, and any other service using `backend/messaging/publisher.py`).
