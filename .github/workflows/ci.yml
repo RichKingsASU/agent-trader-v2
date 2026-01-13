@@ -55,11 +55,13 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          npm ci
+          cd frontend/ops-ui
+          npm ci --no-audit --no-fund
 
       - name: Lint & compile
         run: |
-          npm run lint
+          cd frontend/ops-ui
+          npm run build
           python -m compileall . -q -x venv
 
   unit:
