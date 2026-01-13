@@ -78,6 +78,11 @@ def _to_jsonable(value: Any) -> Any:
 
 class InvariantViolation(RuntimeError):
     """
+    Raised when a risk/capital invariant is violated.
+
+    Important: these are *not* normal risk rejections; they indicate internal
+    accounting/state corruption or a contract breach between components.
+    """
 
 
 class PreTradeAssertionError(RuntimeError):
@@ -89,11 +94,6 @@ class PreTradeAssertionError(RuntimeError):
 class PostTradeAssertionError(RuntimeError):
     """
     Raised when a fatal post-trade accounting/assertion fails (e.g. fill exceeds bounds).
-    """
-    Raised when a risk/capital invariant is violated.
-
-    Important: these are *not* normal risk rejections; they indicate internal
-    accounting/state corruption or a contract breach between components.
     """
 
 
