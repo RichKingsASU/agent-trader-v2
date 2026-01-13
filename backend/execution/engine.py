@@ -8,7 +8,7 @@ import threading
 import uuid
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional, Protocol, runtime_checkable
 
 import requests
@@ -24,7 +24,7 @@ from backend.common.kill_switch import (
 from backend.common.runtime_execution_prevention import fatal_if_execution_reached
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.common.freshness import check_freshness
-from backend.time.nyse_time import parse_ts
+from backend.time.nyse_time import is_trading_day, market_open_dt, parse_ts, to_nyse
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.risk.capital_reservation import (
     CapitalReservationError,
@@ -281,6 +281,10 @@ class RiskConfig:
     max_position_qty: float = 100.0
     max_daily_trades: int = 50
     fail_open: bool = False  # default fail-closed for safety
+    # Market open safety: block equity order placement for the first N minutes after open.
+    # Override by setting EXEC_MARKET_OPEN_TRADE_BLOCK_MINUTES=0 or EXEC_MARKET_OPEN_TRADE_BLOCK_DISABLED=1.
+    market_open_trade_block_minutes: int = 15
+    market_open_trade_block_disabled: bool = False
 
     @staticmethod
     def from_env() -> "RiskConfig":
@@ -302,10 +306,20 @@ class RiskConfig:
                 return default
             return int(v)
 
+        # Normalize minutes to be >= 0 (negative => disable window)
+        try:
+            open_block_minutes = int(_int("EXEC_MARKET_OPEN_TRADE_BLOCK_MINUTES", 15))
+        except Exception:
+            open_block_minutes = 15
+        if open_block_minutes < 0:
+            open_block_minutes = 0
+
         return RiskConfig(
             max_position_qty=_float("EXEC_MAX_POSITION_QTY", 100.0),
             max_daily_trades=_int("EXEC_MAX_DAILY_TRADES", 50),
             fail_open=_bool("EXEC_RISK_FAIL_OPEN", False),
+            market_open_trade_block_minutes=open_block_minutes,
+            market_open_trade_block_disabled=_bool("EXEC_MARKET_OPEN_TRADE_BLOCK_DISABLED", False),
         )
 
 
@@ -1580,6 +1594,43 @@ class RiskManager:
         checks.append({"check": "kill_switch", "enabled": enabled})
         if enabled:
             return RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
+
+        # Market open safety: block equity trades during the first N minutes after NYSE open.
+        # This is intentionally simple and deterministic:
+        # - only applies to asset_class=EQUITY
+        # - only applies on NYSE trading days
+        # - blocks only within [open, open+N)
+        try:
+            if bool(self._config.market_open_trade_block_disabled):
+                checks.append({"check": "market_open_trade_block", "enabled": False, "reason": "disabled"})
+            else:
+                minutes = int(self._config.market_open_trade_block_minutes or 0)
+                asset_class = str(intent.asset_class or "EQUITY").strip().upper()
+                if minutes > 0 and asset_class == "EQUITY":
+                    now_utc = _utc_now()
+                    now_ny = to_nyse(now_utc)
+                    d = now_ny.date()
+                    if is_trading_day(d):
+                        o = market_open_dt(d)
+                        block_until = o + timedelta(minutes=minutes)
+                        in_window = bool(o <= now_ny < block_until)
+                        checks.append(
+                            {
+                                "check": "market_open_trade_block",
+                                "enabled": True,
+                                "minutes": minutes,
+                                "now_ny": now_ny.isoformat(),
+                                "open_ny": o.isoformat(),
+                                "block_until_ny": block_until.isoformat(),
+                                "in_block_window": in_window,
+                            }
+                        )
+                        if in_window:
+                            return RiskDecision(allowed=False, reason="market_open_trade_block", checks=checks)
+        except Exception as e:
+            checks.append({"check": "market_open_trade_block", "error": str(e)})
+            if not self._config.fail_open:
+                return RiskDecision(allowed=False, reason="risk_data_unavailable", checks=checks)
 
         # Loss acceleration guard (rolling drawdown velocity)
         # Operates independently of strategy logic: pure risk gate on intent routing.

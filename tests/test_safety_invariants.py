@@ -120,7 +120,7 @@ def test_risk_cap_never_exceeded_by_projected_position(side: str, qty: float, ex
     monkeypatch.delenv("EXECUTION_HALTED_FILE", raising=False)
 
     risk = RiskManager(
-        config=RiskConfig(max_position_qty=5, max_daily_trades=999, fail_open=True),
+        config=RiskConfig(max_position_qty=5, max_daily_trades=999, fail_open=True, market_open_trade_block_minutes=0),
         ledger=_LedgerStub(trades_today=0),
         positions=_PositionsStub(qty=0),
     )

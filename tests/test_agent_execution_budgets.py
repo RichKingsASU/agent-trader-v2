@@ -32,7 +32,7 @@ def test_agent_budget_caps_executions(monkeypatch):
     monkeypatch.setenv("EXEC_AGENT_BUDGETS_JSON", '{"s1":{"max_daily_executions":1}}')
 
     risk = RiskManager(
-        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True),
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, market_open_trade_block_minutes=0),
         ledger=_LedgerStub(),
         positions=_PositionsStub(),
     )
@@ -57,7 +57,7 @@ def test_agent_budget_caps_daily_capital_pct(monkeypatch):
     monkeypatch.setenv("EXEC_AGENT_BUDGETS_JSON", '{"s1":{"max_daily_capital_pct":0.10}}')
 
     risk = RiskManager(
-        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True),
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, market_open_trade_block_minutes=0),
         ledger=_LedgerStub(),
         positions=_PositionsStub(),
     )
@@ -97,7 +97,7 @@ def test_agent_budget_fail_closed_when_capital_missing(monkeypatch):
     monkeypatch.setenv("EXEC_AGENT_BUDGETS_JSON", '{"s1":{"max_daily_capital_pct":0.10}}')
 
     risk = RiskManager(
-        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True),
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, market_open_trade_block_minutes=0),
         ledger=_LedgerStub(),
         positions=_PositionsStub(),
     )

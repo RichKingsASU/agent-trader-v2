@@ -85,7 +85,7 @@ class _BrokerStubBoom(_BrokerStubOK):
 
 def _risk_allow():
     return RiskManager(
-        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True),
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, market_open_trade_block_minutes=0),
         ledger=_LedgerStub(trades_today=0),
         positions=_PositionsStub(qty=0),
     )
@@ -148,7 +148,7 @@ def test_cleanup_releases_on_risk_reject(monkeypatch):
     reservations = _ReservationsStub()
     broker = _BrokerStubOK()
     risk = RiskManager(
-        config=RiskConfig(max_position_qty=1, max_daily_trades=0, fail_open=True),
+        config=RiskConfig(max_position_qty=1, max_daily_trades=0, fail_open=True, market_open_trade_block_minutes=0),
         ledger=_LedgerStub(trades_today=0),
         positions=_PositionsStub(qty=0),
     )

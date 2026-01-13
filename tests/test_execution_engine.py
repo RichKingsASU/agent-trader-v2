@@ -45,7 +45,7 @@ def test_dry_run_does_not_place_order(monkeypatch):
     monkeypatch.delenv("EXECUTION_HALTED", raising=False)
     broker = _BrokerStub()
     risk = RiskManager(
-        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True),
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, market_open_trade_block_minutes=0),
         ledger=_LedgerStub(trades_today=0),
         positions=_PositionsStub(qty=0),
     )
@@ -69,7 +69,7 @@ def test_kill_switch_rejects(monkeypatch):
     broker = _BrokerStub()
     # fail_open doesn't matter for kill switch
     risk = RiskManager(
-        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True),
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, market_open_trade_block_minutes=0),
         ledger=_LedgerStub(trades_today=0),
         positions=_PositionsStub(qty=0),
     )
@@ -93,7 +93,7 @@ def test_max_daily_trades_rejects(monkeypatch):
     monkeypatch.delenv("EXECUTION_HALTED", raising=False)
     broker = _BrokerStub()
     risk = RiskManager(
-        config=RiskConfig(max_position_qty=100, max_daily_trades=2, fail_open=True),
+        config=RiskConfig(max_position_qty=100, max_daily_trades=2, fail_open=True, market_open_trade_block_minutes=0),
         ledger=_LedgerStub(trades_today=2),
         positions=_PositionsStub(qty=0),
     )
@@ -117,7 +117,7 @@ def test_max_position_size_rejects(monkeypatch):
     monkeypatch.delenv("EXECUTION_HALTED", raising=False)
     broker = _BrokerStub()
     risk = RiskManager(
-        config=RiskConfig(max_position_qty=5, max_daily_trades=50, fail_open=True),
+        config=RiskConfig(max_position_qty=5, max_daily_trades=50, fail_open=True, market_open_trade_block_minutes=0),
         ledger=_LedgerStub(trades_today=0),
         positions=_PositionsStub(qty=5),
     )
@@ -143,7 +143,7 @@ def test_agent_mode_must_be_live_to_place_orders(monkeypatch):
 
     broker = _BrokerStub()
     risk = RiskManager(
-        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True),
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, market_open_trade_block_minutes=0),
         ledger=_LedgerStub(trades_today=0),
         positions=_PositionsStub(qty=0),
     )
@@ -171,7 +171,7 @@ def test_agent_mode_halted_refuses_trading(monkeypatch):
 
     broker = _BrokerStub()
     risk = RiskManager(
-        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True),
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, market_open_trade_block_minutes=0),
         ledger=_LedgerStub(trades_today=0),
         positions=_PositionsStub(qty=0),
     )
@@ -191,4 +191,62 @@ def test_agent_mode_halted_refuses_trading(monkeypatch):
     except AgentModeError:
         pass
     assert broker.place_calls == 0
+
+
+def test_market_open_trade_block_rejects_equity_during_cooldown(monkeypatch):
+    """
+    Market open safety: block equity order placement for the first N minutes after open.
+    """
+    from datetime import datetime, timezone
+
+    monkeypatch.delenv("EXECUTION_HALTED", raising=False)
+
+    # 2024-01-02 14:35 UTC == 09:35 ET (winter), within default 15-minute block.
+    monkeypatch.setattr("backend.execution.engine._utc_now", lambda: datetime(2024, 1, 2, 14, 35, tzinfo=timezone.utc))
+
+    risk = RiskManager(
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, market_open_trade_block_minutes=15),
+        ledger=_LedgerStub(trades_today=0),
+        positions=_PositionsStub(qty=0),
+    )
+    decision = risk.validate(
+        intent=OrderIntent(
+            strategy_id="s1",
+            broker_account_id="acct1",
+            symbol="SPY",
+            side="buy",
+            qty=1,
+            asset_class="EQUITY",
+        )
+    )
+    assert decision.allowed is False
+    assert decision.reason == "market_open_trade_block"
+
+
+def test_market_open_trade_block_can_be_overridden_to_zero(monkeypatch):
+    """
+    Override mechanism: set block minutes to 0 to disable.
+    """
+    from datetime import datetime, timezone
+
+    monkeypatch.delenv("EXECUTION_HALTED", raising=False)
+
+    monkeypatch.setattr("backend.execution.engine._utc_now", lambda: datetime(2024, 1, 2, 14, 35, tzinfo=timezone.utc))
+
+    risk = RiskManager(
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, market_open_trade_block_minutes=0),
+        ledger=_LedgerStub(trades_today=0),
+        positions=_PositionsStub(qty=0),
+    )
+    decision = risk.validate(
+        intent=OrderIntent(
+            strategy_id="s1",
+            broker_account_id="acct1",
+            symbol="SPY",
+            side="buy",
+            qty=1,
+            asset_class="EQUITY",
+        )
+    )
+    assert decision.allowed is True
 

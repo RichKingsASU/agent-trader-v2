@@ -226,7 +226,7 @@ class TestExecutionEngineSmartRouting:
                 return 0.0
         
         risk = RiskManager(
-            config=RiskConfig(fail_open=True),
+            config=RiskConfig(fail_open=True, market_open_trade_block_minutes=0),
             ledger=_LedgerStub(),
             positions=_PositionsStub(),
         )
@@ -289,7 +289,7 @@ class TestExecutionEngineSmartRouting:
                 return 0.0
         
         risk = RiskManager(
-            config=RiskConfig(fail_open=True, max_daily_trades=50, max_position_qty=100000),
+            config=RiskConfig(fail_open=True, max_daily_trades=50, max_position_qty=100000, market_open_trade_block_minutes=0),
             ledger=_LedgerStub(),
             positions=_PositionsStub(),
         )
@@ -408,7 +408,7 @@ class TestPortfolioHistoryPersistence:
                 return 0.0
         
         risk = RiskManager(
-            config=RiskConfig(fail_open=True),
+            config=RiskConfig(fail_open=True, market_open_trade_block_minutes=0),
             ledger=_LedgerStub(),
             positions=_PositionsStub(),
         )
