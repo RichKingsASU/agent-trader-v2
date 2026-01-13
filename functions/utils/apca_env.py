@@ -1,19 +1,15 @@
-"""
-APCA_* environment helpers (official Alpaca SDK env vars only).
-
-Rules:
-- Runtime code must read ONLY:
-  - APCA_API_KEY_ID
-  - APCA_API_SECRET_KEY
-  - APCA_API_BASE_URL
-- No ALPACA_* fallback logic at runtime.
-"""
-
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
 from urllib.parse import urlparse
+
+from backend.common.env import (
+    get_alpaca_api_base_url,
+    get_alpaca_key_id,
+    get_alpaca_secret_key,
+)
+from backend.common.agent_mode import AgentMode, get_agent_mode
 
 
 @dataclass(frozen=True)
@@ -38,7 +34,12 @@ def get_apca_env() -> ApcaEnv:
     secret_key = _get_required("APCA_API_SECRET_KEY")
     base_url = _get_required("APCA_API_BASE_URL")
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
-    base_url = assert_paper_alpaca_base_url(base_url)
+    
+    base_url = assert_valid_alpaca_base_url(
+        url=base_url,
+        agent_mode=agent_mode,
+        trading_mode=trading_mode,
+    )
     return ApcaEnv(api_key_id=key_id, api_secret_key=secret_key, api_base_url=base_url)
 
 
@@ -49,18 +50,19 @@ def assert_apca_env() -> None:
     _ = get_apca_env()
 
 
-def assert_paper_alpaca_base_url(url: str) -> str:
+def assert_valid_alpaca_base_url(url: str, agent_mode: AgentMode, trading_mode: str) -> str:
     """
-    Absolute safety boundary: allow ONLY Alpaca paper trading API base URLs.
+    Safety boundary: Validate Alpaca API base URLs based on the current
+    AGENT_MODE and TRADING_MODE.
 
     Allowed:
-    - https://paper-api.alpaca.markets
-    - https://paper-api.alpaca.markets/<path> (some callers store /v2, etc.)
+    - https://paper-api.alpaca.markets when AGENT_MODE is not LIVE, or TRADING_MODE='paper'
+    - https://api.alpaca.markets when AGENT_MODE=LIVE and TRADING_MODE='live'
 
     Forbidden (hard fail):
-    - anything containing "api.alpaca.markets" that is NOT the paper host
-    - any scheme other than https
-    - any host other than paper-api.alpaca.markets
+    - Any host not explicitly allowed for the given mode.
+    - Any scheme other than https.
+    - Any URL including credentials (username/password), query, or fragment.
     """
     if url is None or str(url).strip() == "":
         raise RuntimeError("Missing required Alpaca base URL (APCA_API_BASE_URL)")
@@ -68,15 +70,10 @@ def assert_paper_alpaca_base_url(url: str) -> str:
     raw = str(url).strip()
     lowered = raw.lower()
 
-    # Explicit hard-fail: never allow live trading host.
-    if "api.alpaca.markets" in lowered and "paper-api.alpaca.markets" not in lowered:
-        raise RuntimeError(f"REFUSED: live Alpaca trading host is forbidden: {raw!r}")
-
+    # --- Scheme and URL component validation (universal rules) ---
     parsed = urlparse(raw)
     if parsed.scheme.lower() != "https":
         raise RuntimeError(f"REFUSED: Alpaca base URL must be https: {raw!r}")
-    if (parsed.hostname or "").lower() != "paper-api.alpaca.markets":
-        raise RuntimeError(f"REFUSED: Alpaca base URL must be paper host: {raw!r}")
     if parsed.port not in (None, 443):
         raise RuntimeError(f"REFUSED: Alpaca base URL must not specify a port: {raw!r}")
     if parsed.username or parsed.password:
@@ -84,7 +81,35 @@ def assert_paper_alpaca_base_url(url: str) -> str:
     if parsed.query or parsed.fragment:
         raise RuntimeError(f"REFUSED: Alpaca base URL must not include query/fragment: {raw!r}")
 
-    # Normalize (preserve any path; just strip trailing slash).
-    normalized = raw[:-1] if raw.endswith("/") else raw
-    return normalized
+    # --- Hostname validation (mode-specific rules) ---
+    hostname = (parsed.hostname or "").lower()
+
+    # Paper mode explicit check
+    if trading_mode == "paper":
+        if hostname == "paper-api.alpaca.markets":
+            # Normalize (preserve any path; just strip trailing slash).
+            return raw[:-1] if raw.endswith("/") else raw
+        else:
+            raise RuntimeError(
+                f"REFUSED: TRADING_MODE='paper' requires Alpaca base URL "
+                f"to be 'https://paper-api.alpaca.markets'. Got: {raw!r}"
+            )
+    
+    # Live mode explicit check (only if AgentMode is LIVE)
+    elif trading_mode == "live" and agent_mode == AgentMode.LIVE:
+        if hostname == "api.alpaca.markets":
+            # Normalize
+            return raw[:-1] if raw.endswith("/") else raw
+        else:
+            raise RuntimeError(
+                f"REFUSED: AGENT_MODE='LIVE' and TRADING_MODE='live' requires Alpaca base URL "
+                f"to be 'https://api.alpaca.markets'. Got: {raw!r}"
+            )
+
+    # If neither paper nor live (e.g. AGENT_MODE=OBSERVE or AGENT_MODE=WARMUP)
+    # and not explicitly handled above, we reject.
+    raise RuntimeError(
+        f"REFUSED: Alpaca base URL validation failed for mode '{agent_mode.value}' "
+        f"and trading_mode '{trading_mode}'. Got: {raw!r}"
+    )
 
