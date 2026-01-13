@@ -13,6 +13,7 @@ from backend.analytics.trade_parser import (
     compute_trade_analytics,
     compute_win_loss_ratio,
 )
+from backend.analytics.performance_interpretation import interpret_daily_summaries
 from backend.analytics.metrics import get_metrics_tracker
 from backend.analytics.heartbeat import check_heartbeat
 from backend.ledger.firestore import ledger_trades_collection
@@ -59,6 +60,30 @@ class WinLossRatioResponse(BaseModel):
     win_rate: float
     loss_rate: float
     win_loss_ratio: float
+
+
+class ThresholdLogicResponse(BaseModel):
+    flat_threshold_abs: float
+    profitable_if: str
+    losing_if: str
+    flat_if: str
+
+
+class DailyPerformanceSignalResponse(BaseModel):
+    date: str
+    label: str  # "Profitable" | "Flat" | "Losing"
+    net_pnl: float
+    trades_count: int
+    win_rate: float
+    avg_win: float
+    avg_loss: float
+    expectancy_gross_per_trade: float
+    expectancy_net_per_trade: float
+
+
+class PerformanceSignalsResponse(BaseModel):
+    threshold_logic: ThresholdLogicResponse
+    daily_signals: List[DailyPerformanceSignalResponse]
 
 
 class APILatencyResponse(BaseModel):
@@ -225,6 +250,67 @@ async def get_win_loss_ratio(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to compute win/loss ratio: {str(e)}")
+
+
+@router.get("/performance-signals", response_model=PerformanceSignalsResponse)
+async def get_performance_signals(
+    tenant_id: str = Depends(get_tenant_id_from_header),
+    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
+    flat_threshold_abs: float = Query(
+        1.0,
+        ge=0.0,
+        description="|net_pnl| below this is labeled 'Flat' (in account currency units)",
+    ),
+):
+    """
+    Human-readable daily performance signals:
+    - expectancy (per trade)
+    - win rate
+    - avg win / avg loss
+    - daily label: Profitable / Flat / Losing
+    - explicit threshold logic used for the label
+    """
+    try:
+        trades_ref = ledger_trades_collection(tenant_id=tenant_id)
+        start_date = datetime.now(timezone.utc) - timedelta(days=days)
+        docs = trades_ref.where("ts", ">=", start_date).stream()
+
+        trades: list[LedgerTrade] = []
+        for doc in docs:
+            data = doc.to_dict()
+            ts_raw = data.get("ts")
+            ts = ts_raw.to_datetime() if hasattr(ts_raw, "to_datetime") else ts_raw
+            if not isinstance(ts, datetime):
+                ts = datetime.now(timezone.utc)
+
+            trades.append(
+                LedgerTrade(
+                    tenant_id=tenant_id,
+                    uid=data.get("uid", ""),
+                    strategy_id=data.get("strategy_id", ""),
+                    run_id=data.get("run_id", ""),
+                    symbol=data.get("symbol", ""),
+                    side=data.get("side", "buy"),
+                    qty=float(data.get("qty", 0)),
+                    price=float(data.get("price", 0)),
+                    ts=ts,
+                    fees=float(data.get("fees", 0)),
+                    slippage=float(data.get("slippage", 0)),
+                )
+            )
+
+        daily = compute_daily_pnl(trades, start_date=start_date)
+        signals, threshold_logic = interpret_daily_summaries(
+            daily,
+            flat_threshold_abs=float(flat_threshold_abs),
+        )
+
+        return PerformanceSignalsResponse(
+            threshold_logic=ThresholdLogicResponse(**threshold_logic),
+            daily_signals=[DailyPerformanceSignalResponse(**s.__dict__) for s in signals],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute performance signals: {str(e)}")
 
 
 @router.get("/api-latency/{service}", response_model=APILatencyResponse)

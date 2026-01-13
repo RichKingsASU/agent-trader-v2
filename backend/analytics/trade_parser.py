@@ -109,19 +109,27 @@ def compute_daily_pnl(
         symbols_traded = list(trades_by_symbol.keys())
         
         for symbol, symbol_trades in trades_by_symbol.items():
-            # Sort by timestamp to ensure proper FIFO ordering
-            symbol_trades.sort(key=lambda t: t.ts)
-            
-            # Use FIFO to calculate realized P&L for closed positions
-            pnl_result = compute_pnl_fifo(symbol_trades)
-            
-            for closed_position in pnl_result.closed_positions:
-                realized_pnl = closed_position.realized_pnl
-                fees = closed_position.total_fees
-                
-                daily_pnl += realized_pnl
-                daily_fees += fees
-                
+            # Use fee-aware FIFO attribution. We treat each fill that realizes P&L as a "closed event"
+            # for win/loss counting. This is deterministic and works with partial closes.
+            rows = [
+                {
+                    "symbol": t.symbol,
+                    "side": t.side,
+                    "qty": float(t.qty),
+                    "price": float(t.price),
+                    "ts": t.ts,
+                    # Treat slippage as fee-like cost.
+                    "fees": float(t.fees or 0.0) + float(t.slippage or 0.0),
+                }
+                for t in symbol_trades
+            ]
+            pnl_result = compute_pnl_fifo(rows, sort_by_ts=True)
+
+            daily_pnl += float(pnl_result.realized_pnl_gross)
+            daily_fees += float(pnl_result.realized_fees)
+
+            for a in pnl_result.trades:
+                realized_pnl = float(a.realized_pnl_gross)
                 if realized_pnl > 0:
                     winning_trades += 1
                     wins.append(realized_pnl)
@@ -258,13 +266,24 @@ def compute_win_loss_ratio(
     losing_trades = 0
     
     for symbol, symbol_trades in trades_by_symbol.items():
-        symbol_trades.sort(key=lambda t: t.ts)
-        pnl_result = compute_pnl_fifo(symbol_trades)
-        
-        for closed_position in pnl_result.closed_positions:
-            if closed_position.realized_pnl > 0:
+        rows = [
+            {
+                "symbol": t.symbol,
+                "side": t.side,
+                "qty": float(t.qty),
+                "price": float(t.price),
+                "ts": t.ts,
+                "fees": float(t.fees or 0.0) + float(t.slippage or 0.0),
+            }
+            for t in symbol_trades
+        ]
+        pnl_result = compute_pnl_fifo(rows, sort_by_ts=True)
+
+        for a in pnl_result.trades:
+            realized = float(a.realized_pnl_gross)
+            if realized > 0:
                 winning_trades += 1
-            elif closed_position.realized_pnl < 0:
+            elif realized < 0:
                 losing_trades += 1
     
     total_trades = winning_trades + losing_trades
