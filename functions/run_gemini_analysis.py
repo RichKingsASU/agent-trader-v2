@@ -1,29 +1,53 @@
+from __future__ import annotations
+
 import os
-import firebase_admin
-from firebase_admin import credentials, firestore
-import google.cloud.aiplatform as aip
 import random
+import sys
 import time
 
+import google.cloud.aiplatform as aip
+
+# Allow running from repo root or from within /functions.
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 # --- Configuration ---
-PROJECT_ID = os.environ.get("GCLOUD_PROJECT", "agenttrader-prod")
+PROJECT_ID = (
+    os.environ.get("FIREBASE_PROJECT_ID")
+    or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    or os.environ.get("GCLOUD_PROJECT")
+    or os.environ.get("GCP_PROJECT")
+)
 LOCATION = "us-central1"
 MODEL_NAME = "gemini-1.5-pro-001"
 
-# --- Initialize Firebase ---
-cred = credentials.ApplicationDefault()
-firebase_admin.initialize_app(cred, {
-    'projectId': PROJECT_ID,
-})
-db = firestore.client()
+if not PROJECT_ID or not str(PROJECT_ID).strip():
+    raise RuntimeError(
+        "Missing project id. Set FIREBASE_PROJECT_ID (preferred) or GOOGLE_CLOUD_PROJECT/GCLOUD_PROJECT."
+    )
+
+# --- Initialize Firestore (ADC-safe, emulator-safe) ---
+from backend.persistence.firebase_client import get_firestore_client  # noqa: E402
+
+db = get_firestore_client(project_id=str(PROJECT_ID).strip())
+
+# Firestore constants/helpers.
+from google.cloud import firestore as firestore_mod  # noqa: E402
 
 # --- Initialize Vertex AI ---
-aip.init(project=PROJECT_ID, location=LOCATION)
+aip.init(project=str(PROJECT_ID).strip(), location=LOCATION)
 model = aip.GenerativeModel(MODEL_NAME)
 
 def get_recent_gex_data(ticker):
     """Fetches the most recent GEX data for a ticker from Firestore."""
-    gex_ref = db.collection('gex_data').where('ticker', '==', ticker).order_by('timestamp', direction=firestore.Query.DESCENDING).limit(1).stream()
+    gex_ref = (
+        db.collection("gex_data")
+        .where("ticker", "==", ticker)
+        .order_by("timestamp", direction=firestore_mod.Query.DESCENDING)
+        .limit(1)
+        .stream()
+    )
     for doc in gex_ref:
         return doc.to_dict()
     return None
