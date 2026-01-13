@@ -15,9 +15,16 @@ This is intentionally local-only:
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
+
+# Ensure repo root is on sys.path when invoked as a script:
+# `python3 scripts/kill_switch_drill.py`
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from backend.common.kill_switch import get_kill_switch_state
 from backend.execution.engine import ExecutionEngine, OrderIntent, RiskConfig, RiskManager
