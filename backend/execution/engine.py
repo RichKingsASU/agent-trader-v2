@@ -9,7 +9,7 @@ import uuid
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Optional, Protocol, runtime_checkable, Mapping
 
 import requests
 
@@ -67,6 +67,26 @@ def _to_jsonable(value: Any) -> Any:
     if hasattr(value, "__dict__"):
         return _to_jsonable(vars(value))
     return str(value)
+
+
+def resolve_tenant_id_from_metadata(metadata: Mapping[str, Any] | None) -> str | None:
+    """
+    Best-effort tenant id resolver.
+
+    This is used for *non-critical* pre-trade helpers like in-flight reservations
+    where missing tenant_id should degrade gracefully rather than crash.
+    """
+    md = dict(metadata or {})
+    v = (
+        md.get("tenant_id")
+        or md.get("tenantId")
+        or md.get("tenant")
+        or os.getenv("EXEC_TENANT_ID")
+        or os.getenv("TENANT_ID")
+        or ""
+    )
+    s = str(v).strip()
+    return s or None
 
 
 class InvariantViolation(RuntimeError):
