@@ -33,3 +33,14 @@ npm run build
 
 See `.env.example`. By default, Firebase env vars are empty and the app runs without Firebase.
 
+### Firebase emulator safety (dev)
+
+When running the Vite dev server, Firebase clients (Firestore/Auth/Functions/Storage) will **connect to local emulators by default**.
+To intentionally disable emulators and allow the dev server to talk to real Firebase, set:
+
+```bash
+VITE_USE_FIREBASE_EMULATORS=false
+```
+
+You can also override emulator host/ports via `VITE_FIREBASE_EMULATOR_HOSTS` (see `.env.example`).
+
