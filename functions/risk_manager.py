@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
-from google.cloud import firestore
+import firebase_admin
+from firebase_admin import firestore
 
 logger = logging.getLogger(__name__)
 
@@ -128,21 +129,12 @@ def calculate_drawdown(current: str, hwm: str) -> Decimal:
 
 def _get_high_water_mark(db: Optional[firestore.Client] = None) -> Optional[str]:
     """
-    Calculate current drawdown percentage and determine if threshold is breached.
-    
     The HWM is stored at: systemStatus/risk
-    
-    Args:
-        current_equity: Current account equity
-        high_water_mark: Highest equity ever recorded
-    
+
     Returns:
         High water mark value as string or None if not found
     """
-    if high_water_mark <= 0:
-        logger.warning("High water mark is zero or negative, cannot calculate drawdown")
-        return Decimal("0"), False
-    
+    client = db or _get_firestore()
     try:
         doc = client.collection("systemStatus").document("risk").get()
         if not doc.exists:
@@ -234,84 +226,119 @@ def _check_high_water_mark(
     Returns:
         Error message if check fails, None if passes (returns "HALT" for drawdown breach)
     """
-    threshold = drawdown_threshold or DEFAULT_DRAWDOWN_THRESHOLD
-    
-    # Convert current equity to Decimal for precision
-    try:
-        current_equity = _safe_decimal(current_equity_str, "current_equity")
-    except ValueError as e:
-        logger.error(f"Invalid current_equity value: {e}")
-        raise
-    
-    # Don't track accounts with very low equity
-    if current_equity < MIN_EQUITY_FOR_TRACKING:
-        logger.warning(
-            "High Water Mark not set. Cannot validate equity drawdown. "
-            "Consider setting HWM at systemStatus/risk"
-        )
-        return {
-            "high_water_mark": current_equity,
-            "current_equity": current_equity,
-            "drawdown_percent": Decimal("0"),
-            "trading_enabled": False,
-            "hwm_updated": False,
-            "reason": "Equity below minimum threshold",
-        }
-    
-    hwm_dec = _as_decimal(high_water_mark)
-    
-    if hwm_dec <= 0:
-        logger.warning("High Water Mark is <= 0 (%s), skipping drawdown check", high_water_mark)
+    # If we don't know the high-water-mark yet, we can't validate drawdown.
+    if high_water_mark is None or str(high_water_mark).strip() == "":
         return None
-    
-    # Calculate drawdown percentage
-    drawdown_pct = calculate_drawdown(current_equity, high_water_mark)
-    
-    # 5% threshold per requirements
+
+    current_dec = _as_decimal(current_equity)
+    if current_dec < MIN_EQUITY_FOR_TRACKING:
+        return "HALT: Equity below minimum threshold for tracking."
+
+    hwm_dec = _as_decimal(high_water_mark)
+    if hwm_dec <= 0:
+        return None
+
+    drawdown_pct = calculate_drawdown(str(current_equity), str(high_water_mark))
     if drawdown_pct > Decimal("5.0"):
-        current_dec = _as_decimal(current_equity)
         return (
             f"HALT: Drawdown breaker triggered. Current equity {current_dec} is {drawdown_pct}% "
-            f"below High Water Mark {hwm_dec} (max allowed: 5%)"
+            f"below High Water Mark {hwm_dec} (max allowed: 5%)."
         )
-    
-    if hwm_updated:
-        update_data["last_hwm_update"] = firestore.SERVER_TIMESTAMP
-    
-    if is_breached and risk_doc.exists:
-        # Only set breach timestamp if not already set
-        data = risk_doc.to_dict() or {}
-        if not data.get("drawdown_breached_at"):
-            update_data["drawdown_breached_at"] = firestore.SERVER_TIMESTAMP
-            logger.critical(
-                f"🚨 KILL-SWITCH TRIGGERED! Drawdown {drawdown*100:.2f}% exceeds "
-                f"threshold {threshold*100:.2f}%. Trading disabled."
+
+    return None
+
+
+def update_risk_state(
+    *,
+    current_equity: str,
+    buying_power: Optional[str] = None,
+    db: Optional[firestore.Client] = None,
+) -> Dict[str, Any]:
+    """
+    Update risk state at systemStatus/risk based on current equity and stored HWM.
+
+    This function is designed for scheduled "pulse" style updates.
+    It is fail-closed: errors will disable trading.
+    """
+    client = db or _get_firestore()
+
+    trading_enabled = False
+    reason: Optional[str] = None
+    drawdown_pct = Decimal("0")
+    drawdown_fraction = Decimal("0")
+
+    try:
+        equity_dec = _as_decimal(current_equity)
+        if equity_dec < MIN_EQUITY_FOR_TRACKING:
+            trading_enabled = False
+            reason = "Equity below minimum threshold"
+        else:
+            # Ensure HWM exists/updated.
+            _ = update_high_water_mark(current_equity, db=client)
+            hwm = _get_high_water_mark(db=client) or str(current_equity)
+
+            drawdown_pct = calculate_drawdown(str(current_equity), str(hwm))
+            drawdown_fraction = (drawdown_pct / Decimal("100")).quantize(Decimal("0.0001"))
+
+            if drawdown_fraction > DEFAULT_DRAWDOWN_THRESHOLD:
+                trading_enabled = False
+                reason = "Drawdown threshold breached"
+            else:
+                trading_enabled = True
+
+        doc_ref = client.collection("systemStatus").document("risk")
+        doc_ref.set(
+            {
+                "high_water_mark": _get_high_water_mark(db=client) or str(current_equity),
+                "current_equity": str(current_equity),
+                "buying_power": (str(buying_power) if buying_power is not None else None),
+                "drawdown_percent": str(drawdown_pct),
+                "drawdown_fraction": str(drawdown_fraction),
+                "trading_enabled": bool(trading_enabled),
+                "reason": reason,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            },
+            merge=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("update_risk_state: failed; disabling trading: %s", e)
+        try:
+            client.collection("systemStatus").document("risk").set(
+                {
+                    "trading_enabled": False,
+                    "reason": "update_risk_state failed",
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                },
+                merge=True,
             )
-    
-    # Clear breach timestamp if recovered
-    if not is_breached and risk_doc.exists:
-        data = risk_doc.to_dict() or {}
-        if data.get("drawdown_breached_at"):
-            update_data["drawdown_breached_at"] = None
-            logger.info(
-                f"✅ Drawdown recovered to {drawdown*100:.2f}%. Trading re-enabled."
-            )
-    
-    # Write to Firestore
-    risk_doc_ref.set(update_data, merge=True)
-    
-    logger.info(
-        f"Risk state updated: HWM=${hwm}, Equity=${current_equity}, "
-        f"Drawdown={drawdown*100:.2f}%, Trading={'ENABLED' if trading_enabled else 'DISABLED'}"
-    )
-    
+        except Exception:
+            pass
+        trading_enabled = False
+        reason = "update_risk_state failed"
+
     return {
-        "high_water_mark": hwm,
-        "current_equity": current_equity,
-        "drawdown_percent": drawdown,
         "trading_enabled": trading_enabled,
-        "hwm_updated": hwm_updated,
+        "reason": reason,
+        "drawdown_percent": str(drawdown_pct),
+        "drawdown_fraction": str(drawdown_fraction),
     }
+
+
+def get_trading_enabled(db: Optional[firestore.Client] = None) -> bool:
+    """
+    Fast read-only check for use by signal generators.
+
+    Fail-closed: if the doc is missing or unreadable, returns False.
+    """
+    client = db or _get_firestore()
+    try:
+        doc = client.collection("systemStatus").document("risk").get()
+        if not doc.exists:
+            return False
+        data = doc.to_dict() or {}
+        return bool(data.get("trading_enabled", False))
+    except Exception:
+        return False
 
 
 def _check_trade_size(

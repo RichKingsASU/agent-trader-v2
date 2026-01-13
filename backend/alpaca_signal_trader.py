@@ -19,6 +19,26 @@ from backend.trading.agent_intent.models import (
 logger = logging.getLogger(__name__)
 
 
+def _read_trading_enabled_flag() -> bool:
+    """
+    Read kill-switch state from Firestore: systemStatus/risk.trading_enabled
+
+    Fail-closed: if unreadable/missing, treat trading as disabled.
+    """
+    try:
+        from google.cloud import firestore  # type: ignore
+
+        db = firestore.Client()
+        doc = db.collection("systemStatus").document("risk").get()
+        if not doc.exists:
+            return False
+        data = doc.to_dict() or {}
+        return bool(data.get("trading_enabled", False))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("kill-switch check failed (fail-closed): %s", e)
+        return False
+
+
 # --- Vertex AI Gemini defaults (hardcoded to match the known-good Vertex test) ---
 VERTEX_PROJECT_ID = "agenttrader-prod"
 VERTEX_LOCATION = "global"
@@ -88,6 +108,35 @@ def generate_intent_with_vertex(
     - The model MUST NOT output qty/notional.
     - Capital decisions are made downstream by the risk allocator only.
     """
+    if not _read_trading_enabled_flag():
+        now = _utc_now()
+        return AgentIntent(
+            created_at_utc=now,
+            repo_id=str(repo_id or os.getenv("REPO_ID") or "unknown_repo"),
+            agent_name=str(agent_name or os.getenv("AGENT_NAME") or "alpaca-signal-trader"),
+            strategy_name=str(strategy_name or os.getenv("STRATEGY_NAME") or "alpaca_signal"),
+            strategy_version=str(strategy_version or os.getenv("STRATEGY_VERSION") or "") or None,
+            correlation_id=str(correlation_id or os.getenv("CORRELATION_ID") or uuid4().hex),
+            symbol=str(symbol).strip().upper(),
+            asset_type=IntentAssetType.EQUITY,
+            option=None,
+            kind=IntentKind.DIRECTIONAL,
+            side=IntentSide.FLAT,
+            confidence=0.0,
+            rationale=AgentIntentRationale(
+                short_reason="Trading is disabled (kill-switch active).",
+                indicators={"systemStatus": {"trading_enabled": False}},
+            ),
+            constraints=AgentIntentConstraints(
+                valid_until_utc=(now + timedelta(minutes=max(1, int(intent_ttl_minutes)))),
+                requires_human_approval=True,
+                order_type="market",
+                time_in_force="day",
+                limit_price=None,
+                delta_to_hedge=None,
+            ),
+        )
+
     client = _get_vertex_genai_client()
 
     prompt = f"""

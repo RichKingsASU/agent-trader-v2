@@ -12,12 +12,13 @@ from typing import Any, Dict
 import alpaca_trade_api as tradeapi
 import firebase_admin
 from firebase_admin import firestore
-from firebase_functions import scheduler_fn
+from firebase_functions import https_fn, options, scheduler_fn
 
 firebase_admin.initialize_app()
 logger = logging.getLogger(__name__)
 
 from functions.utils.apca_env import get_apca_env
+from risk_manager import update_risk_state
 
 
 def _get_firestore() -> firestore.Client:
@@ -57,6 +58,75 @@ def _account_payload(account: Any) -> Dict[str, Any]:
     }
 
 
+@https_fn.on_call(
+    cors=options.CorsOptions(cors_origins="*", cors_methods=["POST"]),
+    secrets=["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"],
+)
+def emergency_liquidate(req: https_fn.CallableRequest) -> Dict[str, Any]:
+    """
+    Kill-switch: cancel all orders, close all positions, and disable trading.
+    """
+    if not req.auth:
+        raise https_fn.HttpsError(
+            code=https_fn.FunctionsErrorCode.UNAUTHENTICATED,
+            message="Authentication required",
+        )
+
+    db = _get_firestore()
+
+    # Fail-closed first: disable trading gate + mark system halt.
+    db.collection("systemStatus").document("risk").set(
+        {
+            "trading_enabled": False,
+            "reason": "emergency_liquidate",
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        },
+        merge=True,
+    )
+    db.collection("systemStatus").document("system").set(
+        {
+            "state": "EMERGENCY_HALT",
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        },
+        merge=True,
+    )
+
+    orders_canceled = 0
+    positions_closed = 0
+
+    try:
+        api = _get_alpaca()
+
+        try:
+            canceled = api.cancel_all_orders()
+            if isinstance(canceled, list):
+                orders_canceled = len(canceled)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("emergency_liquidate: cancel_all_orders failed: %s", e)
+
+        try:
+            closed = api.close_all_positions()
+            if isinstance(closed, list):
+                positions_closed = len(closed)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("emergency_liquidate: close_all_positions failed: %s", e)
+
+        return {
+            "success": True,
+            "message": "Emergency liquidation executed; trading halted.",
+            "positions_closed": positions_closed,
+            "orders_canceled": orders_canceled,
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.exception("emergency_liquidate failed: %s", e)
+        return {
+            "success": False,
+            "message": f"Emergency liquidation encountered an error: {e}",
+            "positions_closed": positions_closed,
+            "orders_canceled": orders_canceled,
+        }
+
+
 @scheduler_fn.on_schedule(schedule='* * * * *')
 def sync_alpaca_account(event: scheduler_fn.ScheduledEvent) -> None:
     _ = event  # unused
@@ -88,5 +158,13 @@ def sync_alpaca_account(event: scheduler_fn.ScheduledEvent) -> None:
     except Exception as e:
         # Best-effort only; never block snapshot sync.
         logger.warning("sync_alpaca_account: failed to write equity_history point: %s", e)
+
+    # Update risk state (HWM/drawdown + trading gate) as part of the pulse.
+    try:
+        eq = payload.get("equity") or "0"
+        bp = payload.get("buying_power")
+        update_risk_state(current_equity=str(eq), buying_power=(str(bp) if bp is not None else None), db=db)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("sync_alpaca_account: update_risk_state failed (best-effort): %s", e)
 
     logger.info("sync_alpaca_account: done")

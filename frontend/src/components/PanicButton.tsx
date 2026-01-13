@@ -32,6 +32,7 @@ export function PanicButton({
 }) {
   const [isExecuting, setIsExecuting] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
+  const [showSecondConfirm, setShowSecondConfirm] = useState(false);
   const { toast } = useToast();
 
   const handleEmergencyLiquidate = async () => {
@@ -76,7 +77,13 @@ export function PanicButton({
   };
 
   return (
-    <AlertDialog open={isOpen} onOpenChange={setIsOpen}>
+    <AlertDialog
+      open={isOpen}
+      onOpenChange={(open) => {
+        setIsOpen(open);
+        if (!open) setShowSecondConfirm(false);
+      }}
+    >
       <AlertDialogTrigger asChild>
         <Button
           variant="destructive"
@@ -95,7 +102,7 @@ export function PanicButton({
         <AlertDialogHeader>
           <AlertDialogTitle className="text-red-600 text-2xl flex items-center gap-2">
             <AlertTriangle className="h-6 w-6" />
-            Emergency Liquidation Confirmation
+            {showSecondConfirm ? "Final Confirmation" : "Emergency Liquidation Confirmation"}
           </AlertDialogTitle>
           <AlertDialogDescription className="text-base space-y-3">
             <p className="font-semibold text-foreground">
@@ -108,7 +115,9 @@ export function PanicButton({
               <li>Set system status to EMERGENCY_HALT</li>
             </ul>
             <p className="font-semibold text-red-600 mt-4">
-              Are you absolutely sure you want to proceed?
+              {showSecondConfirm
+                ? "FINAL WARNING: Click confirm again to execute immediately."
+                : "Are you absolutely sure you want to proceed?"}
             </p>
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -119,6 +128,10 @@ export function PanicButton({
           <AlertDialogAction
             onClick={(e) => {
               e.preventDefault();
+              if (!showSecondConfirm) {
+                setShowSecondConfirm(true);
+                return;
+              }
               handleEmergencyLiquidate();
             }}
             disabled={isExecuting}
@@ -132,7 +145,7 @@ export function PanicButton({
             ) : (
               <>
                 <AlertTriangle className="mr-2 h-4 w-4" />
-                YES - LIQUIDATE NOW
+                {showSecondConfirm ? "YES - LIQUIDATE NOW" : "CONFIRM - LIQUIDATE NOW"}
               </>
             )}
           </AlertDialogAction>
