@@ -1,30 +1,38 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, DefaultDict
-from collections import defaultdict
 
+from backend.marketdata.candles.models import Candle, Tick
+from backend.marketdata.candles.timeframes import Timeframe, bar_range_utc, parse_timeframes
 from backend.time.nyse_time import UTC, ensure_aware_utc, parse_ts, utc_now
-from backend.marketdata.candles.models import EmittedCandle
-from backend.marketdata.candles.timeframes import Timeframe, bucket_range_utc, parse_timeframes
 
 logger = logging.getLogger(__name__)
 
 
-def publish_candle(_: Candle) -> None:
-    """
-    Optional integration hook (no-op by default).
+def _get_field(d: dict[str, Any], *names: str) -> Any:
+    for n in names:
+        if n in d:
+            return d[n]
+    return None
 
-    Callers may override this at integration time to persist/publish candles.
+
+def parse_timestamp(value: Any) -> datetime:
+    return parse_ts(value)
+
+
+def parse_trade_event(event: dict[str, Any]) -> tuple[str, datetime, float, int]:
     """
-    Parse a trade-like event.
+    Parse a dict-like trade event.
+
     Required fields:
-      - symbol: symbol / sym / S
-      - timestamp: timestamp / t / ts / time
-      - price: price / p
-      - size: size / s / qty / q
+    - symbol: symbol / sym / S
+    - timestamp: timestamp / t / ts / time
+    - price: price / p
+    - size: size / s / qty / q
     """
     symbol = _get_field(event, "symbol", "sym", "S")
     ts = _get_field(event, "timestamp", "t", "ts", "time")
@@ -34,17 +42,16 @@ def publish_candle(_: Candle) -> None:
     if symbol is None or ts is None or price is None or size is None:
         raise ValueError("missing required trade fields")
 
-    symbol_s = str(symbol).strip().upper()
-    if not symbol_s:
+    sym = str(symbol).strip().upper()
+    if not sym:
         raise ValueError("empty symbol")
 
     ts_utc = parse_ts(ts)
-
     p = float(price)
     s = int(size)
     if s < 0:
         raise ValueError("negative size")
-    return symbol_s, ts_utc, p, s
+    return sym, ts_utc, p, s
 
 
 @dataclass(slots=True)
@@ -205,9 +212,7 @@ class CandleAggregator:
 
             self._watermark[tf_key] = wm
 
-            start_utc, end_utc = bar_range_utc(
-                tick.ts, tf, tz=self.tz_market, session_daily=self.session_daily
-            )
+            start_utc, end_utc = bar_range_utc(tick.ts, tf, tz=self.tz_market, session_daily=self.session_daily)
             bar_key = (tick.symbol, tf.text, start_utc)
 
             st = self._bars.get(bar_key)
@@ -237,10 +242,8 @@ class CandleAggregator:
                 continue
             if st.end_ts <= finalize_before:
                 self._bars.pop((sym, tft, start), None)
-                c = st.to_candle(is_final=True)
-                finalized.append(c)
+                finalized.append(st.to_candle(is_final=True))
                 self.candles_finalized += 1
-        # Deterministic order for callers/logs.
         finalized.sort(key=lambda c: (c.symbol, c.timeframe, c.start_ts))
         return finalized
 
@@ -252,7 +255,6 @@ class CandleAggregator:
         now_utc = ensure_aware_utc(now_ts or utc_now())
         finalize_before = now_utc - self.lateness
 
-        # Advance watermarks using processing time to prevent resurrecting already-flushed bars.
         for key, prev in list(self._watermark.items()):
             self._watermark[key] = max(prev, now_utc)
 
@@ -286,27 +288,22 @@ class CandleAggregator:
                     "vwap": st.vwap(),
                 }
             )
-        # Stable ordering
         return {sym: {tf: sorted(rows, key=lambda r: r["start_ts"]) for tf, rows in tfs.items()} for sym, tfs in out.items()}
 
     # ---------------------------------------------------------------------
-    # Back-compat convenience: allow dict-like trade events
+    # Back-compat convenience: accept dict-like trade events
     # ---------------------------------------------------------------------
 
-    def ingest(self, event: dict) -> list[Candle]:
+    def ingest(self, event: dict[str, Any]) -> list[Candle]:
         """
         Back-compat adapter for older scripts: accept a dict-like trade event.
         Returns finalized candles only (no partial updates).
         """
         try:
-            symbol = str(event.get("symbol") or "").strip().upper()
-            ts = parse_timestamp(event.get("timestamp"))
-            price = float(event.get("price"))
-            size = int(event.get("size"))
+            symbol, ts, price, size = parse_trade_event(event)
         except Exception:
             logger.debug("trade parse error | event=%r", event, exc_info=True)
             return []
-
         return self.ingest_tick(Tick(ts=ts, price=price, size=size, symbol=symbol))
 
     def ops_snapshot(self) -> dict[str, Any]:
