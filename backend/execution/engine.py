@@ -32,6 +32,7 @@ from backend.risk.capital_reservation import (
     reserve_capital_atomic,
     release_capital_atomic,
 )
+from backend.risk.loss_acceleration_guard import LossAccelerationGuard
 from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
 from backend.observability.risk_signals import risk_correlation_id
 from backend.common.logging import log_event

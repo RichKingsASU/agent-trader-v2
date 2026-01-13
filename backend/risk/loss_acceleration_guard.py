@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from backend.persistence.firebase_client import get_firestore_client
 from backend.risk.drawdown_velocity import EquityPoint, compute_drawdown_velocity, DrawdownVelocity
 
 logger = logging.getLogger(__name__)
@@ -156,6 +155,10 @@ class LossAccelerationGuard:
         Fallback path (single-account):
           alpacaAccounts/snapshot/equity_history
         """
+        # Import Firestore client lazily so unit tests (and minimal runtimes)
+        # can import this module without firebase_admin installed.
+        from backend.persistence.firebase_client import get_firestore_client
+
         db = get_firestore_client()
         now = _utc_now()
         try:
