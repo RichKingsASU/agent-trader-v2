@@ -32,6 +32,7 @@ from backend.risk.capital_reservation import (
     reserve_capital_atomic,
     release_capital_atomic,
 )
+from backend.risk.market_open_guard import MarketOpenGuard
 from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
 from backend.observability.risk_signals import risk_correlation_id
 
@@ -1580,6 +1581,26 @@ class RiskManager:
         checks.append({"check": "kill_switch", "enabled": enabled})
         if enabled:
             return RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
+
+        # Market open cooldown guard (blocks first N minutes after regular open)
+        try:
+            decision = MarketOpenGuard().decide(now_utc=_utc_now())
+            checks.append(
+                {
+                    "check": "market_open_guard",
+                    "allowed": decision.allowed,
+                    "reason": decision.reason,
+                    "cooldown_minutes": decision.cooldown_minutes,
+                    "now_ny": decision.now_ny_iso,
+                    "open_ny": decision.open_ny_iso,
+                    "seconds_until_allowed": decision.seconds_until_allowed,
+                }
+            )
+            if not decision.allowed:
+                return RiskDecision(allowed=False, reason=decision.reason or "market_open_cooldown", checks=checks)
+        except Exception as e:
+            # Best-effort: never block if time/calendar logic fails.
+            checks.append({"check": "market_open_guard", "error": str(e)})
 
         # Loss acceleration guard (rolling drawdown velocity)
         # Operates independently of strategy logic: pure risk gate on intent routing.
