@@ -26,6 +26,13 @@ from typing import Any, Dict, List, Tuple
 import requests
 
 
+def _ensure_repo_on_path() -> None:
+    # Allow running from repo root without manual PYTHONPATH.
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+
+
 def _set_safe_defaults() -> None:
     # Many modules in this repo enforce these guards at import time for safety.
     os.environ.setdefault("AGENT_MODE", "OBSERVE")
@@ -34,6 +41,7 @@ def _set_safe_defaults() -> None:
     os.environ.setdefault("EXEC_DRY_RUN", "1")
 
 
+_ensure_repo_on_path()
 _set_safe_defaults()
 
 
