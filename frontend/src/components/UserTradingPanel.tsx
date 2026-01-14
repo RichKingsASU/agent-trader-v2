@@ -6,6 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertCircle, TrendingUp, TrendingDown, DollarSign } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { ConfidenceSignalPanel } from "@/components/ConfidenceSignalPanel";
 
 /**
  * UserTradingPanel: Multi-Tenant SaaS Dashboard Component
@@ -60,6 +61,8 @@ export const UserTradingPanel: React.FC = () => {
 
   return (
     <div className="space-y-6 p-6">
+      <ConfidenceSignalPanel />
+
       {/* Account Overview */}
       <Card>
         <CardHeader>

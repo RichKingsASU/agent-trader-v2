@@ -20,6 +20,7 @@ _enforce_agent_mode_guard()
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import strategies, broker_accounts, paper_orders, trades, strategy_configs
+from .routers import ops_confidence
 
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.agent_boot import configure_startup_logging
@@ -51,6 +52,7 @@ app.include_router(broker_accounts.router)
 app.include_router(paper_orders.router)
 app.include_router(trades.router)
 app.include_router(strategy_configs.router)
+app.include_router(ops_confidence.router)
 
 @app.on_event("startup")
 async def _startup() -> None:
