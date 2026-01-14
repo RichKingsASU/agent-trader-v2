@@ -1869,6 +1869,8 @@ class ExecutionEngine:
 
         # --- In-flight reservation (best-effort) ---
         # Reserve *during processing only* (not a long-lived open-order hold).
+        from backend.execution.reservations import resolve_tenant_id_from_metadata
+
         tenant_id = resolve_tenant_id_from_metadata(intent.metadata)
         reservation: ReservationHandle = NoopReservation()
         try:
