@@ -18,9 +18,15 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    # Ensure `import backend` works when running from `scripts/`.
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from backend.time.nyse_time import UTC, market_open_dt, previous_close, to_utc
 
