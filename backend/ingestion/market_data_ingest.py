@@ -398,12 +398,13 @@ class MarketDataIngestor:
 
         while not self._stop.is_set():
             enabled = self._effective_ingest_enabled(context="heartbeat_loop")
+            ingest_enabled_source = str(self._ingest_enabled_source_last or "")
             payload = {
                 "ts": _ts(),
                 "status": "running" if enabled else "disabled",
                 "last_symbol": self._last_symbol,
                 "ingest_enabled": bool(enabled),
-                "ingest_enabled_source": str(self._ingest_enabled_source_last or ""),
+                "ingest_enabled_source": ingest_enabled_source,
             }
 
             if self.cfg.dry_run:
@@ -413,7 +414,7 @@ class MarketDataIngestor:
                     last_symbol=self._last_symbol,
                     status="dry_run",
                     ingest_enabled=bool(enabled),
-                    ingest_enabled_source=source,
+                    ingest_enabled_source=ingest_enabled_source,
                     ts=payload["ts"],
                 )
             else:
@@ -426,7 +427,7 @@ class MarketDataIngestor:
                         last_symbol=self._last_symbol,
                         status="ok" if enabled else "paused",
                         ingest_enabled=bool(enabled),
-                        ingest_enabled_source=source,
+                        ingest_enabled_source=ingest_enabled_source,
                         ts=payload["ts"],
                     )
                 except Exception as e:
@@ -437,7 +438,7 @@ class MarketDataIngestor:
                         status="error",
                         ts=payload["ts"],
                         ingest_enabled=bool(enabled),
-                        ingest_enabled_source=source,
+                        ingest_enabled_source=ingest_enabled_source,
                         error=str(e),
                         severity="ERROR",
                     )
