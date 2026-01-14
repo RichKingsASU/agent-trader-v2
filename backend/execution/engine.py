@@ -34,7 +34,12 @@ from backend.risk.capital_reservation import (
 )
 from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
 from backend.observability.risk_signals import risk_correlation_id
-from backend.execution.reservations import resolve_tenant_id_from_metadata
+from backend.execution.reservations import (
+    NoopReservation,
+    ReservationHandle,
+    ReservationManager,
+    resolve_tenant_id_from_metadata,
+)
 
 logger = logging.getLogger(__name__)
 

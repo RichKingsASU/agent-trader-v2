@@ -14,8 +14,9 @@ def _set_apca_env(monkeypatch, *, base_url: str) -> None:
 
 
 class _Resp:
-    def __init__(self, payload):
+    def __init__(self, payload, *, status_code: int = 200):
         self._payload = payload
+        self.status_code = int(status_code)
 
     def raise_for_status(self):
         return None
@@ -92,7 +93,7 @@ def test_alpaca_broker_cancel_order_paper_mode_allowed(monkeypatch):
     with patch("backend.execution.engine.requests.delete") as mock_delete, patch(
         "backend.common.runtime_execution_prevention.fatal_if_execution_reached"
     ) as mock_fatal:
-        mock_delete.return_value = _Resp({"id": "test_id", "status": "canceled"})
+        mock_delete.return_value = _Resp({"id": "test_id", "status": "canceled"}, status_code=204)
         out = broker.cancel_order(broker_order_id="test_id")
         assert out["status"] == "canceled"
         mock_fatal.assert_not_called()
