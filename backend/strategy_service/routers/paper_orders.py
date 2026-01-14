@@ -17,6 +17,10 @@ from ..db import insert_paper_order_idempotent
 from ..models import PaperOrderCreate
 from backend.common.a2a_sdk import RiskAgentClient
 from backend.contracts.risk import TradeCheckRequest
+from backend.trading.options.liquidity import (
+    OptionLiquidityThresholds,
+    evaluate_option_liquidity,
+)
 
 router = APIRouter()
 
@@ -40,6 +44,47 @@ class PaperOrderRequest(BaseModel):
     idempotency_key: str | None = None
 
 
+def _is_option_instrument(instrument_type: str | None) -> bool:
+    t = (instrument_type or "").strip().lower()
+    return t in {"option", "options"}
+
+
+def _get_latest_option_snapshot_payload(*, tenant_id: str, option_symbol: str) -> dict | None:
+    """
+    Fetch the latest option snapshot payload for a contract symbol.
+
+    Expected Firestore schema (tenant-scoped):
+      tenants/{tenant_id}/alpaca_option_snapshots/{docId}
+        - option_symbol: str
+        - snapshot_time: Timestamp
+        - payload: dict (bid/ask/volume/open_interest/etc)
+    """
+    from backend.persistence.firebase_client import get_firestore_client
+    from google.cloud import firestore  # type: ignore
+
+    sym = (option_symbol or "").strip().upper()
+    if not sym:
+        return None
+
+    db = get_firestore_client()
+    coll = (
+        db.collection("tenants")
+        .document(str(tenant_id))
+        .collection("alpaca_option_snapshots")
+    )
+    q = (
+        coll.where("option_symbol", "==", sym)
+        .order_by("snapshot_time", direction=firestore.Query.DESCENDING)
+        .limit(1)
+    )
+    docs = list(q.stream())
+    if not docs:
+        return None
+    data = docs[0].to_dict() or {}
+    payload = data.get("payload")
+    return payload if isinstance(payload, dict) else None
+
+
 @router.post("/paper_orders", tags=["paper_orders"])
 async def create_paper_order(order: PaperOrderRequest, request: Request):
     ctx: TenantContext = get_tenant_context(request)
@@ -50,6 +95,98 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
         import uuid
 
         order.execution_id = str(uuid.uuid4())
+
+    # 0. Option liquidity gate (fail-closed)
+    if _is_option_instrument(order.instrument_type):
+        thresholds = OptionLiquidityThresholds.from_env()
+        snapshot_payload = _get_latest_option_snapshot_payload(
+            tenant_id=ctx.tenant_id,
+            option_symbol=order.symbol,
+        )
+        if snapshot_payload is None:
+            log_event(
+                __import__("logging").getLogger(__name__),
+                "option_liquidity.rejected",
+                severity="WARNING",
+                correlation_id=corr,
+                execution_id=order.execution_id,
+                tenant_id=ctx.tenant_id,
+                uid=ctx.uid,
+                symbol=order.symbol,
+                instrument_type=order.instrument_type,
+                reason="missing_snapshot",
+                thresholds={
+                    "min_open_interest": thresholds.min_open_interest,
+                    "min_volume": thresholds.min_volume,
+                    "max_spread_pct": thresholds.max_spread_pct,
+                },
+            )
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "allowed": False,
+                    "reason": "option_liquidity_missing_snapshot",
+                    "symbol": order.symbol,
+                    "thresholds": {
+                        "min_open_interest": thresholds.min_open_interest,
+                        "min_volume": thresholds.min_volume,
+                        "max_spread_pct": thresholds.max_spread_pct,
+                    },
+                },
+            )
+
+        decision = evaluate_option_liquidity(snapshot_payload=snapshot_payload, thresholds=thresholds)
+        if not decision.allowed:
+            obs = decision.observation
+            log_event(
+                __import__("logging").getLogger(__name__),
+                "option_liquidity.rejected",
+                severity="WARNING",
+                correlation_id=corr,
+                execution_id=order.execution_id,
+                tenant_id=ctx.tenant_id,
+                uid=ctx.uid,
+                symbol=order.symbol,
+                instrument_type=order.instrument_type,
+                reason=decision.reason,
+                thresholds={
+                    "min_open_interest": thresholds.min_open_interest,
+                    "min_volume": thresholds.min_volume,
+                    "max_spread_pct": thresholds.max_spread_pct,
+                },
+                observed={
+                    "bid": obs.bid,
+                    "ask": obs.ask,
+                    "mid": obs.mid,
+                    "spread": obs.spread,
+                    "spread_pct": obs.spread_pct,
+                    "open_interest": obs.open_interest,
+                    "volume": obs.volume,
+                },
+            )
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "allowed": False,
+                    "reason": f"option_liquidity_{decision.reason}",
+                    "symbol": order.symbol,
+                    "thresholds": {
+                        "min_open_interest": thresholds.min_open_interest,
+                        "min_volume": thresholds.min_volume,
+                        "max_spread_pct": thresholds.max_spread_pct,
+                    },
+                    "observed": {
+                        "bid": obs.bid,
+                        "ask": obs.ask,
+                        "mid": obs.mid,
+                        "spread": obs.spread,
+                        "spread_pct": obs.spread_pct,
+                        "open_interest": obs.open_interest,
+                        "volume": obs.volume,
+                    },
+                },
+            )
+
     # 1. Run risk check
     try:
         risk_req = TradeCheckRequest(
