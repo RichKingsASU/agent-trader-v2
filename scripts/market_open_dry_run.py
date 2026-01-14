@@ -47,8 +47,6 @@ _set_safe_defaults()
 
 from backend.streams.alpaca_env import load_alpaca_env  # noqa: E402
 from backend.time.nyse_time import UTC, market_open_dt, previous_close, to_utc, utc_now  # noqa: E402
-from backend.strategy_engine.models import Bar, FlowEvent  # noqa: E402
-from backend.strategy_engine.strategies.naive_flow_trend import make_decision  # noqa: E402
 from backend.execution.engine import (  # noqa: E402
     DryRunBroker,
     ExecutionEngine,
@@ -77,6 +75,52 @@ class DryRunResult:
     status: str  # PASS|FAIL
     blockers: List[str]
     details: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Bar:
+    ts: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+
+@dataclass(frozen=True)
+class FlowEvent:
+    ts: datetime
+    total_value: float
+
+
+def make_decision(bars: List[Bar], flow_events: List[FlowEvent]) -> Dict[str, Any]:
+    """
+    Strategy decision logic (mirrors backend.strategy_engine.strategies.naive_flow_trend).
+    Implemented locally to keep this script runnable without DB deps (asyncpg).
+    """
+    if not bars:
+        return {"action": "flat", "reason": "No recent bar data.", "signal_payload": {}}
+
+    closes = [bar.close for bar in bars]
+    sma = sum(closes) / len(closes)
+    last_close = closes[0]
+
+    call_value = sum(event.total_value for event in flow_events if event.total_value > 0)
+    put_value = sum(event.total_value for event in flow_events if event.total_value < 0)
+    flow_imbalance = call_value + put_value
+
+    if last_close > sma and flow_imbalance > 0:
+        action = "buy"
+        reason = f"Price ({last_close:.2f}) is above SMA ({sma:.2f}) and flow is bullish ({flow_imbalance:.2f})."
+    else:
+        action = "flat"
+        reason = f"Price ({last_close:.2f}) is not decisively above SMA ({sma:.2f}) or flow is not bullish ({flow_imbalance:.2f})."
+
+    return {
+        "action": action,
+        "reason": reason,
+        "signal_payload": {"sma": sma, "last_close": last_close, "flow_imbalance": flow_imbalance},
+    }
 
 
 def _fetch_bars_1m(*, symbol: str, start_utc: datetime, end_utc: datetime, feed: str) -> List[dict[str, Any]]:
