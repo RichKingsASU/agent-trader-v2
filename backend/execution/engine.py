@@ -7,8 +7,9 @@ import time
 import threading
 import uuid
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Optional, Protocol, runtime_checkable
 
 import requests
@@ -34,6 +35,13 @@ from backend.risk.capital_reservation import (
 )
 from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
 from backend.observability.risk_signals import risk_correlation_id
+from backend.execution.reservations import (
+    BestEffortReservationManager,
+    NoopReservation,
+    ReservationHandle,
+    ReservationManager,
+    resolve_tenant_id_from_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +83,16 @@ class InvariantViolation(RuntimeError):
 
     Important: these are *not* normal risk rejections; they indicate internal
     accounting/state corruption or a contract breach between components.
+    """
+
+
+class PreTradeAssertionError(RuntimeError):
+    """
+    Raised when pre-trade assertions fail.
+
+    These are "fail-closed" safety errors: the engine must not place broker orders
+    if required safety inputs (fresh marketdata, fresh capital snapshot, etc.)
+    are missing or stale.
     """
 
 
@@ -1781,6 +1799,8 @@ class ExecutionEngine:
         self._router = router  # Lazy initialization if None and smart routing enabled
         self._ledger = ledger
         self._broker_name = broker_name
+        # Best-effort in-flight reservations (never raise; no-op by default).
+        self._reservations = BestEffortReservationManager(reservations)
         self._dry_run = bool(dry_run) if dry_run is not None else bool(
             str(get_env("EXEC_DRY_RUN", "1")).strip().lower() in {"1", "true", "yes", "on"}
         )
