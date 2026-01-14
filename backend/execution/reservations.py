@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Protocol, runtime_checkable
 
-from backend.persistence.firestore_retry import with_firestore_retry
+try:
+    # Optional dependency: Firestore retry helper (requires google libs).
+    # Keep this module importable in minimal environments (local dry-runs/tests).
+    from backend.persistence.firestore_retry import with_firestore_retry  # type: ignore
+except Exception:  # pragma: no cover
+    def with_firestore_retry(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return fn()
 
 logger = logging.getLogger(__name__)
 
