@@ -8,7 +8,7 @@ import threading
 import uuid
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Protocol, runtime_checkable
 
 import requests
@@ -24,7 +24,7 @@ from backend.common.kill_switch import (
 from backend.common.runtime_execution_prevention import fatal_if_execution_reached
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.common.freshness import check_freshness
-from backend.time.nyse_time import parse_ts
+from backend.time.nyse_time import is_trading_day, market_open_dt, parse_ts, to_nyse
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.risk.capital_reservation import (
     CapitalReservationError,
@@ -40,6 +40,29 @@ logger = logging.getLogger(__name__)
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _market_open_block_minutes() -> int:
+    """
+    Minutes after NYSE open during which trading is blocked.
+
+    - Default: 15
+    - Override: set env `MARKET_OPEN_BLOCK_MINUTES`
+      - 0 (or negative) disables the guard.
+      - Invalid values fail-closed to the default.
+    """
+
+    raw = os.getenv("MARKET_OPEN_BLOCK_MINUTES")
+    if raw is None:
+        return 15
+    s = str(raw).strip()
+    if s == "":
+        return 15
+    try:
+        v = int(s)
+    except Exception:
+        return 15
+    return max(0, v)
 
 
 def _iso_date_utc(dt: datetime | None = None) -> str:
@@ -1580,6 +1603,41 @@ class RiskManager:
         checks.append({"check": "kill_switch", "enabled": enabled})
         if enabled:
             return RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
+
+        # Market-open stabilization window (avoid unstable open prints / spreads).
+        try:
+            block_m = _market_open_block_minutes()
+            now_utc = _utc_now()
+            now_ny = to_nyse(now_utc)
+            d_ny = now_ny.date()
+
+            open_ny: datetime | None = None
+            block_until_ny: datetime | None = None
+            within_window = False
+
+            enabled_guard = block_m > 0
+            if enabled_guard and is_trading_day(d_ny):
+                open_ny = market_open_dt(d_ny)
+                block_until_ny = open_ny + timedelta(minutes=block_m)
+                within_window = open_ny <= now_ny < block_until_ny
+
+            checks.append(
+                {
+                    "check": "market_open_stabilization",
+                    "enabled": enabled_guard,
+                    "block_minutes": block_m,
+                    "now_ny": now_ny.isoformat(),
+                    "trading_day": bool(is_trading_day(d_ny)),
+                    "market_open_ny": open_ny.isoformat() if open_ny else None,
+                    "block_until_ny": block_until_ny.isoformat() if block_until_ny else None,
+                    "within_window": within_window,
+                }
+            )
+            if enabled_guard and within_window:
+                return RiskDecision(allowed=False, reason="market_open_block_window", checks=checks)
+        except Exception as e:
+            # Best-effort: do not block trading if time helpers fail unexpectedly.
+            checks.append({"check": "market_open_stabilization", "error": str(e)})
 
         # Loss acceleration guard (rolling drawdown velocity)
         # Operates independently of strategy logic: pure risk gate on intent routing.
