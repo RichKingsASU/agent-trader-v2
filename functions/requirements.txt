@@ -1,5 +1,7 @@
 alpaca-py==0.43.2
+HEAD
 
+origin/cursor/ci-workflow-and-dependencies-87ea
 firebase-admin==6.5.0
 firebase-functions==0.5.0
 pydantic>=2.0.0,<3.0.0
