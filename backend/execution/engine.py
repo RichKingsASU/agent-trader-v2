@@ -698,18 +698,21 @@ class _FirestoreLedger:
         uid = self._resolve_uid(intent=intent)
         run_id = self._resolve_run_id(intent=intent)
 
-        # Best-effort fill fields (Alpaca payloads vary by endpoint)
+        # Best-effort fill fields (Alpaca payloads vary by endpoint).
+        #
+        # IMPORTANT: Alpaca order snapshots commonly report CUMULATIVE filled_qty and a CUMULATIVE filled_avg_price.
+        # We must therefore write DELTA fills to avoid double counting across partial-fill updates.
         filled_qty_raw = fill.get("filled_qty") or broker_order.get("filled_qty") or 0.0
         filled_avg_price_raw = fill.get("filled_avg_price") or broker_order.get("filled_avg_price") or None
         filled_at_raw = fill.get("filled_at") or broker_order.get("filled_at") or None
 
-        filled_qty = float(filled_qty_raw or 0.0)
-        if filled_qty <= 0:
+        cum_filled_qty = float(filled_qty_raw or 0.0)
+        if cum_filled_qty <= 0:
             raise ValueError("Cannot write ledger trade with non-positive filled_qty")
         if filled_avg_price_raw is None:
             raise ValueError("Cannot write ledger trade without filled_avg_price")
-        filled_avg_price = float(filled_avg_price_raw)
-        if filled_avg_price <= 0:
+        cum_filled_avg_price = float(filled_avg_price_raw)
+        if cum_filled_avg_price <= 0:
             raise ValueError("Cannot write ledger trade with non-positive filled_avg_price")
 
         # Use fill timestamp when available; fall back to now.
@@ -717,8 +720,42 @@ class _FirestoreLedger:
         if isinstance(filled_at_raw, datetime):
             ts = filled_at_raw.astimezone(timezone.utc)
 
-        # Compose a stable id that separates partial fills.
-        broker_fill_fingerprint = f"{broker_order_id}|{filled_qty}|{filled_avg_price}|{filled_at_raw or ''}"
+        # Determine previously-recorded delta fills for this broker_order_id so we can compute deltas.
+        prev_fills: list[tuple[float, float]] = []
+        try:
+            q = (
+                self._db.collection("tenants")
+                .document(str(tenant_id))
+                .collection("ledger_trades")
+                .where("broker_order_id", "==", str(broker_order_id))
+            )
+            for doc in q.stream():
+                d = doc.to_dict() or {}
+                try:
+                    q0 = float(d.get("qty") or 0.0)
+                    p0 = float(d.get("price") or 0.0)
+                except Exception:
+                    continue
+                if q0 > 0 and p0 > 0:
+                    prev_fills.append((q0, p0))
+        except Exception:
+            # Best-effort: if we can't read previous fills, fall back to writing the cumulative snapshot
+            # as a single trade (still idempotent on fingerprint).
+            prev_fills = []
+
+        from backend.execution.fill_deltas import compute_delta_from_cumulative
+
+        delta = compute_delta_from_cumulative(
+            cum_qty=float(cum_filled_qty),
+            cum_avg_price=float(cum_filled_avg_price),
+            prev_fills=prev_fills,
+        )
+        if delta.delta_qty <= 1e-9:
+            # Already recorded (or stale update).
+            return
+
+        # Compose a stable id for idempotent ingestion (keyed by cumulative snapshot).
+        broker_fill_fingerprint = f"{broker_order_id}|{cum_filled_qty}|{cum_filled_avg_price}|{filled_at_raw or ''}"
 
         from backend.ledger.firestore import append_ledger_trade, stable_trade_id
 
@@ -738,8 +775,9 @@ class _FirestoreLedger:
             "run_id": run_id,
             "symbol": intent.symbol,
             "side": intent.side,
-            "qty": filled_qty,
-            "price": filled_avg_price,
+            # DELTA fill
+            "qty": float(delta.delta_qty),
+            "price": float(delta.delta_price),
             "ts": ts,
             "fees": 0.0,
             # Multi-asset fields
@@ -757,6 +795,9 @@ class _FirestoreLedger:
             "time_in_force": intent.time_in_force,
             "limit_price": intent.limit_price,
             "filled_at": _to_jsonable(filled_at_raw),
+            # CUMULATIVE snapshot (for audit/debug)
+            "cum_filled_qty": float(delta.cum_qty),
+            "cum_filled_avg_price": float(delta.cum_avg_price),
             # Raw snapshots for audit (JSON-safe)
             "raw_broker_order": _to_jsonable(broker_order),
             "raw_fill": _to_jsonable(fill),
@@ -1781,6 +1822,14 @@ class ExecutionEngine:
         self._router = router  # Lazy initialization if None and smart routing enabled
         self._ledger = ledger
         self._broker_name = broker_name
+        # Best-effort in-flight reservation manager (must never raise).
+        from backend.execution.reservations import BestEffortReservationManager
+
+        self._reservations = BestEffortReservationManager(reservations)
+        # In-memory order lifecycle tracker (strict validation; best-effort).
+        from backend.execution.order_lifecycle import InMemoryOrderLifecycle
+
+        self._order_lifecycle = InMemoryOrderLifecycle()
         self._dry_run = bool(dry_run) if dry_run is not None else bool(
             str(get_env("EXEC_DRY_RUN", "1")).strip().lower() in {"1", "true", "yes", "on"}
         )
@@ -2248,6 +2297,19 @@ class ExecutionEngine:
 
         status = str(order.get("status") or "").lower()
         filled_qty = float(order.get("filled_qty") or 0.0)
+        # Best-effort: validate lifecycle transitions for the polled order.
+        try:
+            self._order_lifecycle.observe(broker_order_id=str(broker_order_id), broker_status=status)
+        except Exception as e:
+            self._critical(
+                "exec.order_lifecycle_invalid",
+                payload={
+                    "broker_order_id": str(broker_order_id),
+                    "broker_status": str(status),
+                    "error": f"{type(e).__name__}: {e}",
+                    "order": _to_jsonable(order),
+                },
+            )
         if status in {"filled", "partially_filled"} or filled_qty > 0:
             # We need the original intent to write a complete ledger record.
             # Best-effort: reconstruct from broker payload + metadata.
@@ -2591,6 +2653,11 @@ class ExecutionEngine:
             "replaced",
             "pending_replace",
             "pending_cancel",
+            # Terminal outcomes (can happen for IOC/day-end, or broker rejects)
+            "canceled",
+            "cancelled",
+            "expired",
+            "rejected",
         }
         if not broker_order_id:
             payload = {"reason": "broker_order_missing_id", "order": _to_jsonable(broker_order), "intent": _to_jsonable(intent), "trace_id": trace_id}
@@ -2623,6 +2690,47 @@ class ExecutionEngine:
             self._critical("exec.posttrade_assertion_failed", payload=payload)
             self._safe_abort_cancel(broker_order_id=broker_order_id, trace_id=trace_id)
             raise PostTradeAssertionError("client_order_id_mismatch")
+
+        # --- Lifecycle validation (NEW → ACCEPTED → terminal) ---
+        try:
+            transitions = self._order_lifecycle.observe(
+                broker_order_id=str(broker_order_id),
+                broker_status=status,
+            )
+            if transitions:
+                logger.info(
+                    "exec.order_lifecycle %s",
+                    json.dumps(
+                        _to_jsonable(
+                            {
+                                "broker_order_id": broker_order_id,
+                                "broker_status": status,
+                                "transitions": [
+                                    {
+                                        "from": (t.from_state.value if t.from_state else None),
+                                        "to": t.to_state.value,
+                                        "synthetic": bool(t.synthetic),
+                                    }
+                                    for t in transitions
+                                ],
+                                "client_intent_id": intent.client_intent_id,
+                                "asset_class": intent.asset_class,
+                            }
+                        )
+                    ),
+                )
+        except Exception as e:
+            payload = {
+                "reason": "order_lifecycle_transition_invalid",
+                "broker_status": status,
+                "broker_order_id": broker_order_id,
+                "intent": _to_jsonable(intent),
+                "trace_id": trace_id,
+                "error": f"{type(e).__name__}: {e}",
+            }
+            self._critical("exec.posttrade_assertion_failed", payload=payload)
+            self._safe_abort_cancel(broker_order_id=broker_order_id, trace_id=trace_id)
+            raise PostTradeAssertionError("order_lifecycle_transition_invalid")
 
     def _assert_post_trade_fill_and_reconcile(
         self,
@@ -2726,83 +2834,11 @@ class ExecutionEngine:
         
         This provides a user-facing trade history in addition to the internal ledger.
         """
-        from backend.persistence.firebase_client import get_firestore_client
-
-        db = get_firestore_client()
-
-        # Resolve UID from intent metadata
-        uid = str(intent.metadata.get("uid") or "").strip()
-        if not uid:
-            uid = str(os.getenv("EXEC_UID") or "").strip()
-        if not uid or uid == "system":
-            logger.warning("Skipping portfolio history write: no valid uid for %s", intent.symbol)
-            return
-
-        # Extract fill data
-        broker_order_id = str(broker_order.get("id") or "").strip()
-        filled_qty_raw = fill.get("filled_qty") or broker_order.get("filled_qty") or 0.0
-        filled_avg_price_raw = fill.get("filled_avg_price") or broker_order.get("filled_avg_price") or None
-        filled_at_raw = fill.get("filled_at") or broker_order.get("filled_at") or None
-
-        filled_qty = float(filled_qty_raw or 0.0)
-        if filled_qty <= 0:
-            return
-
-        filled_avg_price = float(filled_avg_price_raw) if filled_avg_price_raw else 0.0
-
-        # Use fill timestamp when available; fall back to now
-        ts = _utc_now()
-        if isinstance(filled_at_raw, datetime):
-            ts = filled_at_raw.astimezone(timezone.utc)
-
-        # Create portfolio history entry
-        history_id = f"{broker_order_id}_{int(ts.timestamp() * 1000)}"
-
-        history_entry = {
-            # Core trade data
-            "symbol": intent.symbol,
-            "asset_class": intent.asset_class,
-            "side": intent.side,
-            "qty": filled_qty,
-            "price": filled_avg_price,
-            "notional": filled_qty * filled_avg_price,
-            "timestamp": ts,
-            "trading_date": _iso_date_utc(ts),
-
-            # Strategy and execution context
-            "strategy_id": intent.strategy_id,
-            "broker": self._broker_name,
-            "broker_order_id": broker_order_id,
-            "client_order_id": intent.client_intent_id,
-
-            # Cost analysis
-            "estimated_slippage": intent.estimated_slippage,
-            "fees": 0.0,  # Update if broker provides fee data
-
-            # Metadata
-            "order_type": intent.order_type,
-            "time_in_force": intent.time_in_force,
-            "created_at": _utc_now(),
-
-            # Tax tracking fields
-            "tax_lot_method": "FIFO",  # Default to FIFO for tax purposes
-            "cost_basis": filled_qty * filled_avg_price if intent.side == "buy" else None,
-        }
-
-        # Write to users/{uid}/portfolio/history/trades/{history_id}
-        doc_ref = (
-            db.collection("users")
-            .document(uid)
-            .collection("portfolio")
-            .document("history")
-            .collection("trades")
-            .document(history_id)
-        )
         try:
             from backend.persistence.firebase_client import get_firestore_client
-            
+
             db = get_firestore_client()
-            
+
             # Resolve UID from intent metadata
             uid = str(intent.metadata.get("uid") or "").strip()
             if not uid:
@@ -2810,97 +2846,126 @@ class ExecutionEngine:
             if not uid or uid == "system":
                 logger.warning("Skipping portfolio history write: no valid uid for %s", intent.symbol)
                 return
-            
-            # Extract fill data
+
             broker_order_id = str(broker_order.get("id") or "").strip()
-            filled_qty_raw = fill.get("filled_qty") or broker_order.get("filled_qty") or 0.0
-            filled_avg_price_raw = fill.get("filled_avg_price") or broker_order.get("filled_avg_price") or None
-            filled_at_raw = fill.get("filled_at") or broker_order.get("filled_at") or None
-            
-            filled_qty = float(filled_qty_raw or 0.0)
-            if filled_qty <= 0:
+            if not broker_order_id:
                 return
-            
-            filled_avg_price = float(filled_avg_price_raw) if filled_avg_price_raw else 0.0
-            
+
+            # CUMULATIVE fill snapshot (broker order payloads vary by endpoint)
+            cum_qty_raw = fill.get("filled_qty") or broker_order.get("filled_qty") or 0.0
+            cum_avg_raw = fill.get("filled_avg_price") or broker_order.get("filled_avg_price") or None
+            filled_at_raw = fill.get("filled_at") or broker_order.get("filled_at") or None
+
+            cum_qty = float(cum_qty_raw or 0.0)
+            if cum_qty <= 0:
+                return
+            if cum_avg_raw is None:
+                return
+            cum_avg = float(cum_avg_raw)
+            if cum_avg <= 0:
+                return
+
             # Use fill timestamp when available; fall back to now
             ts = _utc_now()
             if isinstance(filled_at_raw, datetime):
                 ts = filled_at_raw.astimezone(timezone.utc)
-            
-            # Create a deterministic history id so reprocessing does not duplicate entries.
-            # Note: we intentionally include filled fields to separate partial fills.
-            filled_at_key = (
-                filled_at_raw.astimezone(timezone.utc).isoformat()
-                if isinstance(filled_at_raw, datetime)
-                else str(filled_at_raw or "")
-            )
-            fp = f"{broker_order_id}|{filled_qty}|{filled_avg_price}|{filled_at_key}|{intent.symbol}|{intent.side}"
-            history_id = hashlib.sha1(fp.encode("utf-8")).hexdigest()
-            
-            history_entry = {
-                # Core trade data
-                "symbol": intent.symbol,
-                "asset_class": intent.asset_class,
-                "side": intent.side,
-                "qty": filled_qty,
-                "price": filled_avg_price,
-                "notional": filled_qty * filled_avg_price,
-                "timestamp": ts,
-                "trading_date": _iso_date_utc(ts),
-                
-                # Strategy and execution context
-                "strategy_id": intent.strategy_id,
-                "broker": self._broker_name,
-                "broker_order_id": broker_order_id,
-                "client_order_id": intent.client_intent_id,
-                
-                # Cost analysis
-                "estimated_slippage": intent.estimated_slippage,
-                "fees": 0.0,  # Update if broker provides fee data
-                
-                # Metadata
-                "order_type": intent.order_type,
-                "time_in_force": intent.time_in_force,
-                "created_at": _utc_now(),
-                
-                # Tax tracking fields
-                "tax_lot_method": "FIFO",  # Default to FIFO for tax purposes
-                "cost_basis": filled_qty * filled_avg_price if intent.side == "buy" else None,
-            }
-            
-            # Write to users/{uid}/portfolio/history/trades/{history_id}
-            # Note: Using subcollection for scalability and tax year queries
-            doc_ref = (
+
+            trades_col = (
                 db.collection("users")
                 .document(uid)
                 .collection("portfolio")
                 .document("history")
                 .collection("trades")
-                .document(history_id)
             )
-            # Idempotent write (same doc id + overwrite/merge).
-            doc_ref.set(history_entry, merge=True)
-            
+
+            # Compute previous DELTA fills for this order to avoid double counting partial fills.
+            prev_fills: list[tuple[float, float]] = []
+            try:
+                q = trades_col.where("broker_order_id", "==", broker_order_id)
+                for doc in q.stream():
+                    d = doc.to_dict() or {}
+                    try:
+                        q0 = float(d.get("qty") or 0.0)
+                        p0 = float(d.get("price") or 0.0)
+                    except Exception:
+                        continue
+                    if q0 > 0 and p0 > 0:
+                        prev_fills.append((q0, p0))
+            except Exception:
+                prev_fills = []
+
+            from backend.execution.fill_deltas import compute_delta_from_cumulative
+
+            delta = compute_delta_from_cumulative(
+                cum_qty=float(cum_qty),
+                cum_avg_price=float(cum_avg),
+                prev_fills=prev_fills,
+            )
+            if delta.delta_qty <= 1e-9:
+                return
+
+            # Deterministic id keyed by cumulative snapshot so reprocessing is idempotent.
+            filled_at_key = (
+                filled_at_raw.astimezone(timezone.utc).isoformat()
+                if isinstance(filled_at_raw, datetime)
+                else str(filled_at_raw or "")
+            )
+            fp = f"{broker_order_id}|{cum_qty}|{cum_avg}|{filled_at_key}|{intent.symbol}|{intent.side}"
+            history_id = hashlib.sha1(fp.encode("utf-8")).hexdigest()
+
+            history_entry = {
+                # Core trade data (DELTA fill)
+                "symbol": intent.symbol,
+                "asset_class": intent.asset_class,
+                "side": intent.side,
+                "qty": float(delta.delta_qty),
+                "price": float(delta.delta_price),
+                "notional": float(delta.delta_qty) * float(delta.delta_price),
+                "timestamp": ts,
+                "trading_date": _iso_date_utc(ts),
+
+                # Strategy and execution context
+                "strategy_id": intent.strategy_id,
+                "broker": self._broker_name,
+                "broker_order_id": broker_order_id,
+                "client_order_id": intent.client_intent_id,
+
+                # Snapshot fields (CUMULATIVE; for audit/debug)
+                "cum_filled_qty": float(delta.cum_qty),
+                "cum_filled_avg_price": float(delta.cum_avg_price),
+
+                # Cost analysis
+                "estimated_slippage": intent.estimated_slippage,
+                "fees": 0.0,  # Update if broker provides fee data
+
+                # Metadata
+                "order_type": intent.order_type,
+                "time_in_force": intent.time_in_force,
+                "created_at": _utc_now(),
+
+                # Tax tracking fields
+                "tax_lot_method": "FIFO",
+                "cost_basis": float(delta.delta_qty) * float(delta.delta_price) if intent.side == "buy" else None,
+            }
+
+            trades_col.document(history_id).set(history_entry, merge=True)
             logger.info(
-                "exec.portfolio_history_written uid=%s symbol=%s qty=%s price=%s",
-                uid, intent.symbol, filled_qty, filled_avg_price
+                "exec.portfolio_history_written uid=%s symbol=%s qty=%s price=%s broker_order_id=%s",
+                uid,
+                intent.symbol,
+                float(delta.delta_qty),
+                float(delta.delta_price),
+                broker_order_id,
             )
-            
         except Exception as e:
             self._critical(
                 "exec.portfolio_history_write_failed",
                 payload={
-                    "uid": uid,
+                    "uid": str(intent.metadata.get("uid") or os.getenv("EXEC_UID") or ""),
                     "symbol": intent.symbol,
-                    "broker_order_id": broker_order_id,
+                    "broker_order_id": str(broker_order.get("id") or ""),
                     "error": f"{type(e).__name__}: {e}",
                 },
             )
-            raise
-
-        logger.info(
-            "exec.portfolio_history_written uid=%s symbol=%s qty=%s price=%s",
-            uid, intent.symbol, filled_qty, filled_avg_price
-        )
+            return
 
