@@ -7,7 +7,7 @@ import time
 import threading
 import uuid
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional, Protocol, runtime_checkable
 
@@ -1932,6 +1932,20 @@ class ExecutionEngine:
 
         outcome: str = "unknown"
         release_error: str | None = None
+        released_reservation = False
+
+        def _release_reservation(*, _outcome: str, _error: str | None = None) -> None:
+            nonlocal released_reservation, outcome, release_error
+            outcome = str(_outcome or outcome)
+            release_error = _error
+            if released_reservation:
+                return
+            released_reservation = True
+            try:
+                reservation.release(outcome=outcome, error=release_error)
+            except Exception:
+                return
+
         # NOTE: this is intentionally not a try/except. We want exceptions to
         # propagate (fail-closed), and we rely on explicit critical logging at
         # the point of failure.
@@ -2066,6 +2080,7 @@ class ExecutionEngine:
 
             if not risk.allowed:
                 outcome = "rejected"
+                _release_reservation(_outcome=outcome, _error=str(risk.reason))
                 return ExecutionResult(
                     status="rejected",
                     risk=risk,
@@ -2075,6 +2090,7 @@ class ExecutionEngine:
 
             if self._dry_run:
                 outcome = "dry_run"
+                _release_reservation(_outcome=outcome, _error=None)
                 return ExecutionResult(
                     status="dry_run",
                     risk=risk,
@@ -2083,7 +2099,12 @@ class ExecutionEngine:
                 )
 
             # Defense-in-depth: do not place broker orders unless explicitly authorized.
-            require_trading_live_mode(action="broker order placement")
+            try:
+                require_trading_live_mode(action="broker order placement")
+            except Exception as e:
+                outcome = "exception"
+                _release_reservation(_outcome=outcome, _error=f"{type(e).__name__}: {e}")
+                raise
             try:
                 require_kill_switch_off(operation="broker order placement")
             except ExecutionHaltedError:
@@ -2092,6 +2113,7 @@ class ExecutionEngine:
                 checks.append({"check": "kill_switch", "enabled": bool(enabled), "source": source})
                 halted_risk = RiskDecision(allowed=False, reason="kill_switch_enabled", checks=checks)
                 outcome = "rejected"
+                _release_reservation(_outcome=outcome, _error="kill_switch_enabled")
                 return ExecutionResult(
                     status="rejected",
                     risk=halted_risk,
@@ -2125,6 +2147,8 @@ class ExecutionEngine:
                     if rec.outcome and isinstance(rec.outcome.get("broker_order"), dict):
                         broker_order = rec.outcome.get("broker_order")
                         broker_order_id = str(broker_order.get("id") or "").strip() or None
+                        outcome = str(rec.outcome.get("status") or "placed")
+                        _release_reservation(_outcome=outcome, _error="duplicate_intent_idempotent_return")
                         return ExecutionResult(
                             status=str(rec.outcome.get("status") or "placed"),
                             risk=risk,
@@ -2133,6 +2157,8 @@ class ExecutionEngine:
                             broker_order=broker_order,
                             message="duplicate_intent_idempotent_return",
                         )
+                    outcome = "accepted"
+                    _release_reservation(_outcome=outcome, _error="duplicate_intent_in_progress")
                     return ExecutionResult(
                         status="accepted",
                         risk=risk,
@@ -2147,13 +2173,22 @@ class ExecutionEngine:
 
         # ---- Pre-trade assertions (fatal) ----
         # Must run *before* broker placement. Includes deterministic risk guard checks.
-        pre = self._assert_pre_trade(intent=intent, trace_id=trace_id)
-
-        broker_order = self._broker.place_order(intent=intent)
+        try:
+            pre = self._assert_pre_trade(intent=intent, trace_id=trace_id)
+            broker_order = self._broker.place_order(intent=intent)
+        except Exception as e:
+            outcome = "exception"
+            _release_reservation(_outcome=outcome, _error=f"{type(e).__name__}: {e}")
+            raise
         broker_order_id = str(broker_order.get("id") or "").strip() or None
-        self._assert_post_trade_order_response(
-            intent=intent, broker_order=broker_order, broker_order_id=broker_order_id, trace_id=trace_id
-        )
+        try:
+            self._assert_post_trade_order_response(
+                intent=intent, broker_order=broker_order, broker_order_id=broker_order_id, trace_id=trace_id
+            )
+        except Exception as e:
+            outcome = "exception"
+            _release_reservation(_outcome=outcome, _error=f"{type(e).__name__}: {e}")
+            raise
         logger.info(
             "exec.order_placed %s",
             json.dumps(_to_jsonable({"broker": self._broker_name, "broker_order_id": broker_order_id, "order": broker_order})),
@@ -2220,6 +2255,8 @@ class ExecutionEngine:
         except Exception as e:
             logger.exception("exec.ledger_write_failed: %s", e)
 
+        outcome = "placed"
+        _release_reservation(_outcome=outcome, _error=None)
         return ExecutionResult(
             status="placed",
             risk=risk,
