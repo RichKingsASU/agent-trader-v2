@@ -12,11 +12,13 @@ class MockAlpacaBroker:
     def __init__(self, alpaca_env: ApcaEnv):
         self._alpaca = alpaca_env
         self.place_order_called = False
+        self.place_order_calls = 0
         self.cancel_order_called = False
         self.get_order_status_called = False
 
     def place_order(self, *, intent: OrderIntent):
         self.place_order_called = True
+        self.place_order_calls += 1
         return {"id": "mock_order_id", "status": "new"}
 
     def cancel_order(self, *, broker_order_id: str):
@@ -147,6 +149,7 @@ def test_alpaca_broker_get_order_status_non_paper_mode_blocked_even_if_url_is_pa
 # --- Tests for ExecutionEngine methods ---
 
 def test_execution_engine_cancel_paper_mode_allowed(monkeypatch, mock_execution_engine):
+    monkeypatch.setenv("AGENT_MODE", "LIVE")
     monkeypatch.setenv("TRADING_MODE", "paper")
     # Simulate internal broker instance being paper-configured
     mock_execution_engine._broker._alpaca.api_base_url = "https://paper-api.alpaca.markets"
@@ -155,11 +158,13 @@ def test_execution_engine_cancel_paper_mode_allowed(monkeypatch, mock_execution_
         mock_fatal.assert_not_called()
 
 def test_execution_engine_cancel_live_url_blocked_in_paper_mode(monkeypatch, mock_execution_engine_live_url):
+    monkeypatch.setenv("AGENT_MODE", "LIVE")
     monkeypatch.setenv("TRADING_MODE", "paper")
     with pytest.raises(FatalExecutionPathError):
         mock_execution_engine_live_url.cancel(broker_order_id="test_id")
 
 def test_execution_engine_cancel_non_paper_mode_blocked_even_if_url_is_paper(monkeypatch, mock_execution_engine):
+    monkeypatch.setenv("AGENT_MODE", "LIVE")
     monkeypatch.setenv("TRADING_MODE", "live")
     # Simulate internal broker instance being paper-configured
     mock_execution_engine._broker._alpaca.api_base_url = "https://paper-api.alpaca.markets"
@@ -168,6 +173,7 @@ def test_execution_engine_cancel_non_paper_mode_blocked_even_if_url_is_paper(mon
 
 
 def test_execution_engine_sync_and_ledger_if_filled_paper_mode_allowed(monkeypatch, mock_execution_engine):
+    monkeypatch.setenv("AGENT_MODE", "LIVE")
     monkeypatch.setenv("TRADING_MODE", "paper")
     # Simulate internal broker instance being paper-configured
     mock_execution_engine._broker._alpaca.api_base_url = "https://paper-api.alpaca.markets"
@@ -177,11 +183,13 @@ def test_execution_engine_sync_and_ledger_if_filled_paper_mode_allowed(monkeypat
 
 
 def test_execution_engine_sync_and_ledger_if_filled_live_url_blocked_in_paper_mode(monkeypatch, mock_execution_engine_live_url):
+    monkeypatch.setenv("AGENT_MODE", "LIVE")
     monkeypatch.setenv("TRADING_MODE", "paper")
     with pytest.raises(FatalExecutionPathError):
         mock_execution_engine_live_url.sync_and_ledger_if_filled(broker_order_id="test_id")
 
 def test_execution_engine_sync_and_ledger_if_filled_non_paper_mode_blocked_even_if_url_is_paper(monkeypatch, mock_execution_engine):
+    monkeypatch.setenv("AGENT_MODE", "LIVE")
     monkeypatch.setenv("TRADING_MODE", "live")
     # Simulate internal broker instance being paper-configured
     mock_execution_engine._broker._alpaca.api_base_url = "https://paper-api.alpaca.markets"
@@ -226,3 +234,28 @@ def test_assert_paper_alpaca_base_url_with_query_fails():
     url_with_query = "https://paper-api.alpaca.markets?query=param"
     with pytest.raises(RuntimeError, match="REFUSED: Alpaca base URL must not include query/fragment"):
         assert_valid_alpaca_base_url(url_with_query, AgentMode.PAPER, "paper")
+
+
+def test_paper_execution_symbol_cooldown_blocks_rapid_retrade(monkeypatch, mock_execution_engine, sample_intent):
+    """
+    Cooldown guard should prevent overtrading in paper mode.
+    """
+    monkeypatch.setenv("AGENT_MODE", "LIVE")
+    monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("EXEC_SYMBOL_COOLDOWN_S", "600")  # 10 minutes
+
+    # Avoid external dependencies in unit test: stub pre-trade assertions + risk manager.
+    mock_execution_engine._assert_pre_trade = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    mock_execution_engine._risk.validate = lambda *args, **kwargs: type(  # type: ignore[method-assign]
+        "R", (), {"allowed": True, "reason": "ok", "checks": []}
+    )()
+
+    r1 = mock_execution_engine.execute_intent(intent=sample_intent)
+    assert r1.status == "placed"
+    assert mock_execution_engine._broker.place_order_calls == 1
+
+    r2 = mock_execution_engine.execute_intent(intent=sample_intent)
+    assert r2.status == "rejected"
+    assert r2.risk.allowed is False
+    assert r2.risk.reason == "symbol_cooldown"
+    assert mock_execution_engine._broker.place_order_calls == 1  # second placement blocked

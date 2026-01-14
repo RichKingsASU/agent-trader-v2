@@ -309,6 +309,64 @@ class RiskConfig:
         )
 
 
+@dataclass(frozen=True)
+class SymbolCooldownConfig:
+    """
+    Per-symbol cooldown gate (primarily for paper execution).
+
+    Env:
+    - EXEC_SYMBOL_COOLDOWN_S: default per-symbol cooldown in seconds (default: 600 = 10 minutes)
+    - EXEC_SYMBOL_COOLDOWN_OVERRIDES_JSON: JSON object mapping SYMBOL -> cooldown seconds
+      Example: {"SPY":1200,"TSLA":300}
+    """
+
+    default_cooldown_s: int = 600
+    overrides_s: dict[str, int] = field(default_factory=dict)
+
+    @staticmethod
+    def from_env() -> "SymbolCooldownConfig":
+        raw_default = str(os.getenv("EXEC_SYMBOL_COOLDOWN_S") or "").strip()
+        default_s = 600
+        if raw_default:
+            try:
+                default_s = int(float(raw_default))
+            except Exception:
+                default_s = 600
+        if default_s < 0:
+            default_s = 0
+
+        overrides: dict[str, int] = {}
+        raw_overrides = str(os.getenv("EXEC_SYMBOL_COOLDOWN_OVERRIDES_JSON") or "").strip()
+        if raw_overrides:
+            try:
+                parsed = json.loads(raw_overrides)
+                if isinstance(parsed, dict):
+                    for k, v in parsed.items():
+                        sym = str(k).strip().upper()
+                        if not sym:
+                            continue
+                        try:
+                            sec = int(float(v))
+                        except Exception:
+                            continue
+                        if sec < 0:
+                            sec = 0
+                        overrides[sym] = sec
+            except Exception:
+                # Fail-closed would be too aggressive here; treat malformed overrides as "no overrides".
+                overrides = {}
+
+        return SymbolCooldownConfig(default_cooldown_s=default_s, overrides_s=overrides)
+
+    def cooldown_s_for(self, *, symbol: str) -> int:
+        sym = str(symbol or "").strip().upper()
+        if not sym:
+            return int(self.default_cooldown_s)
+        if sym in self.overrides_s:
+            return int(self.overrides_s[sym])
+        return int(self.default_cooldown_s)
+
+
 def _as_float_or_none(value: Any) -> float | None:
     if value is None:
         return None
@@ -1787,6 +1845,10 @@ class ExecutionEngine:
         self._enable_smart_routing = enable_smart_routing
         self._capital_provider: _FirestoreCapitalProvider | None = None
         self._risk_limits_provider: _FirestoreRiskLimitsProvider | None = None
+        self._symbol_cooldown = SymbolCooldownConfig.from_env()
+        self._symbol_cooldown_lock = threading.Lock()
+        # Monotonic timestamp (seconds) of last *attempted* broker placement per (broker_account_id, symbol).
+        self._symbol_last_order_at: dict[tuple[str, str], float] = {}
 
         # Replay marker: engine constructed (startup-ish for this component).
         try:
@@ -2096,7 +2158,74 @@ class ExecutionEngine:
         # Must run *before* broker placement. Includes deterministic risk guard checks.
         pre = self._assert_pre_trade(intent=intent, trace_id=trace_id)
 
-        broker_order = self._broker.place_order(intent=intent)
+        # ---- Per-symbol cooldown (paper execution anti-overtrade) ----
+        # Enforced only when TRADING_MODE=paper (so live trading behavior is unaffected by default).
+        is_paper_mode = os.getenv("TRADING_MODE", "").strip().lower() == "paper"
+        cooldown_s = 0
+        cooldown_reserved_key: tuple[str, str] | None = None
+        cooldown_reserved_at_m: float | None = None
+        if is_paper_mode:
+            cooldown_s = int(self._symbol_cooldown.cooldown_s_for(symbol=intent.symbol))
+        if is_paper_mode and cooldown_s > 0:
+            now_m = time.monotonic()
+            key = (str(intent.broker_account_id), str(intent.symbol or "").strip().upper())
+            last_m: float | None = None
+            with self._symbol_cooldown_lock:
+                last_m = self._symbol_last_order_at.get(key)
+                if last_m is not None and (now_m - last_m) < float(cooldown_s):
+                    remaining_s = max(0.0, float(cooldown_s) - (now_m - last_m))
+                    logger.info(
+                        "exec.cooldown_block %s",
+                        json.dumps(
+                            _to_jsonable(
+                                {
+                                    "symbol": intent.symbol,
+                                    "broker_account_id": intent.broker_account_id,
+                                    "strategy_id": intent.strategy_id,
+                                    "client_intent_id": intent.client_intent_id,
+                                    "trace_id": trace_id,
+                                    "cooldown_s": cooldown_s,
+                                    "remaining_s": remaining_s,
+                                }
+                            )
+                        ),
+                    )
+                    checks = list(risk.checks or [])
+                    checks.append(
+                        {
+                            "check": "symbol_cooldown",
+                            "allowed": False,
+                            "cooldown_s": cooldown_s,
+                            "remaining_s": remaining_s,
+                            "symbol": intent.symbol,
+                        }
+                    )
+                    cooldown_risk = RiskDecision(allowed=False, reason="symbol_cooldown", checks=checks)
+                    outcome = "rejected"
+                    return ExecutionResult(
+                        status="rejected",
+                        risk=cooldown_risk,
+                        routing=routing_decision,
+                        message="cooldown_active",
+                    )
+                # Reserve immediately before broker placement to prevent rapid re-entry.
+                self._symbol_last_order_at[key] = now_m
+                cooldown_reserved_key = key
+                cooldown_reserved_at_m = now_m
+
+        try:
+            broker_order = self._broker.place_order(intent=intent)
+        except Exception:
+            # If broker placement failed before any known broker-side acceptance, roll back the cooldown reservation.
+            # This keeps cooldown focused on actual "attempted submissions" rather than transient failures.
+            if cooldown_reserved_key is not None and cooldown_reserved_at_m is not None:
+                try:
+                    with self._symbol_cooldown_lock:
+                        if self._symbol_last_order_at.get(cooldown_reserved_key) == cooldown_reserved_at_m:
+                            self._symbol_last_order_at.pop(cooldown_reserved_key, None)
+                except Exception:
+                    pass
+            raise
         broker_order_id = str(broker_order.get("id") or "").strip() or None
         self._assert_post_trade_order_response(
             intent=intent, broker_order=broker_order, broker_order_id=broker_order_id, trace_id=trace_id

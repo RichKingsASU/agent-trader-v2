@@ -99,6 +99,14 @@ In dry-run:
 ### Execution
 
 - `EXEC_DRY_RUN` (bool-like, default `true`)
+- `EXEC_SYMBOL_COOLDOWN_S` (int seconds, default `600`) – per-symbol cooldown **in paper mode** (`TRADING_MODE=paper`)
+- `EXEC_SYMBOL_COOLDOWN_OVERRIDES_JSON` (JSON object, optional) – per-symbol override seconds, e.g. `{"SPY":1200,"TSLA":300}`
+
+Cooldown behavior:
+
+- Enforced only when `TRADING_MODE=paper`
+- Any intent blocked by cooldown returns `status="rejected"` with `risk.reason="symbol_cooldown"`
+- Emits log line `exec.cooldown_block` with remaining seconds
 
 ### Execution agent safety gate (Cloud Run service)
 
@@ -111,6 +119,14 @@ When using the execution service (`backend/services/execution_service/app.py`) f
   - execution kill-switch is OFF
 
 See `docs/EXECUTION_AGENT_STATE_MACHINE.md`.
+
+---
+
+## Example cooldown block log
+
+```
+exec.cooldown_block {"symbol":"SPY","broker_account_id":"paper","strategy_id":"delta_momentum_v1","client_intent_id":"01J...","trace_id":"01J...","cooldown_s":600,"remaining_s":587.3}
+```
 
 ### Broker / data sources
 
