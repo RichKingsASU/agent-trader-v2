@@ -37,6 +37,9 @@ class DailyPnLResponse(BaseModel):
     largest_win: float
     largest_loss: float
     symbols_traded: List[str]
+    expectancy: float = 0.0
+    day_classification: str = "FLAT"
+    daily_summary: str = ""
 
 
 class TradeAnalyticsResponse(BaseModel):

@@ -8,12 +8,19 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from backend.ledger.models import LedgerTrade
 from backend.ledger.pnl import compute_pnl_fifo
 from backend.time.nyse_time import to_utc
+from backend.analytics.performance_interpretation import (
+    DailyInterpretationThresholds,
+    classify_day,
+    compute_expectancy_per_trade,
+    compute_win_rate,
+    format_daily_summary,
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +40,9 @@ class DailyPnLSummary:
     largest_win: float
     largest_loss: float
     symbols_traded: List[str]
+    expectancy: float = 0.0
+    day_classification: str = "FLAT"
+    daily_summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,6 +71,7 @@ def compute_daily_pnl(
     *,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    thresholds: DailyInterpretationThresholds = DailyInterpretationThresholds(),
 ) -> List[DailyPnLSummary]:
     """
     Compute daily P&L summaries from ledger trades using FIFO methodology.
@@ -94,16 +105,14 @@ def compute_daily_pnl(
     for date_str in sorted(trades_by_date.keys()):
         day_trades = trades_by_date[date_str]
         
-        # Group trades by symbol for FIFO calculation
+        # Group trades by symbol for FIFO calculation (compute_pnl_fifo must not mix symbols)
         trades_by_symbol: Dict[str, List[LedgerTrade]] = defaultdict(list)
         for t in day_trades:
             trades_by_symbol[t.symbol].append(t)
         
         # Calculate P&L using FIFO for each symbol
-        daily_pnl = 0.0
+        daily_gross = 0.0
         daily_fees = 0.0
-        winning_trades = 0
-        losing_trades = 0
         wins: List[float] = []
         losses: List[float] = []
         symbols_traded = list(trades_by_symbol.keys())
@@ -112,36 +121,70 @@ def compute_daily_pnl(
             # Sort by timestamp to ensure proper FIFO ordering
             symbol_trades.sort(key=lambda t: t.ts)
             
-            # Use FIFO to calculate realized P&L for closed positions
-            pnl_result = compute_pnl_fifo(symbol_trades)
-            
-            for closed_position in pnl_result.closed_positions:
-                realized_pnl = closed_position.realized_pnl
-                fees = closed_position.total_fees
-                
-                daily_pnl += realized_pnl
-                daily_fees += fees
-                
-                if realized_pnl > 0:
-                    winning_trades += 1
-                    wins.append(realized_pnl)
-                elif realized_pnl < 0:
-                    losing_trades += 1
-                    losses.append(realized_pnl)
+            # Convert LedgerTrade -> mapping shape expected by compute_pnl_fifo.
+            # Also treat slippage as fee-like cost.
+            fifo_trades: List[Dict[str, Any]] = []
+            for i, t in enumerate(symbol_trades):
+                trade_id = f"{t.ts.isoformat()}|{t.broker_fill_id or ''}|{t.order_id or ''}|{i}"
+                fifo_trades.append(
+                    {
+                        "trade_id": trade_id,
+                        "symbol": t.symbol,
+                        "side": t.side,
+                        "qty": float(t.qty),
+                        "price": float(t.price),
+                        "ts": t.ts,
+                        "fees": float(t.fees or 0.0) + float(t.slippage or 0.0),
+                    }
+                )
+
+            pnl_result = compute_pnl_fifo(fifo_trades, trade_id_field="trade_id", sort_by_ts=True)
+            daily_gross += float(pnl_result.realized_pnl_gross)
+            daily_fees += float(pnl_result.realized_fees)
+
+            # Interpret each non-zero realized net P&L event as a realized "trade outcome".
+            for a in pnl_result.trades:
+                r = float(a.realized_pnl_net)
+                if abs(r) <= thresholds.outcome_epsilon_usd:
+                    continue
+                if r > 0:
+                    wins.append(r)
+                else:
+                    losses.append(r)
         
         # Calculate summary statistics
+        winning_trades = len(wins)
+        losing_trades = len(losses)
         total_trades = winning_trades + losing_trades
-        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0.0
+        win_rate = compute_win_rate(wins=winning_trades, losses=losing_trades)
         avg_win = sum(wins) / len(wins) if wins else 0.0
         avg_loss = sum(losses) / len(losses) if losses else 0.0
         largest_win = max(wins) if wins else 0.0
         largest_loss = min(losses) if losses else 0.0
+        outcomes = wins + losses
+        expectancy = compute_expectancy_per_trade(outcomes=outcomes)
+        net_pnl = daily_gross - daily_fees
+        day_cls = classify_day(net_pnl_usd=net_pnl, outcomes=outcomes, thresholds=thresholds)
+        summary_text = format_daily_summary(
+            date=date_str,
+            day_classification=day_cls,
+            net_pnl_usd=net_pnl,
+            gross_pnl_usd=daily_gross,
+            fees_usd=daily_fees,
+            wins=winning_trades,
+            losses=losing_trades,
+            win_rate_pct=win_rate,
+            avg_win_usd=avg_win,
+            avg_loss_usd=avg_loss,
+            expectancy_usd_per_trade=expectancy,
+            symbols=symbols_traded,
+        )
         
         daily_summaries.append(
             DailyPnLSummary(
                 date=date_str,
-                total_pnl=daily_pnl - daily_fees,
-                gross_pnl=daily_pnl,
+                total_pnl=net_pnl,
+                gross_pnl=daily_gross,
                 fees=daily_fees,
                 trades_count=total_trades,
                 winning_trades=winning_trades,
@@ -152,6 +195,9 @@ def compute_daily_pnl(
                 largest_win=largest_win,
                 largest_loss=largest_loss,
                 symbols_traded=symbols_traded,
+                expectancy=expectancy,
+                day_classification=day_cls,
+                daily_summary=summary_text,
             )
         )
     
@@ -259,12 +305,27 @@ def compute_win_loss_ratio(
     
     for symbol, symbol_trades in trades_by_symbol.items():
         symbol_trades.sort(key=lambda t: t.ts)
-        pnl_result = compute_pnl_fifo(symbol_trades)
-        
-        for closed_position in pnl_result.closed_positions:
-            if closed_position.realized_pnl > 0:
+        fifo_trades: List[Dict[str, Any]] = []
+        for i, t in enumerate(symbol_trades):
+            trade_id = f"{t.ts.isoformat()}|{t.broker_fill_id or ''}|{t.order_id or ''}|{i}"
+            fifo_trades.append(
+                {
+                    "trade_id": trade_id,
+                    "symbol": t.symbol,
+                    "side": t.side,
+                    "qty": float(t.qty),
+                    "price": float(t.price),
+                    "ts": t.ts,
+                    "fees": float(t.fees or 0.0) + float(t.slippage or 0.0),
+                }
+            )
+        pnl_result = compute_pnl_fifo(fifo_trades, trade_id_field="trade_id", sort_by_ts=True)
+
+        for a in pnl_result.trades:
+            r = float(a.realized_pnl_net)
+            if r > 0:
                 winning_trades += 1
-            elif closed_position.realized_pnl < 0:
+            elif r < 0:
                 losing_trades += 1
     
     total_trades = winning_trades + losing_trades
