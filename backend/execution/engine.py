@@ -1872,6 +1872,8 @@ class ExecutionEngine:
         from backend.execution.reservations import resolve_tenant_id_from_metadata
 
         tenant_id = resolve_tenant_id_from_metadata(intent.metadata)
+        from backend.execution.reservations import NoopReservation
+
         reservation: ReservationHandle = NoopReservation()
         try:
             amount_usd = 0.0
