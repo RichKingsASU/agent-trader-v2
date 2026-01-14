@@ -55,6 +55,16 @@ from backend.safety.startup_validation import (
 )
 from backend.observability.ops_json_logger import OpsLogger
 from backend.common.ops_metrics import REGISTRY
+from backend.execution.order_recovery import (
+    FirestoreExecutionOrderStore,
+    TimeoutRules,
+    infer_asset_class,
+    is_open_status,
+    is_terminal_status,
+    is_stale_for_poll,
+    is_unfilled_past_timeout,
+    timeout_seconds_for_intent,
+ )
 
 init_structured_logging(service="execution-engine")
 
@@ -155,6 +165,68 @@ app = FastAPI(title="AgentTrader Execution Engine")
 install_fastapi_request_id_middleware(app, service="execution-engine")
 install_app_heartbeat(app, service_name="execution-engine")
 
+
+def _require_admin(request: Request) -> None:
+    required = str(os.getenv("EXEC_AGENT_ADMIN_KEY") or "").strip()
+    if not required:
+        # Hide internal endpoints unless explicitly enabled.
+        raise HTTPException(status_code=404, detail="not_found")
+    provided = str(request.headers.get("X-Exec-Agent-Key") or "").strip()
+    if provided != required:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def _resolve_tenant_id_from_request_metadata(md: dict[str, Any]) -> str | None:
+    return str(md.get("tenant_id") or os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or "").strip() or None
+
+
+def _resolve_uid_from_request_metadata(md: dict[str, Any]) -> str | None:
+    return str(md.get("uid") or md.get("user_id") or os.getenv("EXEC_UID") or "").strip() or None
+
+
+def _intent_snapshot(intent: OrderIntent) -> dict[str, Any]:
+    # Keep this strict + JSON-safe (for replay + recovery).
+    return {
+        "strategy_id": intent.strategy_id,
+        "broker_account_id": intent.broker_account_id,
+        "symbol": intent.symbol,
+        "side": intent.side,
+        "qty": float(intent.qty),
+        "order_type": intent.order_type,
+        "time_in_force": intent.time_in_force,
+        "limit_price": float(intent.limit_price) if intent.limit_price is not None else None,
+        "asset_class": intent.asset_class,
+        "client_intent_id": intent.client_intent_id,
+        "created_at_utc": intent.created_at.astimezone(timezone.utc).isoformat(),
+        # Minimal metadata needed for safe reconciliation
+        "metadata": {
+            "tenant_id": str((intent.metadata or {}).get("tenant_id") or "").strip() or None,
+            "uid": str((intent.metadata or {}).get("uid") or (intent.metadata or {}).get("user_id") or "").strip() or None,
+            "correlation_id": str((intent.metadata or {}).get("correlation_id") or "").strip() or None,
+            "trace_id": str((intent.metadata or {}).get("trace_id") or "").strip() or None,
+            "run_id": str((intent.metadata or {}).get("run_id") or "").strip() or None,
+        },
+    }
+
+
+def _intent_from_snapshot(snap: dict[str, Any]) -> OrderIntent:
+    md = dict((snap or {}).get("metadata") or {})
+    return OrderIntent(
+        strategy_id=str(snap.get("strategy_id") or ""),
+        broker_account_id=str(snap.get("broker_account_id") or ""),
+        symbol=str(snap.get("symbol") or ""),
+        side=str(snap.get("side") or ""),
+        qty=float(snap.get("qty") or 0.0),
+        order_type=str(snap.get("order_type") or "market"),
+        time_in_force=str(snap.get("time_in_force") or "day"),
+        limit_price=float(snap.get("limit_price")) if snap.get("limit_price") is not None else None,
+        asset_class=str(snap.get("asset_class") or infer_asset_class(metadata=md)).strip().upper(),
+        client_intent_id=str(snap.get("client_intent_id") or ""),
+        created_at=datetime.now(timezone.utc),
+        metadata={k: v for k, v in md.items() if v is not None},
+    ).normalized()
+
+
 @app.on_event("startup")
 def _startup() -> None:
     enforce_agent_mode_guard()
@@ -190,6 +262,9 @@ def _startup() -> None:
     app.state.engine = engine
     app.state.risk = risk
     app.state.agent_sm = AgentStateMachine(agent_id=str(os.getenv("EXEC_AGENT_ID") or "execution_engine"))
+    app.state.order_store = FirestoreExecutionOrderStore(
+        project_id=os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or None
+    )
     app.state.shutting_down = False
     # If kill-switch is active at boot, make it visible immediately.
     try:
@@ -307,13 +382,7 @@ def state(request: Request) -> dict[str, Any]:
     - Other agents/services MUST NOT depend on it.
     - It is disabled unless `EXEC_AGENT_ADMIN_KEY` is explicitly configured.
     """
-    required = str(os.getenv("EXEC_AGENT_ADMIN_KEY") or "").strip()
-    if not required:
-        # Hide the endpoint unless explicitly enabled.
-        raise HTTPException(status_code=404, detail="not_found")
-    provided = str(request.headers.get("X-Exec-Agent-Key") or "").strip()
-    if provided != required:
-        raise HTTPException(status_code=401, detail="unauthorized")
+    _require_admin(request)
 
     sm: AgentStateMachine = app.state.agent_sm
     risk: RiskManager = app.state.risk
@@ -372,11 +441,7 @@ def recover(request: Request) -> dict[str, Any]:
     If EXEC_AGENT_ADMIN_KEY is set, callers must provide matching header:
       X-Exec-Agent-Key: <key>
     """
-    required = str(os.getenv("EXEC_AGENT_ADMIN_KEY") or "").strip()
-    if required:
-        provided = str(request.headers.get("X-Exec-Agent-Key") or "").strip()
-        if provided != required:
-            raise HTTPException(status_code=401, detail="unauthorized")
+    _require_admin(request)
 
     sm: AgentStateMachine = app.state.agent_sm
     sm.recover(reason="manual_recover", meta={"source": "recover_endpoint"})
@@ -416,6 +481,7 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
         time_in_force=req.time_in_force,
         limit_price=req.limit_price,
         client_intent_id=idempotency_key,
+        asset_class=infer_asset_class(metadata=req.metadata),
         metadata=req.metadata,
     )
 
@@ -751,6 +817,46 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
             message=result.message,
         )
 
+    # Persist open-order tracking for recovery (best-effort).
+    # This is critical for OPTIONS: downstream can reconcile late rejections/timeouts instead of poisoning state.
+    try:
+        store: FirestoreExecutionOrderStore = app.state.order_store
+        tenant_id_for_record = _resolve_tenant_id_from_request_metadata(req.metadata) or tenant_for_snapshot
+        uid_for_record = _resolve_uid_from_request_metadata(req.metadata) or uid_for_snapshot
+        if tenant_id_for_record and uid_for_record and result.broker_order_id:
+            now = datetime.now(timezone.utc)
+            broker_status = str((result.broker_order or {}).get("status") or "").strip() or None
+            status_for_record = broker_status or str(result.status or "").strip()
+            store.upsert(
+                tenant_id=tenant_id_for_record,
+                client_intent_id=intent.client_intent_id,
+                payload={
+                    "tenant_id": tenant_id_for_record,
+                    "uid": uid_for_record,
+                    "client_intent_id": intent.client_intent_id,
+                    "broker_order_id": str(result.broker_order_id),
+                    "broker_account_id": intent.broker_account_id,
+                    "strategy_id": intent.strategy_id,
+                    "asset_class": intent.asset_class,
+                    "symbol": intent.symbol,
+                    "side": intent.side,
+                    "qty": float(intent.qty),
+                    "order_type": intent.order_type,
+                    "time_in_force": intent.time_in_force,
+                    "limit_price": float(intent.limit_price) if intent.limit_price is not None else None,
+                    "created_at": now,
+                    "created_at_iso": now.isoformat(),
+                    "status": status_for_record,
+                    "status_norm": str(status_for_record or "").strip().lower(),
+                    "last_broker_sync_at": now,
+                    "last_broker_sync_at_iso": now.isoformat(),
+                    "intent_snapshot": _intent_snapshot(intent),
+                    "last_broker_order": result.broker_order or None,
+                },
+            )
+    except Exception:
+        pass
+
         # Reject intents via HTTP 409 for easy callers.
         if result.status == "rejected":
             try:
@@ -776,5 +882,170 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
         except Exception:
             pass
         return resp
+
+
+class RecoverOrdersRequest(BaseModel):
+    tenant_id: str | None = None
+    asset_class: str = "OPTIONS"
+    limit: int = 50
+    dry_run: bool = False
+
+
+@app.post("/orders/recover")
+def recover_orders(body: RecoverOrdersRequest, request: Request) -> dict[str, Any]:
+    """
+    Detect and recover failed/stuck orders.
+
+    - Detect: rejected / stale / unfilled-beyond-timeout
+    - Cancel + reconcile: poll broker, write fills if any, cancel timed-out opens, mark terminal, and best-effort release.
+
+    Security:
+      - Disabled unless EXEC_AGENT_ADMIN_KEY is configured.
+      - Requires header: X-Exec-Agent-Key
+    """
+    _require_admin(request)
+    engine: ExecutionEngine = app.state.engine
+    store: FirestoreExecutionOrderStore = app.state.order_store
+    rules = TimeoutRules.from_env()
+
+    tenant_id = (str(body.tenant_id).strip() if body.tenant_id else None) or str(
+        os.getenv("TENANT_ID") or os.getenv("EXEC_TENANT_ID") or ""
+    ).strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail={"error": "missing_tenant_id"})
+
+    asset_class = str(body.asset_class or "").strip().upper() or None
+    limit = int(max(1, min(500, body.limit)))
+    now = datetime.now(timezone.utc)
+
+    candidates = store.list_open(tenant_id=tenant_id, asset_class=asset_class, limit=limit)
+    results: list[dict[str, Any]] = []
+
+    for rec in candidates:
+        broker_order_id = rec.broker_order_id
+        if not broker_order_id:
+            # Nothing actionable; mark as stale record.
+            results.append(
+                {
+                    "client_intent_id": rec.client_intent_id,
+                    "action": "noop_missing_broker_order_id",
+                }
+            )
+            continue
+
+        intent = None
+        try:
+            if rec.intent_snapshot:
+                intent = _intent_from_snapshot(rec.intent_snapshot)
+        except Exception:
+            intent = None
+
+        # Decide whether we need to poll/cancel.
+        timeout_s = timeout_seconds_for_intent(
+            asset_class=(intent.asset_class if intent else rec.asset_class),
+            order_type=(intent.order_type if intent else "market"),
+            rules=rules,
+        )
+        should_poll = is_stale_for_poll(now=now, last_broker_sync_at=rec.last_broker_sync_at, rules=rules)
+        should_timeout_cancel = bool(is_unfilled_past_timeout(now=now, created_at=rec.created_at, timeout_s=timeout_s))
+
+        action = "noop"
+        broker_order: dict[str, Any] | None = None
+        try:
+            if should_poll:
+                broker_order = engine.sync_and_ledger_if_filled(broker_order_id=broker_order_id, intent=intent)
+        except Exception as e:
+            results.append(
+                {
+                    "client_intent_id": rec.client_intent_id,
+                    "broker_order_id": broker_order_id,
+                    "action": "poll_failed",
+                    "error": f"{type(e).__name__}: {e}",
+                }
+            )
+            continue
+
+        # If we polled, use broker status; else fall back to stored status.
+        status = str((broker_order or {}).get("status") or rec.status or "").strip()
+        status_norm = status.lower()
+
+        # Cancel timed-out open orders.
+        if should_timeout_cancel and is_open_status(status_norm):
+            if body.dry_run:
+                action = "dry_run_timeout_cancel"
+            else:
+                try:
+                    engine.cancel(broker_order_id=broker_order_id)
+                    action = "timeout_cancel"
+                    # Re-poll once to capture terminal status if possible.
+                    try:
+                        broker_order = engine.sync_and_ledger_if_filled(broker_order_id=broker_order_id, intent=intent)
+                        status = str((broker_order or {}).get("status") or status).strip()
+                        status_norm = status.lower()
+                    except Exception:
+                        pass
+                except Exception as e:
+                    results.append(
+                        {
+                            "client_intent_id": rec.client_intent_id,
+                            "broker_order_id": broker_order_id,
+                            "action": "cancel_failed",
+                            "error": f"{type(e).__name__}: {e}",
+                        }
+                    )
+                    continue
+        elif should_poll:
+            action = "polled"
+
+        # Persist updated state.
+        try:
+            store.upsert(
+                tenant_id=tenant_id,
+                client_intent_id=rec.client_intent_id,
+                payload={
+                    "tenant_id": tenant_id,
+                    "client_intent_id": rec.client_intent_id,
+                    "broker_order_id": broker_order_id,
+                    "asset_class": (intent.asset_class if intent else rec.asset_class),
+                    "status": status,
+                    "status_norm": status_norm,
+                    "last_broker_sync_at": now,
+                    "last_broker_sync_at_iso": now.isoformat(),
+                    "timeout_s": timeout_s,
+                    "timeout_at_iso": (rec.created_at + timedelta(seconds=timeout_s)).isoformat()
+                    if rec.created_at
+                    else None,
+                    "intent_snapshot": rec.intent_snapshot or (_intent_snapshot(intent) if intent else {}),
+                    "last_broker_order": broker_order or None,
+                },
+            )
+        except Exception:
+            pass
+
+        results.append(
+            {
+                "client_intent_id": rec.client_intent_id,
+                "broker_order_id": broker_order_id,
+                "status": status,
+                "action": action,
+                "timed_out": bool(should_timeout_cancel),
+                "stale_polled": bool(should_poll),
+                "is_terminal": bool(is_terminal_status(status_norm)),
+            }
+        )
+
+    return {
+        "tenant_id": tenant_id,
+        "asset_class": asset_class,
+        "rules": {
+            "stale_s": rules.stale_s,
+            "options_market_s": rules.options_market_s,
+            "options_limit_s": rules.options_limit_s,
+            "default_market_s": rules.default_market_s,
+            "default_limit_s": rules.default_limit_s,
+        },
+        "count": len(results),
+        "results": results,
+    }
 
 

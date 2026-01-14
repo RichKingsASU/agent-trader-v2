@@ -2212,7 +2212,7 @@ class ExecutionEngine:
         # NOTE: The canonical reservation key is client_intent_id; without it we cannot reliably release here.
         return resp
 
-    def sync_and_ledger_if_filled(self, *, broker_order_id: str) -> dict[str, Any]:
+    def sync_and_ledger_if_filled(self, *, broker_order_id: str, intent: OrderIntent | None = None) -> dict[str, Any]:
         """
         Poll broker for status; if filled/partially_filled write/update ledger and portfolio history.
         """
@@ -2250,21 +2250,24 @@ class ExecutionEngine:
         filled_qty = float(order.get("filled_qty") or 0.0)
         if status in {"filled", "partially_filled"} or filled_qty > 0:
             # We need the original intent to write a complete ledger record.
-            # Best-effort: reconstruct from broker payload + metadata.
-            intent = OrderIntent(
-                strategy_id=str(order.get("client_order_id") or "unknown_strategy"),
-                broker_account_id=str(order.get("account_id") or "unknown_account"),
-                symbol=str(order.get("symbol") or ""),
-                side=str(order.get("side") or ""),
-                qty=float(order.get("qty") or 0.0),
-                order_type=str(order.get("type") or "market"),
-                time_in_force=str(order.get("time_in_force") or "day"),
-                limit_price=float(order.get("limit_price")) if order.get("limit_price") else None,
-                asset_class="EQUITY",  # Default, could be enhanced with metadata
-                client_intent_id=str(order.get("client_order_id") or f"recon_{broker_order_id}"),
-                created_at=_utc_now(),
-                metadata={"reconstructed": True},
-            ).normalized()
+            # Prefer the caller-provided intent snapshot (replay-safe); otherwise best-effort reconstruct.
+            if intent is None:
+                intent = OrderIntent(
+                    strategy_id=str(order.get("client_order_id") or "unknown_strategy"),
+                    broker_account_id=str(order.get("account_id") or "unknown_account"),
+                    symbol=str(order.get("symbol") or ""),
+                    side=str(order.get("side") or ""),
+                    qty=float(order.get("qty") or 0.0),
+                    order_type=str(order.get("type") or "market"),
+                    time_in_force=str(order.get("time_in_force") or "day"),
+                    limit_price=float(order.get("limit_price")) if order.get("limit_price") else None,
+                    asset_class=str(order.get("asset_class") or "EQUITY").strip().upper(),
+                    client_intent_id=str(order.get("client_order_id") or f"recon_{broker_order_id}"),
+                    created_at=_utc_now(),
+                    metadata={"reconstructed": True},
+                ).normalized()
+            else:
+                intent = intent.normalized()
             self._write_ledger_fill(intent=intent, broker_order=order, fill=order)
             self._write_portfolio_history(intent=intent, broker_order=order, fill=order)
             # Best-effort: release reservation if client_intent_id matches reservation trade_id.
