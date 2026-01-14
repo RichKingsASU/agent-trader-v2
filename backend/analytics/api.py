@@ -50,6 +50,7 @@ class TradeAnalyticsResponse(BaseModel):
     best_day: Optional[DailyPnLResponse]
     worst_day: Optional[DailyPnLResponse]
     most_traded_symbols: List[tuple]
+    max_drawdown_pct: float
 
 
 class WinLossRatioResponse(BaseModel):
@@ -183,6 +184,7 @@ async def get_trade_analytics(
             best_day=DailyPnLResponse(**analytics.best_day.__dict__) if analytics.best_day else None,
             worst_day=DailyPnLResponse(**analytics.worst_day.__dict__) if analytics.worst_day else None,
             most_traded_symbols=analytics.most_traded_symbols,
+            max_drawdown_pct=analytics.max_drawdown_pct,
         )
         
     except Exception as e:

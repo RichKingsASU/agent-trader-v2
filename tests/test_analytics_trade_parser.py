@@ -127,6 +127,10 @@ def test_compute_trade_analytics(sample_trades):
     assert "SPY" in symbol_names
     assert "AAPL" in symbol_names
 
+    # Drawdown should be computed from the daily equity curve
+    # Equity: 10000 -> 10048 -> 10005, so max DD ~= (10048-10005)/10048*100 ~= 0.428%
+    assert analytics.max_drawdown_pct == pytest.approx(0.428, abs=0.01)
+
 
 def test_compute_daily_pnl_with_date_filter(sample_trades):
     """Test daily P&L with date filtering"""

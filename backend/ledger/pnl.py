@@ -24,17 +24,38 @@ from typing import Any, Deque, Iterable, Mapping, Optional
 from collections import deque
 
 from backend.time.nyse_time import to_utc
+from decimal import Decimal
 
 
 def _as_utc(dt: datetime) -> datetime:
     return to_utc(dt)
 
 
+def _D(v: Any) -> Decimal:
+    """
+    Convert a numeric-ish value to Decimal safely.
+
+    IMPORTANT:
+    - Never call Decimal(float) directly (binary float artifacts).
+    - Use Decimal(str(x)) for int/float inputs.
+    """
+    if v is None:
+        return Decimal("0")
+    if isinstance(v, Decimal):
+        return v
+    if isinstance(v, (int, float)):
+        return Decimal(str(v))
+    if isinstance(v, str):
+        s = v.strip()
+        return Decimal(s) if s else Decimal("0")
+    return Decimal(str(v))
+
+
 @dataclass(slots=True)
 class _Lot:
-    qty: float
-    price: float
-    fees_per_unit: float
+    qty: Decimal
+    price: Decimal
+    fees_per_unit: Decimal
     ts: datetime
     trade_id: str
 
@@ -55,8 +76,28 @@ class AttributedTrade:
 
 
 @dataclass(frozen=True, slots=True)
+class ClosedPosition:
+    """
+    A "closed position event" attributable to a fill that closes inventory.
+
+    One event per fill that produces non-zero realized attribution (P&L and/or fees).
+    This is used by analytics to compute win rate and daily realized aggregation.
+    """
+
+    trade_id: str
+    symbol: str
+    side: str
+    qty_closed: float
+    realized_pnl: float  # gross realized P&L (before fees)
+    total_fees: float  # allocated realized fees for the closed qty
+    realized_pnl_net: float
+    ts: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class PnlResult:
     trades: list[AttributedTrade]
+    closed_positions: list[ClosedPosition]
     realized_pnl_gross: float
     realized_fees: float
     realized_pnl_net: float
@@ -127,10 +168,10 @@ def compute_pnl_fifo(
 
     longs: Deque[_Lot] = deque()
     shorts: Deque[_Lot] = deque()
-    position_qty = 0.0
+    position_qty = Decimal("0")
 
-    realized_gross_total = 0.0
-    realized_fees_total = 0.0
+    realized_gross_total = Decimal("0")
+    realized_fees_total = Decimal("0")
     out: list[AttributedTrade] = []
 
     for i, t in enumerate(raw):
@@ -139,19 +180,19 @@ def compute_pnl_fifo(
         if side not in {"buy", "sell"}:
             raise ValueError("trade[side] must be 'buy' or 'sell'")
 
-        qty = _req_num_pos(t, "qty")
-        price = _req_num_pos(t, "price")
+        qty = _D(_req_num_pos(t, "qty"))
+        price = _D(_req_num_pos(t, "price"))
         ts = _req_ts(t, "ts")
-        fees = _req_num_nonneg(t, "fees")
+        fees = _D(_req_num_nonneg(t, "fees"))
 
         trade_id = t.get(trade_id_field)
         if not isinstance(trade_id, str) or not trade_id.strip():
             trade_id = f"t_{i}"
         trade_id = trade_id.strip()
 
-        fees_per_unit = fees / qty
-        realized_gross = 0.0
-        realized_fees = 0.0
+        fees_per_unit = (fees / qty) if qty != 0 else Decimal("0")
+        realized_gross = Decimal("0")
+        realized_fees = Decimal("0")
 
         remaining = qty
         if side == "buy":
@@ -167,7 +208,9 @@ def compute_pnl_fifo(
                     shorts.popleft()
 
             if remaining > 0:
-                longs.append(_Lot(qty=remaining, price=price, fees_per_unit=fees_per_unit, ts=ts, trade_id=trade_id))
+                longs.append(
+                    _Lot(qty=remaining, price=price, fees_per_unit=fees_per_unit, ts=ts, trade_id=trade_id)
+                )
 
             position_qty += qty
 
@@ -184,7 +227,9 @@ def compute_pnl_fifo(
                     longs.popleft()
 
             if remaining > 0:
-                shorts.append(_Lot(qty=remaining, price=price, fees_per_unit=fees_per_unit, ts=ts, trade_id=trade_id))
+                shorts.append(
+                    _Lot(qty=remaining, price=price, fees_per_unit=fees_per_unit, ts=ts, trade_id=trade_id)
+                )
 
             position_qty -= qty
 
@@ -197,38 +242,56 @@ def compute_pnl_fifo(
                 trade_id=trade_id,
                 symbol=symbol,
                 side=side,
-                qty=qty,
-                price=price,
+                qty=float(qty),
+                price=float(price),
                 ts=ts,
-                fees=fees,
-                realized_pnl_gross=realized_gross,
-                realized_fees=realized_fees,
-                realized_pnl_net=realized_net,
-                position_qty_after=position_qty,
+                fees=float(fees),
+                realized_pnl_gross=float(realized_gross),
+                realized_fees=float(realized_fees),
+                realized_pnl_net=float(realized_net),
+                position_qty_after=float(position_qty),
             )
         )
 
     def _lot_to_dict(l: _Lot) -> dict[str, Any]:
         return {
-            "qty": l.qty,
-            "price": l.price,
-            "fees_per_unit": l.fees_per_unit,
+            "qty": float(l.qty),
+            "price": float(l.price),
+            "fees_per_unit": float(l.fees_per_unit),
             "ts": l.ts,
             "trade_id": l.trade_id,
         }
 
+    closed_positions: list[ClosedPosition] = []
+    for t in out:
+        if abs(float(t.realized_pnl_gross)) > 0.0 or abs(float(t.realized_fees)) > 0.0:
+            closed_positions.append(
+                ClosedPosition(
+                    trade_id=t.trade_id,
+                    symbol=t.symbol,
+                    side=t.side,
+                    qty_closed=t.qty,
+                    realized_pnl=t.realized_pnl_gross,
+                    total_fees=t.realized_fees,
+                    realized_pnl_net=t.realized_pnl_net,
+                    ts=t.ts,
+                )
+            )
+
     return PnlResult(
         trades=out,
-        realized_pnl_gross=realized_gross_total,
-        realized_fees=realized_fees_total,
-        realized_pnl_net=realized_gross_total - realized_fees_total,
-        position_qty=position_qty,
+        closed_positions=closed_positions,
+        realized_pnl_gross=float(realized_gross_total),
+        realized_fees=float(realized_fees_total),
+        realized_pnl_net=float(realized_gross_total - realized_fees_total),
+        position_qty=float(position_qty),
         open_long_lots=[_lot_to_dict(l) for l in list(longs)],
         open_short_lots=[_lot_to_dict(l) for l in list(shorts)],
     )
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .models import LedgerTrade
@@ -236,8 +299,8 @@ from .models import LedgerTrade
 
 @dataclass(slots=True)
 class Lot:
-    qty: float
-    price: float  # effective price including fees/slippage allocation (USD/share)
+    qty: Decimal
+    price: Decimal  # effective price including fees/slippage allocation (USD/share)
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,11 +333,13 @@ def _effective_price_per_unit(trade: LedgerTrade) -> float:
     - BUY: costs increase effective price: px_eff = px + cost/qty
     - SELL: proceeds decrease effective price: px_eff = px - cost/qty
     """
-    cost = float(trade.fees or 0.0) + float(trade.slippage or 0.0)
-    per_unit = cost / float(trade.qty)
+    cost = _D(trade.fees or 0.0) + _D(trade.slippage or 0.0)
+    qty = _D(trade.qty)
+    per_unit = (cost / qty) if qty != 0 else Decimal("0")
+    px = _D(trade.price)
     if trade.side == "buy":
-        return float(trade.price) + per_unit
-    return float(trade.price) - per_unit
+        return float(px + per_unit)
+    return float(px - per_unit)
 
 
 def compute_fifo_pnl(
@@ -313,15 +378,15 @@ def compute_fifo_pnl(
     for t in sorted(filtered, key=_trade_sort_key):
         key = (t.tenant_id, t.uid, t.strategy_id, t.symbol)
         if key not in groups:
-            groups[key] = {"long": [], "short": [], "realized": 0.0}
+            groups[key] = {"long": [], "short": [], "realized": Decimal("0")}
 
         state = groups[key]
         long_lots: List[Lot] = state["long"]  # type: ignore[assignment]
         short_lots: List[Lot] = state["short"]  # type: ignore[assignment]
-        realized: float = state["realized"]  # type: ignore[assignment]
+        realized: Decimal = state["realized"]  # type: ignore[assignment]
 
-        qty = float(t.qty)
-        px_eff = _effective_price_per_unit(t)
+        qty = _D(t.qty)
+        px_eff = _D(_effective_price_per_unit(t))
 
         if t.side == "buy":
             qty_to_buy = qty
@@ -363,12 +428,12 @@ def compute_fifo_pnl(
     for (tenant_id, uid, strategy_id, symbol), state in groups.items():
         long_lots = state["long"]  # type: ignore[assignment]
         short_lots = state["short"]  # type: ignore[assignment]
-        realized = float(state["realized"])  # type: ignore[arg-type]
+        realized = _D(state["realized"])  # type: ignore[arg-type]
 
         mark = mark_prices.get(symbol)
-        unreal = 0.0
+        unreal = Decimal("0")
         if isinstance(mark, (int, float)):
-            m = float(mark)
+            m = _D(mark)
             unreal += sum((m - lot.price) * lot.qty for lot in long_lots)
             unreal += sum((lot.price - m) * lot.qty for lot in short_lots)
 
@@ -379,9 +444,9 @@ def compute_fifo_pnl(
                 uid=uid,
                 strategy_id=strategy_id,
                 symbol=symbol,
-                position_qty=position_qty,
-                realized_pnl=realized,
-                unrealized_pnl=unreal,
+                position_qty=float(position_qty),
+                realized_pnl=float(realized),
+                unrealized_pnl=float(unreal),
             )
         )
 

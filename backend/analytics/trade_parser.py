@@ -9,7 +9,8 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from decimal import Decimal
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from backend.ledger.models import LedgerTrade
 from backend.ledger.pnl import compute_pnl_fifo
@@ -49,11 +50,70 @@ class TradeAnalytics:
     best_day: Optional[DailyPnLSummary]
     worst_day: Optional[DailyPnLSummary]
     most_traded_symbols: List[tuple[str, int]]
+    max_drawdown_pct: float
 
 
 def _as_utc(dt: datetime) -> datetime:
     """Convert datetime to UTC"""
     return to_utc(dt)
+
+
+def _D(v: Any) -> Decimal:
+    if v is None:
+        return Decimal("0")
+    if isinstance(v, Decimal):
+        return v
+    if isinstance(v, (int, float)):
+        return Decimal(str(v))
+    if isinstance(v, str):
+        s = v.strip()
+        return Decimal(s) if s else Decimal("0")
+    return Decimal(str(v))
+
+
+def _to_fifo_trade_dict(t: LedgerTrade, *, i: int) -> Dict[str, Any]:
+    """
+    Convert a LedgerTrade into the dict-shape expected by compute_pnl_fifo().
+
+    We include slippage in fees because compute_pnl_fifo treats `fees` as fee-like costs.
+    """
+    return {
+        "trade_id": f"{t.ts.isoformat()}|{t.broker_fill_id or ''}|{t.order_id or ''}|{i}",
+        "symbol": t.symbol,
+        "side": t.side,
+        "qty": float(t.qty),
+        "price": float(t.price),
+        "ts": t.ts,
+        "fees": float((t.fees or 0.0) + (t.slippage or 0.0)),
+    }
+
+
+def _max_drawdown_pct_from_daily_pnl(
+    daily_summaries: List[DailyPnLSummary],
+    *,
+    starting_equity: Decimal = Decimal("10000"),
+) -> float:
+    """
+    Compute max drawdown % from a daily net P&L series.
+
+    Drawdown is computed on an equity curve:
+      equity_t = equity_{t-1} + daily_total_pnl
+      dd_t = (HWM - equity_t) / HWM * 100
+    """
+    eq = _D(starting_equity)
+    if eq <= 0:
+        eq = Decimal("1")
+    hwm = eq
+    max_dd = Decimal("0")
+    for d in daily_summaries:
+        eq += _D(d.total_pnl)
+        if eq > hwm:
+            hwm = eq
+        if hwm > 0:
+            dd = (hwm - eq) / hwm * Decimal("100")
+            if dd > max_dd:
+                max_dd = dd
+    return float(max_dd)
 
 
 def compute_daily_pnl(
@@ -109,19 +169,19 @@ def compute_daily_pnl(
         symbols_traded = list(trades_by_symbol.keys())
         
         for symbol, symbol_trades in trades_by_symbol.items():
-            # Sort by timestamp to ensure proper FIFO ordering
+            # Sort for deterministic trade_id generation
             symbol_trades.sort(key=lambda t: t.ts)
-            
-            # Use FIFO to calculate realized P&L for closed positions
-            pnl_result = compute_pnl_fifo(symbol_trades)
-            
-            for closed_position in pnl_result.closed_positions:
-                realized_pnl = closed_position.realized_pnl
-                fees = closed_position.total_fees
-                
+
+            fifo_trades = [_to_fifo_trade_dict(t, i=i) for i, t in enumerate(symbol_trades)]
+            pnl_result = compute_pnl_fifo(fifo_trades, trade_id_field="trade_id", sort_by_ts=True)
+
+            for closed in pnl_result.closed_positions:
+                realized_pnl = float(closed.realized_pnl)
+                fees = float(closed.total_fees)
+
                 daily_pnl += realized_pnl
                 daily_fees += fees
-                
+
                 if realized_pnl > 0:
                     winning_trades += 1
                     wins.append(realized_pnl)
@@ -189,6 +249,7 @@ def compute_trade_analytics(
             best_day=None,
             worst_day=None,
             most_traded_symbols=[],
+            max_drawdown_pct=0.0,
         )
     
     # Aggregate metrics
@@ -211,6 +272,8 @@ def compute_trade_analytics(
     
     most_traded = sorted(symbol_counts.items(), key=lambda x: x[1], reverse=True)[:10]
     
+    max_drawdown_pct = _max_drawdown_pct_from_daily_pnl(daily_summaries)
+
     return TradeAnalytics(
         daily_summaries=daily_summaries,
         total_pnl=total_pnl,
@@ -222,6 +285,7 @@ def compute_trade_analytics(
         best_day=best_day,
         worst_day=worst_day,
         most_traded_symbols=most_traded,
+        max_drawdown_pct=max_drawdown_pct,
     )
 
 
@@ -259,12 +323,13 @@ def compute_win_loss_ratio(
     
     for symbol, symbol_trades in trades_by_symbol.items():
         symbol_trades.sort(key=lambda t: t.ts)
-        pnl_result = compute_pnl_fifo(symbol_trades)
+        fifo_trades = [_to_fifo_trade_dict(t, i=i) for i, t in enumerate(symbol_trades)]
+        pnl_result = compute_pnl_fifo(fifo_trades, trade_id_field="trade_id", sort_by_ts=True)
         
         for closed_position in pnl_result.closed_positions:
-            if closed_position.realized_pnl > 0:
+            if float(closed_position.realized_pnl) > 0:
                 winning_trades += 1
-            elif closed_position.realized_pnl < 0:
+            elif float(closed_position.realized_pnl) < 0:
                 losing_trades += 1
     
     total_trades = winning_trades + losing_trades
