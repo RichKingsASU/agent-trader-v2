@@ -167,6 +167,35 @@ def _bars_from_alpaca_payload(rows: List[dict[str, Any]]) -> List[Bar]:
     return out
 
 
+def _synthetic_bars_1m(*, symbol: str, start_utc: datetime, end_utc: datetime) -> List[Bar]:
+    """
+    Deterministic synthetic 1m bars as a fallback when real market data cannot be fetched.
+
+    Note: This does NOT satisfy the "replay last trading day" requirement; it's only
+    used to exercise strategy+execution paths so we can still validate gating.
+    """
+    bars: List[Bar] = []
+    # Stable starting price per symbol (avoid randomness).
+    base = 100.0 + (sum(ord(c) for c in symbol) % 50)
+    t = start_utc.replace(second=0, microsecond=0, tzinfo=timezone.utc)
+    i = 0
+    while t < end_utc:
+        px = base + (0.05 * i)
+        bars.append(
+            Bar(
+                ts=t,
+                open=round(px, 2),
+                high=round(px + 0.10, 2),
+                low=round(px - 0.10, 2),
+                close=round(px + 0.02, 2),
+                volume=1000 + (i % 200),
+            )
+        )
+        t = t + timedelta(minutes=1)
+        i += 1
+    return bars
+
+
 def _build_flow_proxy(*, recent_bars_desc: List[Bar], max_events: int = 10) -> List[FlowEvent]:
     """
     The built-in naive strategy expects options flow events; for this dry-run we
@@ -225,9 +254,15 @@ def run() -> DryRunResult:
             raw = _fetch_bars_1m(symbol=sym, start_utc=start_utc, end_utc=end_utc, feed=feed)
             bars = _bars_from_alpaca_payload(raw)
             ingested[sym] = bars
+        details["ingestion_mode"] = "alpaca"
     except Exception as e:
+        # Hard requirement for the task: replay last trading day. If we can't fetch bars,
+        # we must FAIL, but we still run the downstream checks using synthetic bars so
+        # we can report whether strategies/execution are healthy.
         blockers.append(f"data_ingestion_failed: {type(e).__name__}: {e}")
-        return DryRunResult(status="FAIL", blockers=blockers, details=details)
+        details["ingestion_mode"] = "synthetic_fallback"
+        for sym in symbols:
+            ingested[sym] = _synthetic_bars_1m(symbol=sym, start_utc=start_utc, end_utc=end_utc)
 
     details["ingestion"] = {sym: {"bars": len(bars)} for sym, bars in ingested.items()}
 
