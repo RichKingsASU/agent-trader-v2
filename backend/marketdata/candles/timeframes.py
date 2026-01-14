@@ -94,21 +94,9 @@ def parse_timeframe(value: str) -> Timeframe:
         else:
             raise ValueError(f"Invalid timeframe unit: {value!r}")
 
-New code should prefer `backend.marketdata.candles.timeframe`.
-"""
 
-from __future__ import annotations
 
-from datetime import datetime
 
-from backend.marketdata.candles.timeframe import (  # noqa: F401
-    SUPPORTED_TIMEFRAMES,
-    Timeframe,
-    bar_range_utc,
-    floor_time,
-    parse_timeframe,
-    parse_timeframes,
-)
 
 
 def bucket_range_utc(
@@ -124,8 +112,7 @@ def bucket_range_utc(
     Alignment rules:
     - Intraday (S/M/H): floor in UTC.
     - D/W/M: align by market timezone (default America/New_York) boundaries.
-    - Optional: session_daily=True aligns daily candles to NY RTH session start (09:30).
-    """
+           - Optional: session_daily=True aligns daily candles to NY RTH session start (9:30).    """
     ts_utc = ensure_aware_utc(ts_utc)
 
     if tf.unit in {"s", "m", "h"}:

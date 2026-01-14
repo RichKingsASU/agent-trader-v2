@@ -19,10 +19,9 @@ DEFAULT_DRAWDOWN_THRESHOLD = Decimal("0.05")  # 5% drawdown threshold
 MIN_EQUITY_FOR_TRACKING = Decimal("100.0")  # Minimum equity to start tracking
 
 
-def _safe_decimal(value: Any, field_name: str = "value") -> Decimal:
+@dataclass(frozen=True)
+class AccountSnapshot:
     """
-    Safely convert value to Decimal with financial precision.
-    
     Attributes:
         equity: Current account equity (total value) - stored as string for precision
         buying_power: Available buying power - stored as string for precision
@@ -44,6 +43,14 @@ class RiskCheckResult:
     """
     allowed: bool
     reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class TradeRequest:
+    symbol: str
+    side: str # "buy" or "sell"
+    qty: float
+    notional_usd: float
 
 
 def _get_firestore() -> firestore.Client:
@@ -71,6 +78,26 @@ def _as_decimal(v: Any) -> Decimal:
         if s == "":
             return Decimal("0")
         return Decimal(s)
+    raise TypeError(f"Expected number-like value, got {type(v).__name__}")
+
+
+def _as_float(v: Any) -> float:
+    """
+    Safely convert value to float.
+    Returns 0.0 for None or empty strings.
+    """
+    if v is None:
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        s = v.strip()
+        if s == "":
+            return 0.0
+        try:
+            return float(s)
+        except ValueError:
+            raise TypeError(f"Could not convert string to float: {v!r}")
     raise TypeError(f"Expected number-like value, got {type(v).__name__}")
 
 
@@ -328,15 +355,12 @@ def _check_trade_size(
     return None
 
 
-def manual_override_trading(
-    *,
-    db: firestore.Client,
-    enabled: bool,
-    override_reason: str,
-) -> Dict[str, Any]:
+def validate_trade_risk(
+    account_snapshot: AccountSnapshot,
+    trade_request: TradeRequest,
+    db: Optional[firestore.Client] = None
+) -> RiskCheckResult:
     """
-    Manually override the trading_enabled flag.
-    
     This is a pure utility function that checks:
     1. Current equity is NOT more than 5% below the High Water Mark
     2. Trade size does NOT exceed 5% of buying power
@@ -386,7 +410,11 @@ def manual_override_trading(
         logger.error("Trade rejected: %s", hwm_error)
         return RiskCheckResult(allowed=False, reason=hwm_error)
     
-    risk_doc_ref.set(update_data, merge=True)
+    # Check 2: Trade size as percentage of buying power
+    trade_size_error = _check_trade_size(trade_request.notional_usd, account_snapshot.buying_power)
+    if trade_size_error:
+        logger.error("Trade rejected: %s", trade_size_error)
+        return RiskCheckResult(allowed=False, reason=trade_size_error)
     
     # All checks passed
     notional_dec = Decimal(str(trade_request.notional_usd))
@@ -401,4 +429,4 @@ def manual_override_trading(
         pct_bp.quantize(Decimal("0.01"))
     )
     
-    return update_data
+    return RiskCheckResult(allowed=True, reason=None)

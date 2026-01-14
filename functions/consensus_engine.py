@@ -20,7 +20,7 @@ from decimal import Decimal
 
 from firebase_admin import firestore
 from strategies.base_strategy import BaseStrategy, TradingSignal, SignalType
-from strategies.loader import load_strategies
+from strategies.loader import get_strategy_loader
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,7 @@ class ConsensusEngine:
         self.db = db
         
         # Load all available strategies
-        self.available_strategies = load_strategies()
+        self.available_strategies = get_strategy_loader(db=self.db).get_all_strategies()
         
         logger.info(
             f"ConsensusEngine initialized: threshold={self.consensus_threshold}, "
