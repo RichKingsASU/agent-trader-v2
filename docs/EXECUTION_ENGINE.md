@@ -42,6 +42,16 @@ Implemented in `RiskManager`:
   - Reads `public.broker_positions` from Postgres (requires `DATABASE_URL`)
   - Compares projected post-trade position vs `EXEC_MAX_POSITION_QTY`
 
+Additional execution safety gates (implemented in `ExecutionEngine`):
+
+- **Market open delay (NYSE regular session)**
+  - **Default**: blocks **EQUITY/OPTIONS** order placement for the first **5 minutes** after the NYSE open
+  - Purpose: avoid unstable open conditions (wide spreads, price discovery spikes)
+  - Applies only to **real broker placement** (dry-run remains allowed)
+  - Override via env vars:
+    - `MARKET_OPEN_TRADE_DELAY_MINUTES` (int minutes; set to `0` to disable)
+    - `MARKET_OPEN_TRADE_DELAY_DISABLED=true` (force disable)
+
 Safety behavior:
 
 - **Fail-closed by default**: if required risk data can’t be fetched, the intent is rejected with `risk_data_unavailable`.
@@ -99,6 +109,8 @@ In dry-run:
 ### Execution
 
 - `EXEC_DRY_RUN` (bool-like, default `true`)
+- `MARKET_OPEN_TRADE_DELAY_MINUTES` (int, default `5`) – block EQUITY/OPTIONS trading for N minutes after NYSE open
+- `MARKET_OPEN_TRADE_DELAY_DISABLED` (bool-like, default `false`) – disable the market-open delay gate (or set minutes to `0`)
 
 ### Execution agent safety gate (Cloud Run service)
 

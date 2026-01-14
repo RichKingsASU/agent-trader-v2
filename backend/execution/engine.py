@@ -8,7 +8,7 @@ import threading
 import uuid
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional, Protocol, runtime_checkable
 
 import requests
@@ -24,7 +24,7 @@ from backend.common.kill_switch import (
 from backend.common.runtime_execution_prevention import fatal_if_execution_reached
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.common.freshness import check_freshness
-from backend.time.nyse_time import parse_ts
+from backend.time.nyse_time import is_trading_day, market_open_dt, parse_ts, to_nyse
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.risk.capital_reservation import (
     CapitalReservationError,
@@ -40,6 +40,153 @@ logger = logging.getLogger(__name__)
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# Market-open safety gate
+# ---------------------------------------------------------------------------
+#
+# Goal: avoid trading during the unstable first minutes after the NYSE open.
+#
+# Contract:
+# - Applies to EQUITY / OPTIONS only (forex/crypto are 24/5+ and should not be blocked).
+# - Applies only to real broker placement (dry-run remains allowed for simulation/testing).
+# - Default delay is intentionally conservative but short.
+DEFAULT_MARKET_OPEN_TRADE_DELAY_MINUTES = 5
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _market_open_trade_delay_minutes() -> int:
+    """
+    Resolve the post-open trading delay (minutes).
+
+    Disable semantics:
+    - `MARKET_OPEN_TRADE_DELAY_DISABLED=true` (or alias `DISABLE_MARKET_OPEN_TRADE_DELAY=true`) => 0
+    - `MARKET_OPEN_TRADE_DELAY_MINUTES=0` => 0
+    """
+    if _bool_env("MARKET_OPEN_TRADE_DELAY_DISABLED", False) or _bool_env("DISABLE_MARKET_OPEN_TRADE_DELAY", False):
+        return 0
+
+    raw = os.getenv("MARKET_OPEN_TRADE_DELAY_MINUTES")
+    if raw is None or str(raw).strip() == "":
+        return int(DEFAULT_MARKET_OPEN_TRADE_DELAY_MINUTES)
+
+    try:
+        minutes = int(str(raw).strip())
+    except Exception:
+        logger.warning(
+            "exec.market_open_delay_invalid_value value=%r default_minutes=%s",
+            raw,
+            DEFAULT_MARKET_OPEN_TRADE_DELAY_MINUTES,
+        )
+        return int(DEFAULT_MARKET_OPEN_TRADE_DELAY_MINUTES)
+
+    if minutes < 0:
+        return 0
+    # Hard cap to prevent accidental multi-hour lockouts.
+    return min(minutes, 180)
+
+
+def _market_open_delay_rejection(*, intent: "OrderIntent", dry_run: bool) -> RiskDecision | None:
+    """
+    Return a RiskDecision denying the trade if we're within the configured post-open delay window.
+    """
+    # Only gate real executions; simulation should remain available.
+    if bool(dry_run):
+        return None
+
+    # Gate only session-based asset classes.
+    asset_class = str(getattr(intent, "asset_class", "") or "").strip().upper()
+    if asset_class not in {"EQUITY", "OPTIONS"}:
+        return None
+
+    delay_min = _market_open_trade_delay_minutes()
+    if delay_min <= 0:
+        return None
+
+    now_utc = _utc_now()
+    now_ny = to_nyse(now_utc)
+    d = now_ny.date()
+    if not is_trading_day(d):
+        return None
+
+    open_ny = market_open_dt(d)
+    blocked_until_ny = open_ny + timedelta(minutes=float(delay_min))
+    if not (open_ny <= now_ny < blocked_until_ny):
+        return None
+
+    check = {
+        "check": "market_open_delay",
+        "asset_class": asset_class,
+        "delay_minutes": int(delay_min),
+        "now_ny": now_ny.isoformat(),
+        "market_open_ny": open_ny.isoformat(),
+        "blocked_until_ny": blocked_until_ny.isoformat(),
+        "disabled": False,
+    }
+    logger.warning("exec.market_open_delay_blocked %s", json.dumps(_to_jsonable(check)))
+    return RiskDecision(allowed=False, reason="market_open_delay", checks=[check])
+
+
+def resolve_tenant_id_from_metadata(metadata: dict[str, Any] | None) -> str | None:
+    """
+    Best-effort tenant id resolution for components that want optional tenant scoping.
+
+    Preference:
+    - intent.metadata.tenant_id
+    - env EXEC_TENANT_ID
+    - env TENANT_ID
+    """
+    try:
+        md = metadata or {}
+        v = str(md.get("tenant_id") or "").strip()
+        if v:
+            return v
+    except Exception:
+        pass
+    v = str(os.getenv("EXEC_TENANT_ID") or "").strip()
+    if v:
+        return v
+    v = str(os.getenv("TENANT_ID") or "").strip()
+    if v:
+        return v
+    return None
+
+
+@runtime_checkable
+class ReservationHandle(Protocol):
+    def release(self) -> None: ...
+
+
+class NoopReservation:
+    def release(self) -> None:
+        return None
+
+
+class ReservationManager:
+    """
+    Minimal in-flight reservation interface.
+
+    This is intentionally best-effort: it must never block execution if unavailable.
+    """
+
+    def reserve(
+        self,
+        *,
+        tenant_id: str,
+        broker_account_id: str,
+        client_intent_id: str,
+        amount_usd: float,
+        ttl_seconds: int,
+        meta: dict[str, Any] | None = None,
+    ) -> ReservationHandle:
+        return NoopReservation()
 
 
 def _iso_date_utc(dt: datetime | None = None) -> str:
@@ -1781,6 +1928,7 @@ class ExecutionEngine:
         self._router = router  # Lazy initialization if None and smart routing enabled
         self._ledger = ledger
         self._broker_name = broker_name
+        self._reservations = reservations or ReservationManager()
         self._dry_run = bool(dry_run) if dry_run is not None else bool(
             str(get_env("EXEC_DRY_RUN", "1")).strip().lower() in {"1", "true", "yes", "on"}
         )
@@ -1883,6 +2031,12 @@ class ExecutionEngine:
         # propagate (fail-closed), and we rely on explicit critical logging at
         # the point of failure.
         if True:
+            # --- Market-open safety gate (EQUITY/OPTIONS only) ---
+            mo = _market_open_delay_rejection(intent=intent, dry_run=self._dry_run)
+            if mo is not None:
+                outcome = "rejected"
+                return ExecutionResult(status="rejected", risk=mo, routing=None, message=mo.reason)
+
             # Replay marker (best-effort only)
             try:
                 logger.info(

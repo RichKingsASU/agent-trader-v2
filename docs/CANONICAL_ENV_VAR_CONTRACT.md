@@ -104,6 +104,9 @@ Legend:
 | `REPLAY_RUN_ID` | replay marker grouping id |  |  | ✅ |  | Enables replay markers in `cloudrun-consumer` |
 | `GUNICORN_CMD_ARGS` | runtime detection for Cloud Run worker |  |  | ✅ |  | Used by `cloudrun-ingestor` to detect “real runtime” (gunicorn) |
 | `EXEC_DRY_RUN` | execution engine dry-run |  |  | ✅ |  | Defaults truthy (`"1"`). If `0`, broker placement is attempted (still paper-locked by `TRADING_MODE`) |
+| `MARKET_OPEN_TRADE_DELAY_MINUTES` | post-open trade delay (NYSE regular session) |  |  | ✅ |  | Default `5`. Blocks **EQUITY/OPTIONS** broker placement for first N minutes after open. Set to `0` to disable. |
+| `MARKET_OPEN_TRADE_DELAY_DISABLED` | disable market-open delay gate |  |  | ✅ |  | If truthy, disables the market-open delay regardless of minutes value. |
+| `DISABLE_MARKET_OPEN_TRADE_DELAY` | disable market-open delay gate (alias) |  |  | ✅ |  | Back-compat/alias for `MARKET_OPEN_TRADE_DELAY_DISABLED`. |
 | `EXEC_AGENT_ID` | execution agent identity label |  |  | ✅ |  | Used for state machine id in execution service |
 | `EXEC_SHUTDOWN_DRAIN_TIMEOUT_S` | drain timeout for shutdown |  |  | ✅ |  | Execution service shutdown behavior |
 | `MARKETDATA_STALE_THRESHOLD_S` | marketdata heartbeat staleness |  |  | ✅ |  | Used by execution service ops/status + /state |
