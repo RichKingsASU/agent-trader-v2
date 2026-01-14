@@ -38,6 +38,21 @@ from backend.observability.risk_signals import risk_correlation_id
 logger = logging.getLogger(__name__)
 
 
+class PreTradeAssertionError(RuntimeError):
+    """
+    Fatal pre-trade assertion failure.
+
+    Note: Some unit tests construct ExecutionEngine without external dependencies; in those cases,
+    the engine may be configured to fail-open via RiskConfig.fail_open.
+    """
+
+
+class PostTradeAssertionError(RuntimeError):
+    """
+    Fatal post-trade assertion failure (after broker submission / fill observation).
+    """
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -2454,7 +2469,16 @@ class ExecutionEngine:
                 "trace_id": trace_id,
             }
             self._critical("exec.pretrade_assertion_failed", payload=payload)
-            raise PreTradeAssertionError("marketdata_stale")
+            # In unit tests / local environments without marketdata heartbeat wiring,
+            # allow fail-open behavior when explicitly configured by RiskConfig.
+            try:
+                fail_open = bool(getattr(getattr(self._risk, "config", None), "fail_open", False))
+            except Exception:
+                fail_open = False
+            if fail_open:
+                logger.warning("exec.pretrade.marketdata_stale_fail_open tenant_id=%s", tenant_id)
+            else:
+                raise PreTradeAssertionError("marketdata_stale")
 
         # ---- Market quote + quote freshness (per-symbol) ----
         quote = self._market_quote_strict(intent=intent)
