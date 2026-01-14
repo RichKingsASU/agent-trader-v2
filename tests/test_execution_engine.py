@@ -192,3 +192,33 @@ def test_agent_mode_halted_refuses_trading(monkeypatch):
         pass
     assert broker.place_calls == 0
 
+
+def test_options_symbol_cooldown_blocks_rapid_retrade(monkeypatch, caplog):
+    monkeypatch.delenv("EXECUTION_HALTED", raising=False)
+    monkeypatch.setenv("EXEC_OPTIONS_SYMBOL_COOLDOWN_ENABLED", "1")
+    monkeypatch.setenv("EXEC_OPTIONS_SYMBOL_COOLDOWN_SECONDS", "600")  # 10 minutes
+    monkeypatch.setenv("EXEC_OPTIONS_SYMBOL_COOLDOWN_SIDES", "buy")
+
+    risk = RiskManager(
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True),
+        ledger=_LedgerStub(trades_today=0),
+        positions=_PositionsStub(qty=0),
+    )
+
+    intent = OrderIntent(
+        strategy_id="s1",
+        broker_account_id="acct1",
+        symbol="SPY240119C00450000",
+        side="buy",
+        qty=1,
+        asset_class="OPTIONS",
+    )
+
+    d1 = risk.validate(intent=intent)
+    assert d1.allowed is True
+
+    d2 = risk.validate(intent=intent)
+    assert d2.allowed is False
+    assert d2.reason == "symbol_cooldown_active"
+    assert any("exec.cooldown_block" in rec.message for rec in caplog.records)
+

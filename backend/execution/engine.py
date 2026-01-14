@@ -7,7 +7,7 @@ import time
 import threading
 import uuid
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional, Protocol, runtime_checkable
 
@@ -34,6 +34,13 @@ from backend.risk.capital_reservation import (
 )
 from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
 from backend.observability.risk_signals import risk_correlation_id
+from backend.execution.reservations import (
+    BestEffortReservationManager,
+    NoopReservation,
+    ReservationHandle,
+    ReservationManager,
+    resolve_tenant_id_from_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -969,6 +976,50 @@ class RiskManager:
         self._ledger = ledger
         self._positions = positions
 
+        # --- Per-symbol cooldown (anti-churn) ---
+        # Intended primarily for OPTIONS rapid-fire protection.
+        #
+        # Env:
+        #   EXEC_OPTIONS_SYMBOL_COOLDOWN_ENABLED=true|false
+        #   EXEC_OPTIONS_SYMBOL_COOLDOWN_SECONDS=600
+        #   EXEC_OPTIONS_SYMBOL_COOLDOWN_SIDES="buy" or "buy,sell"
+        #   EXEC_OPTIONS_SYMBOL_COOLDOWN_OVERRIDES_JSON='{"SPY":300,"AAPL":900}'
+        self._options_symbol_cooldown_enabled = str(os.getenv("EXEC_OPTIONS_SYMBOL_COOLDOWN_ENABLED") or "true").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        try:
+            self._options_symbol_cooldown_default_s = float(os.getenv("EXEC_OPTIONS_SYMBOL_COOLDOWN_SECONDS") or "600")
+        except Exception:
+            self._options_symbol_cooldown_default_s = 600.0
+        raw_sides = str(os.getenv("EXEC_OPTIONS_SYMBOL_COOLDOWN_SIDES") or "buy").strip().lower()
+        self._options_symbol_cooldown_sides = {s.strip() for s in raw_sides.split(",") if s.strip()} or {"buy"}
+
+        self._options_symbol_cooldown_overrides_s: dict[str, float] = {}
+        raw_overrides = str(os.getenv("EXEC_OPTIONS_SYMBOL_COOLDOWN_OVERRIDES_JSON") or "").strip()
+        if raw_overrides:
+            try:
+                obj = json.loads(raw_overrides)
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        if not isinstance(k, str):
+                            continue
+                        try:
+                            secs = float(v)  # allow ints/floats/strings
+                        except Exception:
+                            continue
+                        self._options_symbol_cooldown_overrides_s[k.strip().upper()] = max(0.0, secs)
+            except Exception:
+                # Best-effort parsing; ignore invalid configs.
+                self._options_symbol_cooldown_overrides_s = {}
+
+        # In-memory cooldown state: key -> last_allowed_at_monotonic
+        # Key is tenant/broker-account scoped to avoid cross-tenant interference.
+        self._symbol_cooldown_lock = threading.Lock()
+        self._symbol_cooldown_last_mono: dict[tuple[str, str, str], float] = {}
+
         # --- Per-agent execution budgets (silent safety) ---
         self._budgets_enabled = str(os.getenv("EXEC_AGENT_BUDGETS_ENABLED") or "false").strip().lower() in {
             "1",
@@ -1575,6 +1626,59 @@ class RiskManager:
         # Hard invariants (crash loud on internal inconsistencies).
         _enforce_risk_invariants_from_intent(intent=intent)
 
+        # Per-symbol cooldown (OPTIONS anti-churn)
+        try:
+            if (
+                self._options_symbol_cooldown_enabled
+                and intent.asset_class == "OPTIONS"
+                and intent.side in self._options_symbol_cooldown_sides
+            ):
+                sym = str(intent.symbol or "").strip().upper()
+                cooldown_s = float(self._options_symbol_cooldown_overrides_s.get(sym, self._options_symbol_cooldown_default_s))
+                if cooldown_s > 0:
+                    tenant_id = resolve_tenant_id_from_metadata(intent.metadata) or ""
+                    key = (str(tenant_id), str(intent.broker_account_id), sym)
+                    now_mono = time.monotonic()
+                    with self._symbol_cooldown_lock:
+                        last_mono = self._symbol_cooldown_last_mono.get(key)
+                        if last_mono is not None:
+                            elapsed = max(0.0, now_mono - float(last_mono))
+                            remaining = max(0.0, float(cooldown_s) - elapsed)
+                            cd_check = {
+                                "check": "symbol_cooldown",
+                                "enabled": True,
+                                "asset_class": intent.asset_class,
+                                "symbol": sym,
+                                "side": intent.side,
+                                "cooldown_seconds": float(cooldown_s),
+                                "elapsed_seconds": float(elapsed),
+                                "remaining_seconds": float(remaining),
+                                "tenant_id": tenant_id or None,
+                                "broker_account_id": intent.broker_account_id,
+                            }
+                            checks.append(cd_check)
+                            if remaining > 0:
+                                logger.warning("exec.cooldown_block %s", json.dumps(_to_jsonable(cd_check)))
+                                return RiskDecision(allowed=False, reason="symbol_cooldown_active", checks=checks)
+                        # Arm cooldown on first allowed pass (best-effort; blocks rapid-fire loops).
+                        self._symbol_cooldown_last_mono[key] = now_mono
+                        checks.append(
+                            {
+                                "check": "symbol_cooldown",
+                                "enabled": True,
+                                "asset_class": intent.asset_class,
+                                "symbol": sym,
+                                "side": intent.side,
+                                "cooldown_seconds": float(cooldown_s),
+                                "action": "armed",
+                                "tenant_id": tenant_id or None,
+                                "broker_account_id": intent.broker_account_id,
+                            }
+                        )
+        except Exception as e:
+            # Best-effort only; never block on telemetry/config parsing.
+            checks.append({"check": "symbol_cooldown", "error": str(e)})
+
         # Kill switch
         enabled = self.kill_switch_enabled()
         checks.append({"check": "kill_switch", "enabled": enabled})
@@ -1787,6 +1891,7 @@ class ExecutionEngine:
         self._enable_smart_routing = enable_smart_routing
         self._capital_provider: _FirestoreCapitalProvider | None = None
         self._risk_limits_provider: _FirestoreRiskLimitsProvider | None = None
+        self._reservations = BestEffortReservationManager(reservations)
 
         # Replay marker: engine constructed (startup-ish for this component).
         try:
