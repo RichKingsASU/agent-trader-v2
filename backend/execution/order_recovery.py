@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
-from backend.persistence.firestore_retry import with_firestore_retry
-
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -137,6 +135,7 @@ class FirestoreExecutionOrderStore:
     """
 
     def __init__(self, *, project_id: str | None = None, collection_name: str = "execution_orders") -> None:
+        # Lazy import so the module remains importable in minimal/test environments.
         from backend.persistence.firebase_client import get_firestore_client
 
         self._db = get_firestore_client(project_id=project_id)
@@ -151,6 +150,8 @@ class FirestoreExecutionOrderStore:
         )
 
     def upsert(self, *, tenant_id: str, client_intent_id: str, payload: dict[str, Any]) -> None:
+        from backend.persistence.firestore_retry import with_firestore_retry
+
         ref = self._ref(tenant_id=tenant_id, client_intent_id=client_intent_id)
         with_firestore_retry(lambda: ref.set(payload, merge=True))
 
@@ -162,6 +163,8 @@ class FirestoreExecutionOrderStore:
         limit: int = 50,
         statuses: Iterable[str] = OPEN_STATUSES,
     ) -> list[ExecutionOrderRecord]:
+        from backend.persistence.firestore_retry import with_firestore_retry
+
         tenant_id = str(tenant_id).strip()
         q = (
             self._db.collection("tenants")
