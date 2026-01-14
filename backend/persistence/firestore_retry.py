@@ -7,7 +7,11 @@ import threading
 import time
 from typing import Callable, TypeVar
 
-from google.api_core import exceptions as gexc
+try:
+    from google.api_core import exceptions as gexc  # type: ignore
+except Exception:  # noqa: BLE001
+    # Optional dependency in minimal/test environments.
+    gexc = None  # type: ignore[assignment]
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
@@ -38,14 +42,17 @@ def _install_shutdown_handlers_once() -> None:
     except Exception:
         return
 
-_TRANSIENT_EXCEPTIONS: tuple[type[BaseException], ...] = (
-    gexc.Aborted,
-    gexc.DeadlineExceeded,
-    gexc.InternalServerError,
-    gexc.ResourceExhausted,
-    gexc.ServiceUnavailable,
-    gexc.TooManyRequests,
-)
+if gexc is None:
+    _TRANSIENT_EXCEPTIONS: tuple[type[BaseException], ...] = ()
+else:
+    _TRANSIENT_EXCEPTIONS = (
+        gexc.Aborted,
+        gexc.DeadlineExceeded,
+        gexc.InternalServerError,
+        gexc.ResourceExhausted,
+        gexc.ServiceUnavailable,
+        gexc.TooManyRequests,
+    )
 
 
 def with_firestore_retry(

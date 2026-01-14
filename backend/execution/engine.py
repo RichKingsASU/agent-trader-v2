@@ -25,6 +25,13 @@ from backend.common.runtime_execution_prevention import fatal_if_execution_reach
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.common.freshness import check_freshness
 from backend.time.nyse_time import is_trading_day, market_open_dt, parse_ts, to_nyse
+from backend.execution.reservations import (
+    BestEffortReservationManager,
+    NoopReservation,
+    ReservationHandle,
+    ReservationManager,
+    resolve_tenant_id_from_metadata,
+)
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.risk.capital_reservation import (
     CapitalReservationError,
@@ -1845,6 +1852,7 @@ class ExecutionEngine:
         self._enable_smart_routing = enable_smart_routing
         self._capital_provider: _FirestoreCapitalProvider | None = None
         self._risk_limits_provider: _FirestoreRiskLimitsProvider | None = None
+        self._reservations = BestEffortReservationManager(reservations)
 
         # Replay marker: engine constructed (startup-ish for this component).
         try:
