@@ -103,6 +103,21 @@ def _get_nested(d: dict[str, Any], *keys: str) -> Any:
     return cur
 
 
+def _first_present(*vals: Any) -> Any:
+    """
+    Return first value that is not None / not empty-string.
+
+    Important: unlike `a or b`, this preserves valid falsy values like 0.
+    """
+    for v in vals:
+        if v is None:
+            continue
+        if isinstance(v, str) and v.strip() == "":
+            continue
+        return v
+    return None
+
+
 def extract_option_liquidity_metrics(snapshot: dict[str, Any]) -> dict[str, Any]:
     """
     Best-effort parse of Alpaca option snapshot payload into stable metrics.
@@ -117,8 +132,8 @@ def extract_option_liquidity_metrics(snapshot: dict[str, Any]) -> dict[str, Any]
         or _get_nested(snapshot, "quote")
         or {}
     )
-    bid = _as_float(q.get("bp") or q.get("bid_price") or q.get("bid") or q.get("b"))
-    ask = _as_float(q.get("ap") or q.get("ask_price") or q.get("ask") or q.get("a"))
+    bid = _as_float(_first_present(q.get("bp"), q.get("bid_price"), q.get("bid"), q.get("b")))
+    ask = _as_float(_first_present(q.get("ap"), q.get("ask_price"), q.get("ask"), q.get("a")))
     bid = float(bid or 0.0)
     ask = float(ask or 0.0)
     mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else float(bid or ask or 0.0)
@@ -127,14 +142,16 @@ def extract_option_liquidity_metrics(snapshot: dict[str, Any]) -> dict[str, Any]
 
     # Volume (prefer dailyBar)
     daily_bar = _get_nested(snapshot, "dailyBar") or _get_nested(snapshot, "daily_bar") or {}
-    volume = _as_int(daily_bar.get("v") or daily_bar.get("volume") or snapshot.get("volume"))
+    volume = _as_int(_first_present(daily_bar.get("v"), daily_bar.get("volume"), snapshot.get("volume")))
 
     # Open interest
     open_interest = _as_int(
-        snapshot.get("open_interest")
-        or snapshot.get("openInterest")
-        or _get_nested(snapshot, "openInterest")
-        or _get_nested(snapshot, "open_interest")
+        _first_present(
+            snapshot.get("open_interest"),
+            snapshot.get("openInterest"),
+            _get_nested(snapshot, "openInterest"),
+            _get_nested(snapshot, "open_interest"),
+        )
     )
 
     # Timestamp (optional, informational)
