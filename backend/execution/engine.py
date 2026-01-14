@@ -2472,7 +2472,7 @@ class ExecutionEngine:
             # In unit tests / local environments without marketdata heartbeat wiring,
             # allow fail-open behavior when explicitly configured by RiskConfig.
             try:
-                fail_open = bool(getattr(getattr(self._risk, "config", None), "fail_open", False))
+                fail_open = bool(getattr(getattr(self._risk, "_config", None), "fail_open", False))
             except Exception:
                 fail_open = False
             if fail_open:
