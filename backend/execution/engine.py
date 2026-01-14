@@ -652,6 +652,8 @@ class _FirestoreLedger:
       tenants/{tenant_id}/ledger_trades/{trade_id}
     """
 
+    _ORDER_LIFECYCLE_COLLECTION = "order_lifecycle"
+
     def __init__(self):
         from backend.persistence.firebase_client import get_firestore_client
 
@@ -688,7 +690,17 @@ class _FirestoreLedger:
         broker: str,
         broker_order: dict[str, Any],
         fill: dict[str, Any],
-    ) -> None:
+    ) -> dict[str, Any]:
+        """
+        Idempotent fill ingestion that is safe for partial fills.
+
+        Brokers typically expose cumulative `filled_qty` on an order. Writing that
+        value directly would double-count partial fills. Instead we:
+        - persist a per-order cursor (last cumulative filled qty)
+        - compute delta = max(0, new_cum - last_cum)
+        - append only the delta to ledger_trades (append-only semantics)
+        - update the per-order cursor in the same Firestore transaction
+        """
         broker_order_id = str(broker_order.get("id") or "").strip()
         if not broker_order_id:
             raise ValueError("broker_order missing id")
@@ -702,9 +714,10 @@ class _FirestoreLedger:
         filled_qty_raw = fill.get("filled_qty") or broker_order.get("filled_qty") or 0.0
         filled_avg_price_raw = fill.get("filled_avg_price") or broker_order.get("filled_avg_price") or None
         filled_at_raw = fill.get("filled_at") or broker_order.get("filled_at") or None
+        broker_status = str((fill.get("status") or broker_order.get("status") or "")).strip()
 
-        filled_qty = float(filled_qty_raw or 0.0)
-        if filled_qty <= 0:
+        new_cum_filled_qty = float(filled_qty_raw or 0.0)
+        if new_cum_filled_qty <= 0:
             raise ValueError("Cannot write ledger trade with non-positive filled_qty")
         if filled_avg_price_raw is None:
             raise ValueError("Cannot write ledger trade without filled_avg_price")
@@ -717,53 +730,183 @@ class _FirestoreLedger:
         if isinstance(filled_at_raw, datetime):
             ts = filled_at_raw.astimezone(timezone.utc)
 
-        # Compose a stable id that separates partial fills.
-        broker_fill_fingerprint = f"{broker_order_id}|{filled_qty}|{filled_avg_price}|{filled_at_raw or ''}"
+        from google.cloud import firestore  # noqa: WPS433
 
-        from backend.ledger.firestore import append_ledger_trade, stable_trade_id
-
-        trade_id = stable_trade_id(
-            tenant_id=tenant_id,
-            account_id=intent.broker_account_id,
-            broker_fill_id=broker_fill_fingerprint,
-            order_id=broker_order_id,
-            ts=ts,
-            symbol=intent.symbol,
+        from backend.execution.order_lifecycle import (  # noqa: WPS433
+            canonicalize_broker_status,
+            compute_delta_fill_qty,
+            is_valid_transition,
         )
 
-        payload: dict[str, Any] = {
-            # Required schema fields (user spec)
-            "uid": uid,
-            "strategy_id": intent.strategy_id,
-            "run_id": run_id,
-            "symbol": intent.symbol,
-            "side": intent.side,
-            "qty": filled_qty,
-            "price": filled_avg_price,
+        lifecycle_ref = (
+            self._db.collection("tenants")
+            .document(str(tenant_id))
+            .collection(self._ORDER_LIFECYCLE_COLLECTION)
+            .document(str(broker_order_id))
+        )
+
+        ledger_ref = (
+            self._db.collection("tenants")
+            .document(str(tenant_id))
+            .collection("ledger_trades")
+        )
+
+        # Normalize filled_at for deterministic IDs.
+        filled_at_key = (
+            filled_at_raw.astimezone(timezone.utc).isoformat()
+            if isinstance(filled_at_raw, datetime)
+            else str(filled_at_raw or "")
+        )
+
+        canonical = canonicalize_broker_status(broker_status, filled_qty=new_cum_filled_qty)
+
+        result: dict[str, Any] = {
+            "delta_qty": 0.0,
+            "trade_id": None,
             "ts": ts,
-            "fees": 0.0,
-            # Multi-asset fields
-            "asset_class": intent.asset_class,
-            "estimated_slippage": intent.estimated_slippage,
-            # Helpful optional fields for ops/audit
-            "tenant_id": tenant_id,
-            "trading_date": _iso_date_utc(ts),
-            "broker": broker,
-            "broker_order_id": broker_order_id,
-            "broker_account_id": intent.broker_account_id,
-            "client_intent_id": intent.client_intent_id,
-            "intent_created_at": intent.created_at,
-            "order_type": intent.order_type,
-            "time_in_force": intent.time_in_force,
-            "limit_price": intent.limit_price,
-            "filled_at": _to_jsonable(filled_at_raw),
-            # Raw snapshots for audit (JSON-safe)
-            "raw_broker_order": _to_jsonable(broker_order),
-            "raw_fill": _to_jsonable(fill),
+            "price": filled_avg_price,
+            "cum_filled_qty": new_cum_filled_qty,
         }
 
-        # Append-only semantics: Firestore `create()` fails if doc exists.
-        append_ledger_trade(tenant_id=tenant_id, trade_id=trade_id, payload=payload)
+        @firestore.transactional
+        def _txn(transaction: firestore.Transaction) -> dict[str, Any]:
+            snap = transaction.get(lifecycle_ref)
+            cur = snap.to_dict() if getattr(snap, "exists", False) else {}
+            prev_cum = float(cur.get("last_cum_filled_qty") or 0.0)
+            prev_state_raw = cur.get("state")
+            prev_state = None
+            try:
+                # Store enum value (string) to avoid enum import friction in Firestore docs.
+                prev_state = prev_state_raw  # type: ignore[assignment]
+            except Exception:
+                prev_state = None
+
+            delta_qty = compute_delta_fill_qty(previous_cum_qty=prev_cum, new_cum_qty=new_cum_filled_qty)
+            transition_ok = is_valid_transition(
+                old=canonicalize_broker_status(str(prev_state_raw or ""), filled_qty=prev_cum),
+                new=canonical,
+            )
+
+            # Always update cursor, even if delta is 0, so lifecycle state progresses.
+            cursor_update: dict[str, Any] = {
+                "broker_order_id": broker_order_id,
+                "broker": broker,
+                "broker_account_id": str(intent.broker_account_id),
+                "client_intent_id": str(intent.client_intent_id),
+                "strategy_id": str(intent.strategy_id),
+                "symbol": str(intent.symbol),
+                "asset_class": str(intent.asset_class),
+                "order_type": str(intent.order_type),
+                "time_in_force": str(intent.time_in_force),
+                "status": str(broker_status).strip().lower() or None,
+                "state": (canonical.value if canonical is not None else (prev_state_raw or None)),
+                "transition_valid": bool(transition_ok),
+                "last_cum_filled_qty": float(max(prev_cum, new_cum_filled_qty)),
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            }
+            if not getattr(snap, "exists", False):
+                cursor_update["created_at"] = firestore.SERVER_TIMESTAMP
+
+            # Append delta fill (if any) to ledger as an immutable record.
+            if delta_qty > 0:
+                # Compose a stable id that is unique per cumulative step.
+                broker_fill_fingerprint = (
+                    f"{broker_order_id}|cum={new_cum_filled_qty}|px={filled_avg_price}|at={filled_at_key}"
+                )
+                trade_id = broker_fill_fingerprint
+                result["delta_qty"] = float(delta_qty)
+                result["trade_id"] = str(trade_id)
+                doc_ref = ledger_ref.document(str(trade_id))
+                payload: dict[str, Any] = {
+                    # Required schema fields (user spec)
+                    "uid": uid,
+                    "strategy_id": intent.strategy_id,
+                    "run_id": run_id,
+                    "symbol": intent.symbol,
+                    "side": intent.side,
+                    "qty": float(delta_qty),
+                    "price": float(filled_avg_price),
+                    "ts": ts,
+                    "fees": 0.0,
+                    # Multi-asset fields
+                    "asset_class": intent.asset_class,
+                    "estimated_slippage": intent.estimated_slippage,
+                    # Helpful optional fields for ops/audit
+                    "tenant_id": tenant_id,
+                    "trading_date": _iso_date_utc(ts),
+                    "broker": broker,
+                    "broker_order_id": broker_order_id,
+                    "broker_account_id": intent.broker_account_id,
+                    "client_intent_id": intent.client_intent_id,
+                    "intent_created_at": intent.created_at,
+                    "order_type": intent.order_type,
+                    "time_in_force": intent.time_in_force,
+                    "limit_price": intent.limit_price,
+                    "filled_at": _to_jsonable(filled_at_raw),
+                    # Partial fill safety/debug fields
+                    "cum_filled_qty": float(new_cum_filled_qty),
+                    "prev_cum_filled_qty": float(prev_cum),
+                    "delta_filled_qty": float(delta_qty),
+                    # Raw snapshots for audit (JSON-safe)
+                    "raw_broker_order": _to_jsonable(broker_order),
+                    "raw_fill": _to_jsonable(fill),
+                }
+                # Append-only semantics: create fails if doc exists.
+                try:
+                    transaction.create(doc_ref, payload)
+                except Exception as e:
+                    # If we've already written this exact fill step, treat as idempotent.
+                    # Firestore errors inside transactions can vary by client version, so keep this broad.
+                    if "AlreadyExists" not in str(type(e)) and "ALREADY_EXISTS" not in str(e):
+                        raise
+
+            transaction.set(lifecycle_ref, cursor_update, merge=True)
+            return result
+
+        return _txn(self._db.transaction())
+
+    def update_order_lifecycle(self, *, intent: OrderIntent, broker: str, broker_order: dict[str, Any]) -> None:
+        """
+        Persist lifecycle state even when no fills occurred (e.g., NEW/ACCEPTED/CANCELLED/EXPIRED).
+        """
+        broker_order_id = str(broker_order.get("id") or "").strip()
+        if not broker_order_id:
+            return
+        tenant_id = self._resolve_tenant_id(intent=intent)
+
+        broker_status = str(broker_order.get("status") or "").strip()
+        filled_qty_raw = broker_order.get("filled_qty") or 0.0
+        try:
+            filled_qty = float(filled_qty_raw or 0.0)
+        except Exception:
+            filled_qty = 0.0
+
+        from google.cloud import firestore  # noqa: WPS433
+        from backend.execution.order_lifecycle import canonicalize_broker_status  # noqa: WPS433
+
+        canonical = canonicalize_broker_status(broker_status, filled_qty=filled_qty)
+        doc = {
+            "broker_order_id": broker_order_id,
+            "broker": broker,
+            "broker_account_id": str(intent.broker_account_id),
+            "client_intent_id": str(intent.client_intent_id),
+            "strategy_id": str(intent.strategy_id),
+            "symbol": str(intent.symbol),
+            "asset_class": str(intent.asset_class),
+            "order_type": str(intent.order_type),
+            "time_in_force": str(intent.time_in_force),
+            "status": str(broker_status).strip().lower() or None,
+            "state": (canonical.value if canonical is not None else None),
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        }
+        ref = (
+            self._db.collection("tenants")
+            .document(str(tenant_id))
+            .collection(self._ORDER_LIFECYCLE_COLLECTION)
+            .document(str(broker_order_id))
+        )
+        # Idempotent upsert.
+        ref.set(doc, merge=True)
 
     def count_trades_today(self, *, tenant_id: str, broker_account_id: str, trading_date: str) -> int:
         q = (
@@ -2101,6 +2244,13 @@ class ExecutionEngine:
         self._assert_post_trade_order_response(
             intent=intent, broker_order=broker_order, broker_order_id=broker_order_id, trace_id=trace_id
         )
+        # Persist lifecycle state (NEW/ACCEPTED/etc) even before any fills occur.
+        try:
+            if self._ledger is None:
+                self._ledger = _FirestoreLedger()
+            self._ledger.update_order_lifecycle(intent=intent, broker=self._broker_name, broker_order=broker_order)
+        except Exception:
+            logger.exception("exec.order_lifecycle_update_failed (post_place)")
         logger.info(
             "exec.order_placed %s",
             json.dumps(_to_jsonable({"broker": self._broker_name, "broker_order_id": broker_order_id, "order": broker_order})),
@@ -2151,8 +2301,18 @@ class ExecutionEngine:
             status = str(broker_order.get("status") or "").lower()
             filled_qty = float(broker_order.get("filled_qty") or 0.0)
             if status in {"filled", "partially_filled"} or filled_qty > 0:
-                self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
-                self._write_portfolio_history(intent=intent, broker_order=broker_order, fill=broker_order)
+                res = self._write_ledger_fill(intent=intent, broker_order=broker_order, fill=broker_order)
+                if float(res.get("delta_qty") or 0.0) > 0:
+                    self._write_portfolio_history(
+                        intent=intent,
+                        broker_order=broker_order,
+                        fill=broker_order,
+                        delta_qty=float(res.get("delta_qty") or 0.0),
+                        trade_id=str(res.get("trade_id") or ""),
+                        ts=res.get("ts"),
+                        price=float(res.get("price") or 0.0),
+                        cum_filled_qty=float(res.get("cum_filled_qty") or 0.0),
+                    )
                 # If we reserved for this intent, release on first observed fill.
                 if reserved and tenant_id_for_reservation and uid_for_reservation:
                     try:
@@ -2246,27 +2406,46 @@ class ExecutionEngine:
             json.dumps(_to_jsonable({"broker_order_id": broker_order_id, "order": order})),
         )
 
+        # We need an intent-shaped object for tenant/uid resolution for lifecycle tracking.
+        # Best-effort: reconstruct from broker payload + metadata.
+        intent = OrderIntent(
+            strategy_id=str(order.get("client_order_id") or "unknown_strategy"),
+            broker_account_id=str(order.get("account_id") or "unknown_account"),
+            symbol=str(order.get("symbol") or ""),
+            side=str(order.get("side") or ""),
+            qty=float(order.get("qty") or 0.0),
+            order_type=str(order.get("type") or "market"),
+            time_in_force=str(order.get("time_in_force") or "day"),
+            limit_price=float(order.get("limit_price")) if order.get("limit_price") else None,
+            asset_class="EQUITY",  # Default, could be enhanced with metadata
+            client_intent_id=str(order.get("client_order_id") or f"recon_{broker_order_id}"),
+            created_at=_utc_now(),
+            metadata={"reconstructed": True},
+        ).normalized()
+
+        # Persist lifecycle state even when no fills occurred (e.g., cancel/expire).
+        try:
+            if self._ledger is None:
+                self._ledger = _FirestoreLedger()
+            self._ledger.update_order_lifecycle(intent=intent, broker=self._broker_name, broker_order=order)
+        except Exception:
+            logger.exception("exec.order_lifecycle_update_failed (sync)")
+
         status = str(order.get("status") or "").lower()
         filled_qty = float(order.get("filled_qty") or 0.0)
         if status in {"filled", "partially_filled"} or filled_qty > 0:
-            # We need the original intent to write a complete ledger record.
-            # Best-effort: reconstruct from broker payload + metadata.
-            intent = OrderIntent(
-                strategy_id=str(order.get("client_order_id") or "unknown_strategy"),
-                broker_account_id=str(order.get("account_id") or "unknown_account"),
-                symbol=str(order.get("symbol") or ""),
-                side=str(order.get("side") or ""),
-                qty=float(order.get("qty") or 0.0),
-                order_type=str(order.get("type") or "market"),
-                time_in_force=str(order.get("time_in_force") or "day"),
-                limit_price=float(order.get("limit_price")) if order.get("limit_price") else None,
-                asset_class="EQUITY",  # Default, could be enhanced with metadata
-                client_intent_id=str(order.get("client_order_id") or f"recon_{broker_order_id}"),
-                created_at=_utc_now(),
-                metadata={"reconstructed": True},
-            ).normalized()
-            self._write_ledger_fill(intent=intent, broker_order=order, fill=order)
-            self._write_portfolio_history(intent=intent, broker_order=order, fill=order)
+            res = self._write_ledger_fill(intent=intent, broker_order=order, fill=order)
+            if float(res.get("delta_qty") or 0.0) > 0:
+                self._write_portfolio_history(
+                    intent=intent,
+                    broker_order=order,
+                    fill=order,
+                    delta_qty=float(res.get("delta_qty") or 0.0),
+                    trade_id=str(res.get("trade_id") or ""),
+                    ts=res.get("ts"),
+                    price=float(res.get("price") or 0.0),
+                    cum_filled_qty=float(res.get("cum_filled_qty") or 0.0),
+                )
             # Best-effort: release reservation if client_intent_id matches reservation trade_id.
             try:
                 if self._ledger is None:
@@ -2708,10 +2887,10 @@ class ExecutionEngine:
 
     def _write_ledger_fill(
         self, *, intent: OrderIntent, broker_order: dict[str, Any], fill: dict[str, Any]
-    ) -> None:
+    ) -> dict[str, Any]:
         if self._ledger is None:
             self._ledger = _FirestoreLedger()
-        self._ledger.write_fill(
+        return self._ledger.write_fill(
             intent=intent,
             broker=self._broker_name,
             broker_order=broker_order,
@@ -2719,17 +2898,22 @@ class ExecutionEngine:
         )
     
     def _write_portfolio_history(
-        self, *, intent: OrderIntent, broker_order: dict[str, Any], fill: dict[str, Any]
+        self,
+        *,
+        intent: OrderIntent,
+        broker_order: dict[str, Any],
+        fill: dict[str, Any],
+        delta_qty: float,
+        trade_id: str,
+        ts: Any,
+        price: float,
+        cum_filled_qty: float,
     ) -> None:
         """
         Write trade to users/{uid}/portfolio/history for tax and performance tracking.
         
         This provides a user-facing trade history in addition to the internal ledger.
         """
-        from backend.persistence.firebase_client import get_firestore_client
-
-        db = get_firestore_client()
-
         # Resolve UID from intent metadata
         uid = str(intent.metadata.get("uid") or "").strip()
         if not uid:
@@ -2738,42 +2922,35 @@ class ExecutionEngine:
             logger.warning("Skipping portfolio history write: no valid uid for %s", intent.symbol)
             return
 
-        # Extract fill data
         broker_order_id = str(broker_order.get("id") or "").strip()
-        filled_qty_raw = fill.get("filled_qty") or broker_order.get("filled_qty") or 0.0
-        filled_avg_price_raw = fill.get("filled_avg_price") or broker_order.get("filled_avg_price") or None
-        filled_at_raw = fill.get("filled_at") or broker_order.get("filled_at") or None
-
-        filled_qty = float(filled_qty_raw or 0.0)
-        if filled_qty <= 0:
+        if not broker_order_id:
             return
 
-        filled_avg_price = float(filled_avg_price_raw) if filled_avg_price_raw else 0.0
+        qty = float(delta_qty or 0.0)
+        if qty <= 0:
+            return
+        px = float(price or 0.0)
+        if px <= 0:
+            return
 
-        # Use fill timestamp when available; fall back to now
-        ts = _utc_now()
-        if isinstance(filled_at_raw, datetime):
-            ts = filled_at_raw.astimezone(timezone.utc)
-
-        # Create portfolio history entry
-        history_id = f"{broker_order_id}_{int(ts.timestamp() * 1000)}"
-
-        history_entry = {
+        history_id = str(trade_id or "").strip() or f"{broker_order_id}_{int(_utc_now().timestamp() * 1000)}"
+        history_entry: dict[str, Any] = {
             # Core trade data
             "symbol": intent.symbol,
             "asset_class": intent.asset_class,
             "side": intent.side,
-            "qty": filled_qty,
-            "price": filled_avg_price,
-            "notional": filled_qty * filled_avg_price,
+            "qty": qty,
+            "price": px,
+            "notional": qty * px,
             "timestamp": ts,
-            "trading_date": _iso_date_utc(ts),
+            "trading_date": _iso_date_utc(ts) if isinstance(ts, datetime) else _iso_date_utc(_utc_now()),
 
             # Strategy and execution context
             "strategy_id": intent.strategy_id,
             "broker": self._broker_name,
             "broker_order_id": broker_order_id,
             "client_order_id": intent.client_intent_id,
+            "trade_id": history_id,
 
             # Cost analysis
             "estimated_slippage": intent.estimated_slippage,
@@ -2786,10 +2963,16 @@ class ExecutionEngine:
 
             # Tax tracking fields
             "tax_lot_method": "FIFO",  # Default to FIFO for tax purposes
-            "cost_basis": filled_qty * filled_avg_price if intent.side == "buy" else None,
+            "cost_basis": qty * px if intent.side == "buy" else None,
+
+            # Partial fill safety/debug fields
+            "cum_filled_qty": float(cum_filled_qty or 0.0),
+            "delta_filled_qty": qty,
         }
 
-        # Write to users/{uid}/portfolio/history/trades/{history_id}
+        from backend.persistence.firebase_client import get_firestore_client
+
+        db = get_firestore_client()
         doc_ref = (
             db.collection("users")
             .document(uid)
@@ -2799,92 +2982,12 @@ class ExecutionEngine:
             .document(history_id)
         )
         try:
-            from backend.persistence.firebase_client import get_firestore_client
-            
-            db = get_firestore_client()
-            
-            # Resolve UID from intent metadata
-            uid = str(intent.metadata.get("uid") or "").strip()
-            if not uid:
-                uid = str(os.getenv("EXEC_UID") or "").strip()
-            if not uid or uid == "system":
-                logger.warning("Skipping portfolio history write: no valid uid for %s", intent.symbol)
-                return
-            
-            # Extract fill data
-            broker_order_id = str(broker_order.get("id") or "").strip()
-            filled_qty_raw = fill.get("filled_qty") or broker_order.get("filled_qty") or 0.0
-            filled_avg_price_raw = fill.get("filled_avg_price") or broker_order.get("filled_avg_price") or None
-            filled_at_raw = fill.get("filled_at") or broker_order.get("filled_at") or None
-            
-            filled_qty = float(filled_qty_raw or 0.0)
-            if filled_qty <= 0:
-                return
-            
-            filled_avg_price = float(filled_avg_price_raw) if filled_avg_price_raw else 0.0
-            
-            # Use fill timestamp when available; fall back to now
-            ts = _utc_now()
-            if isinstance(filled_at_raw, datetime):
-                ts = filled_at_raw.astimezone(timezone.utc)
-            
-            # Create a deterministic history id so reprocessing does not duplicate entries.
-            # Note: we intentionally include filled fields to separate partial fills.
-            filled_at_key = (
-                filled_at_raw.astimezone(timezone.utc).isoformat()
-                if isinstance(filled_at_raw, datetime)
-                else str(filled_at_raw or "")
-            )
-            fp = f"{broker_order_id}|{filled_qty}|{filled_avg_price}|{filled_at_key}|{intent.symbol}|{intent.side}"
-            history_id = hashlib.sha1(fp.encode("utf-8")).hexdigest()
-            
-            history_entry = {
-                # Core trade data
-                "symbol": intent.symbol,
-                "asset_class": intent.asset_class,
-                "side": intent.side,
-                "qty": filled_qty,
-                "price": filled_avg_price,
-                "notional": filled_qty * filled_avg_price,
-                "timestamp": ts,
-                "trading_date": _iso_date_utc(ts),
-                
-                # Strategy and execution context
-                "strategy_id": intent.strategy_id,
-                "broker": self._broker_name,
-                "broker_order_id": broker_order_id,
-                "client_order_id": intent.client_intent_id,
-                
-                # Cost analysis
-                "estimated_slippage": intent.estimated_slippage,
-                "fees": 0.0,  # Update if broker provides fee data
-                
-                # Metadata
-                "order_type": intent.order_type,
-                "time_in_force": intent.time_in_force,
-                "created_at": _utc_now(),
-                
-                # Tax tracking fields
-                "tax_lot_method": "FIFO",  # Default to FIFO for tax purposes
-                "cost_basis": filled_qty * filled_avg_price if intent.side == "buy" else None,
-            }
-            
-            # Write to users/{uid}/portfolio/history/trades/{history_id}
-            # Note: Using subcollection for scalability and tax year queries
-            doc_ref = (
-                db.collection("users")
-                .document(uid)
-                .collection("portfolio")
-                .document("history")
-                .collection("trades")
-                .document(history_id)
-            )
             # Idempotent write (same doc id + overwrite/merge).
             doc_ref.set(history_entry, merge=True)
             
             logger.info(
                 "exec.portfolio_history_written uid=%s symbol=%s qty=%s price=%s",
-                uid, intent.symbol, filled_qty, filled_avg_price
+                uid, intent.symbol, qty, px
             )
             
         except Exception as e:
@@ -2901,6 +3004,6 @@ class ExecutionEngine:
 
         logger.info(
             "exec.portfolio_history_written uid=%s symbol=%s qty=%s price=%s",
-            uid, intent.symbol, filled_qty, filled_avg_price
+            uid, intent.symbol, qty, px
         )
 
