@@ -76,6 +76,24 @@ async def run_strategy(execute: bool):
     - No execution / no broker interaction (this service emits proposals only).
     - Refuse to evaluate when market data is stale (fail-closed NOOP).
     """
+    # Global kill switch: when enabled, strategies must stop emitting new intents/proposals.
+    # Note: this is intentionally checked before any network/DB work so halt is immediate
+    # and does not depend on external services being reachable.
+    enabled, source = get_kill_switch_state()
+    if enabled:
+        try:
+            log_json(
+                intent_type="kill_switch_active",
+                severity="WARNING",
+                enabled=True,
+                source=source,
+                strategy=config.STRATEGY_NAME,
+                action="halt_strategy_evaluation",
+            )
+        except Exception:
+            pass
+        return
+
     # This service is proposal-only. Keep `execute` for back-compat but do not act on it.
     _ = execute
 
@@ -104,6 +122,25 @@ async def run_strategy(execute: bool):
             pass
 
     for symbol in config.STRATEGY_SYMBOLS:
+        # Re-check kill switch between symbols so mid-cycle updates halt quickly.
+        enabled, source = get_kill_switch_state()
+        if enabled:
+            strategy_cycles_skipped_total.inc(1.0)
+            try:
+                log_json(
+                    intent_type="kill_switch_active",
+                    severity="WARNING",
+                    enabled=True,
+                    source=source,
+                    strategy=config.STRATEGY_NAME,
+                    symbol=symbol,
+                    action="halt_strategy_evaluation",
+                    iteration_id=iteration_id,
+                )
+            except Exception:
+                pass
+            return
+
         # A "cycle" is one symbol evaluation.
         strategy_cycles_total.inc(1.0)
         mark_activity("strategy-engine")

@@ -20,6 +20,7 @@ enforce_agent_mode_guard()
 
 import asyncio
 import json
+import logging
 import os
 import time
 import urllib.error
@@ -309,6 +310,13 @@ async def _startup() -> None:
             iteration += 1
             logger.info("strategy_engine cycle_loop_iteration=%d", iteration)
             try:
+                # Global kill switch: do not emit proposals/intents while halted.
+                enabled, source = get_kill_switch_state()
+                if enabled:
+                    logger.warning("strategy_engine halted_by_kill_switch enabled=true source=%s", source)
+                    # Poll more frequently while halted so we can resume quickly after un-halt.
+                    await asyncio.sleep(1.0)
+                    continue
                 # Never enable execution here (safety-first; EXECUTE is explicitly out-of-scope).
                 await run_strategy(execute=False)
             except asyncio.CancelledError:
