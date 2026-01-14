@@ -20,19 +20,6 @@ from backend.common.ops_metrics import (
 )
 
 from .config import config
-from .models import fetch_recent_bars, fetch_recent_options_flow
-from .risk import can_place_trade, get_or_create_strategy_definition, log_decision
-from .strategies.naive_flow_trend import make_decision
-from backend.risk_allocator import RiskAllocator
-from backend.trading.agent_intent.emitter import emit_agent_intent
-from backend.trading.agent_intent.models import (
-    AgentIntent,
-    AgentIntentConstraints,
-    AgentIntentRationale,
-    IntentAssetType,
-    IntentKind,
-    IntentSide,
-)
 
 _last_cycle_at_iso: str | None = None
 
@@ -76,8 +63,41 @@ async def run_strategy(execute: bool):
     - No execution / no broker interaction (this service emits proposals only).
     - Refuse to evaluate when market data is stale (fail-closed NOOP).
     """
+    # Global kill switch: halt strategy cycles immediately (no proposals emitted).
+    # Note: execution agents also independently refuse broker-side actions, but this
+    # prevents downstream load and makes "strategies halt" observable in ops logs.
+    enabled, source = get_kill_switch_state()
+    if enabled:
+        try:
+            log_json(
+                intent_type="kill_switch_halt",
+                severity="WARNING",
+                reason_codes=["kill_switch"],
+                message="Strategy engine halted by global kill switch; skipping cycle.",
+                source=source,
+                strategy=config.STRATEGY_NAME,
+            )
+        except Exception:
+            pass
+        return
+
     # This service is proposal-only. Keep `execute` for back-compat but do not act on it.
     _ = execute
+
+    # Lazy import: avoid DB driver dependencies (asyncpg) when halted.
+    from .models import fetch_recent_bars, fetch_recent_options_flow
+    from .risk import can_place_trade, get_or_create_strategy_definition, log_decision
+    from .strategies.naive_flow_trend import make_decision
+    from backend.risk_allocator import RiskAllocator
+    from backend.trading.agent_intent.emitter import emit_agent_intent
+    from backend.trading.agent_intent.models import (
+        AgentIntent,
+        AgentIntentConstraints,
+        AgentIntentRationale,
+        IntentAssetType,
+        IntentKind,
+        IntentSide,
+    )
 
     # Registry-backed identity in the risk/audit subsystem.
     strategy_id = await get_or_create_strategy_definition(config.STRATEGY_NAME)
