@@ -23,6 +23,7 @@ import logging
 import os
 import signal
 import time
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Optional, Tuple
 
@@ -31,6 +32,80 @@ from nats.aio.client import Client as NATS
 from agenttrader.backend.utils.ops_markers import OpsMarker
 
 logger = logging.getLogger("agenttrader.delta_momentum_bot")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return float(default)
+    try:
+        return float(str(raw).strip())
+    except Exception:
+        return float(default)
+
+
+def _parse_event_ts(payload: Dict[str, Any]) -> Optional[datetime]:
+    """
+    Best-effort extraction of an event timestamp from a market payload.
+
+    Supported keys:
+    - ts / timestamp / event_ts / created_at / time
+    Supported formats:
+    - ISO8601 string (with 'Z' or offset)
+    - epoch seconds (int/float/string)
+    - epoch milliseconds (int/float/string) when value is very large
+    """
+    raw = None
+    for k in ("ts", "timestamp", "event_ts", "created_at", "time", "t"):
+        if k in payload and payload.get(k) is not None:
+            raw = payload.get(k)
+            break
+    if raw is None:
+        return None
+
+    # Epoch seconds / ms
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        v = float(raw)
+        if v > 10_000_000_000:  # likely ms
+            v = v / 1000.0
+        return datetime.fromtimestamp(v, tz=timezone.utc)
+    if isinstance(raw, str) and raw.strip():
+        s = raw.strip()
+        # Numeric string -> epoch
+        try:
+            v = float(s)
+            if v > 10_000_000_000:
+                v = v / 1000.0
+            return datetime.fromtimestamp(v, tz=timezone.utc)
+        except Exception:
+            pass
+        # ISO8601
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(s)
+        except Exception:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    return None
+
+
+def _validate_event_ts(ts: datetime) -> tuple[bool, str]:
+    """
+    Fail-closed timestamp validation for inbound market payloads.
+    """
+    now = datetime.now(timezone.utc)
+    max_age_s = max(0.0, _env_float("STRATEGY_EVENT_MAX_AGE_SECONDS", 30.0))
+    max_future_skew_s = max(0.0, _env_float("STRATEGY_EVENT_MAX_FUTURE_SKEW_SECONDS", 5.0))
+    # future skew
+    if (ts.astimezone(timezone.utc) - now).total_seconds() > max_future_skew_s:
+        return False, "future_ts"
+    # stale
+    if (now - ts.astimezone(timezone.utc)).total_seconds() > max_age_s:
+        return False, "stale_ts"
+    return True, "ok"
 
 
 def _resolve_quotes_subject() -> str:
@@ -437,6 +512,13 @@ class DeltaMomentumBot:
             payload = json.loads(raw_text)
             if not isinstance(payload, dict):
                 raise ValueError("Payload is not a JSON object")
+
+            ts = _parse_event_ts(payload)
+            if ts is None:
+                raise ValueError("Missing event timestamp (ts/timestamp/event_ts/created_at/time)")
+            ok, reason = _validate_event_ts(ts)
+            if not ok:
+                raise ValueError(f"timestamp_validation_failed reason={reason} ts={ts.isoformat()}")
 
             await self.market_handler(payload)
         except Exception as e:

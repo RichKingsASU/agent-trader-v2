@@ -3,18 +3,53 @@ import os
 import time
 import logging
 import signal
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from nats.aio.client import Client as NATS
 
 from backend.common.nats.subjects import market_wildcard_subject, signals_subject
 from backend.common.schemas.codec import decode_message, encode_message
 from backend.common.schemas.models import MarketEventV1, SignalEventV1
+from backend.common.freshness import check_freshness
 from backend.risk_allocator.warm_cache import get_warm_cache_buying_power_usd
 from backend.common.logging import init_structured_logging
 from backend.common.kill_switch import get_kill_switch_state
 
 init_structured_logging(service="options-bot")
 logger = logging.getLogger(__name__)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return float(default)
+    try:
+        return float(str(raw).strip())
+    except Exception:
+        return float(default)
+
+
+def _validate_event_ts(ts: datetime) -> tuple[bool, str]:
+    """
+    Fail-closed timestamp validation for inbound market events.
+
+    - Reject stale events (age > STRATEGY_EVENT_MAX_AGE_SECONDS)
+    - Reject future-dated events beyond STRATEGY_EVENT_MAX_FUTURE_SKEW_SECONDS
+    """
+    now = datetime.now(timezone.utc)
+    max_age_s = max(0.0, _env_float("STRATEGY_EVENT_MAX_AGE_SECONDS", 30.0))
+    max_future_skew_s = max(0.0, _env_float("STRATEGY_EVENT_MAX_FUTURE_SKEW_SECONDS", 5.0))
+
+    # Future skew: reject if too far ahead.
+    future_skew_s = (ts.astimezone(timezone.utc) - now).total_seconds()
+    if future_skew_s > max_future_skew_s:
+        return False, "future_ts"
+
+    freshness = check_freshness(latest_ts=ts, stale_after=timedelta(seconds=max_age_s), now=now, source="nats:MarketEventV1")
+    if not freshness.ok:
+        return False, "stale_ts" if freshness.reason_code == "STALE_DATA" else "missing_ts"
+    return True, "ok"
+
 
 async def main():
     nc = NATS()
@@ -75,6 +110,18 @@ async def main():
             return
         # Validate incoming market messages.
         evt = decode_message(MarketEventV1, msg.data)
+        ok_ts, reason = _validate_event_ts(evt.ts)
+        if not ok_ts:
+            try:
+                logger.warning(
+                    "options_bot.drop_event timestamp_validation_failed reason=%s ts=%s symbol=%s",
+                    reason,
+                    getattr(evt, "ts", None),
+                    getattr(evt, "symbol", None),
+                )
+            except Exception:
+                pass
+            return
         data = evt.data or {}
 
         root = str(data.get("root") or evt.symbol).strip()

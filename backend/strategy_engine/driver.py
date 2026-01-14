@@ -198,6 +198,42 @@ async def run_strategy(execute: bool):
 
         # Freshness contract: refuse to evaluate if latest bar timestamp is stale.
         latest_bar_ts = bars[0].ts if bars else None
+        # Additional contract: refuse to evaluate if latest bar timestamp is too far in the future
+        # (guards against clock skew / bad upstream data).
+        max_future_skew_s = float(os.getenv("STRATEGY_EVENT_MAX_FUTURE_SKEW_SECONDS") or "5")
+        try:
+            max_future_skew_s = max(0.0, float(max_future_skew_s))
+        except Exception:
+            max_future_skew_s = 5.0
+        if latest_bar_ts is not None:
+            ts_utc = latest_bar_ts if latest_bar_ts.tzinfo is not None else latest_bar_ts.replace(tzinfo=timezone.utc)
+            now_utc = datetime.now(timezone.utc)
+            if (ts_utc.astimezone(timezone.utc) - now_utc).total_seconds() > max_future_skew_s:
+                strategy_cycles_skipped_total.inc(1.0)
+                try:
+                    log_json(
+                        intent_type="FUTURE_TIMESTAMP",
+                        severity="WARNING",
+                        reason_codes=["future_timestamp"],
+                        symbol=symbol,
+                        strategy=config.STRATEGY_NAME,
+                        iteration_id=iteration_id,
+                        latest_ts_utc=ts_utc.astimezone(timezone.utc).isoformat(),
+                        now_utc=now_utc.isoformat(),
+                        max_future_skew_seconds=max_future_skew_s,
+                        source="bars:public.market_data_1m",
+                    )
+                except Exception:
+                    pass
+                await log_decision(
+                    strategy_id,
+                    symbol,
+                    "flat",
+                    "FUTURE_TIMESTAMP: latest bar timestamp is ahead of now beyond allowed skew",
+                    {"reason_code": "future_timestamp"},
+                    False,
+                )
+                continue
         freshness = check_freshness(
             latest_ts=latest_bar_ts,
             stale_after=stale_after,
