@@ -32,10 +32,19 @@ from ta.momentum import RSIIndicator
 import requests
 
 # Alpaca official SDK (alpaca-py): https://alpaca.markets/sdks/python/
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.live import StockDataStream
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+# Source: https://github.com/alpacahq/alpaca-py.git
+try:
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.live import StockDataStream
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+except Exception as e:  # pragma: no cover
+    StockHistoricalDataClient = None  # type: ignore[assignment]
+    StockDataStream = None  # type: ignore[assignment]
+    StockBarsRequest = None  # type: ignore[assignment]
+    TimeFrame = None  # type: ignore[assignment]
+    TimeFrameUnit = None  # type: ignore[assignment]
+    _ALPACA_PY_IMPORT_ERR = e
 
 # AgentTrader intent emission (non-executing).
 try:
@@ -165,6 +174,16 @@ def _parse_timeframe(tf: Any) -> TimeFrame:
             return TimeFrame.Hour
     # Fall back (alpaca-py also accepts "1Min" strings in some contexts, but be strict)
     return TimeFrame.Minute
+
+
+def _require_alpaca_py() -> None:
+    if StockHistoricalDataClient is None or StockDataStream is None:
+        raise RuntimeError(
+            "alpaca-py is required but not importable. "
+            "Install it from the official repo: "
+            "pip install \"git+https://github.com/alpacahq/alpaca-py.git\" "
+            f"(import error: {_ALPACA_PY_IMPORT_ERR!r})"
+        )
 
 
 class _AlpacaPyRestAdapter:
@@ -1235,6 +1254,7 @@ async def run_live(args):
     load_dotenv()
     _require_paper_only()
     _intent_deps_ok()
+    _require_alpaca_py()
 
     state: Dict[str, Any] = {}
 
