@@ -7,7 +7,7 @@ import time
 import threading
 import uuid
 import hashlib
-from dataclasses import dataclass, field, is_dataclass
+from dataclasses import dataclass, field, is_dataclass, asdict
 from datetime import datetime, timezone
 from typing import Any, Optional, Protocol, runtime_checkable
 
