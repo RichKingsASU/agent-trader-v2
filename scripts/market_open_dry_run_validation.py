@@ -81,14 +81,16 @@ def _fetch_alpaca_minute_bars(
     symbols: list[str],
     start_utc: datetime,
     end_utc: datetime,
-) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
+) -> tuple[dict[str, list[dict[str, Any]]], list[str], str]:
     blockers: list[str] = []
 
     api_key = (os.getenv("APCA_API_KEY_ID") or "").strip()
     api_secret = (os.getenv("APCA_API_SECRET_KEY") or "").strip()
     if not api_key or not api_secret:
         blockers.append("Missing Alpaca credentials (APCA_API_KEY_ID / APCA_API_SECRET_KEY); cannot replay last open.")
-        return {}, blockers
+        # Fall back to deterministic synthetic bars so we can still validate
+        # strategy evaluation + order gating behavior in this environment.
+        return _synthetic_minute_bars(symbols=symbols, start_utc=start_utc, end_utc=end_utc), blockers, "synthetic"
 
     try:
         from alpaca.data.historical import StockHistoricalDataClient  # type: ignore
@@ -96,7 +98,7 @@ def _fetch_alpaca_minute_bars(
         from alpaca.data.timeframe import TimeFrame  # type: ignore
     except Exception as e:  # pragma: no cover
         blockers.append(f"Missing dependency for historical bars (alpaca-py). Import failed: {type(e).__name__}: {e}")
-        return {}, blockers
+        return _synthetic_minute_bars(symbols=symbols, start_utc=start_utc, end_utc=end_utc), blockers, "synthetic"
 
     client = StockHistoricalDataClient(api_key, api_secret)
     req = StockBarsRequest(
@@ -110,7 +112,7 @@ def _fetch_alpaca_minute_bars(
         bars = client.get_stock_bars(req)
     except Exception as e:
         blockers.append(f"Alpaca historical bars fetch failed: {type(e).__name__}: {e}")
-        return {}, blockers
+        return _synthetic_minute_bars(symbols=symbols, start_utc=start_utc, end_utc=end_utc), blockers, "synthetic"
 
     out: dict[str, list[dict[str, Any]]] = {}
     for sym in symbols:
@@ -131,7 +133,44 @@ def _fetch_alpaca_minute_bars(
             rows = []
         rows.sort(key=lambda r: r["ts"])
         out[sym] = rows
-    return out, blockers
+    return out, blockers, "alpaca"
+
+
+def _synthetic_minute_bars(
+    *,
+    symbols: list[str],
+    start_utc: datetime,
+    end_utc: datetime,
+) -> dict[str, list[dict[str, Any]]]:
+    """
+    Deterministic synthetic 1m bars (fallback when replay source is unavailable).
+    """
+    start_utc = to_utc(start_utc)
+    end_utc = to_utc(end_utc)
+    n = max(0, int((end_utc - start_utc).total_seconds() // 60))
+    out: dict[str, list[dict[str, Any]]] = {}
+    for sym in symbols:
+        # Deterministic per-symbol base price (stable across runs).
+        base = 50.0 + (sum(ord(ch) for ch in sym) % 500) / 10.0
+        rows: list[dict[str, Any]] = []
+        for i in range(n):
+            ts = start_utc + timedelta(minutes=i)
+            close = base + (i * 0.03)
+            open_ = close - 0.02
+            high = close + 0.01
+            low = open_ - 0.01
+            rows.append(
+                {
+                    "ts": ts,
+                    "open": float(open_),
+                    "high": float(high),
+                    "low": float(low),
+                    "close": float(close),
+                    "volume": int(1000 + i),
+                }
+            )
+        out[sym] = rows
+    return out
 
 
 def _validate_ingestion_completeness(
@@ -367,8 +406,11 @@ def main(argv: list[str] | None = None) -> int:
         "symbols": symbols,
     }
 
-    bars_by_symbol, fetch_blockers = _fetch_alpaca_minute_bars(symbols=symbols, start_utc=start_utc, end_utc=end_utc)
+    bars_by_symbol, fetch_blockers, replay_source = _fetch_alpaca_minute_bars(
+        symbols=symbols, start_utc=start_utc, end_utc=end_utc
+    )
     all_blockers.extend(fetch_blockers)
+    details["replay_source"] = replay_source
 
     # Validate ingestion (market data availability/completeness).
     if bars_by_symbol:
