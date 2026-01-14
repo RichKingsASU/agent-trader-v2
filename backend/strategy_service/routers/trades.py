@@ -22,6 +22,7 @@ from backend.risk.daily_capital_snapshot import DailyCapitalSnapshotError, Daily
 from backend.time.nyse_time import to_nyse
 from backend.common.a2a_sdk import RiskAgentSyncClient
 from backend.contracts.risk import TradeCheckRequest
+from backend.strategy_service.shadow_metrics import compute_shadow_metrics, compute_trade_pnl
 
 from ..db import build_raw_order, insert_paper_order
 from ..db import insert_paper_order_idempotent
@@ -45,8 +46,8 @@ class TradeRequest(BaseModel):
     side: str
     order_type: str
     time_in_force: str = "day"
-    notional: float
-    quantity: float = None
+    notional: Decimal
+    quantity: Decimal | None = None
     idempotency_key: str | None = None
 
 
@@ -218,14 +219,16 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, idem
         
         # Get current price for fill simulation
         fill_price = get_current_price(trade_request.symbol)
+        fill_price_q = fill_price.quantize(Decimal("0.01")) if fill_price > 0 else fill_price
+        notional_dec = Decimal(str(trade_request.notional)).quantize(Decimal("0.01"))
         
         # Calculate quantity using Decimal for precision
         if trade_request.quantity:
-            qty = Decimal(str(trade_request.quantity))
+            qty = Decimal(str(trade_request.quantity)).quantize(Decimal("0.000001"))
         else:
             # Calculate from notional
-            if fill_price > 0:
-                qty = Decimal(str(trade_request.notional)) / fill_price
+            if fill_price_q > 0:
+                qty = (notional_dec / fill_price_q).quantize(Decimal("0.000001"))
             else:
                 qty = Decimal("0")
         
@@ -242,16 +245,16 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, idem
             "side": trade_request.side,
             "order_type": trade_request.order_type,
             "time_in_force": trade_request.time_in_force,
-            "notional": str(trade_request.notional),
+            "notional": str(notional_dec),
             "quantity": str(qty),
-            "entry_price": str(fill_price),  # Using 'entry_price' for consistency with P&L tracking
+            "entry_price": str(fill_price_q),  # Using 'entry_price' for consistency with P&L tracking
             "status": "OPEN",  # Using 'OPEN' status to enable P&L tracking in heartbeat
             "created_at": firestore.SERVER_TIMESTAMP,
             "created_at_iso": datetime.now(timezone.utc).isoformat(),
             # P&L tracking fields (initialized)
             "current_pnl": "0.00",
             "pnl_percent": "0.00",
-            "current_price": str(fill_price),
+            "current_price": str(fill_price_q),
             "last_updated": firestore.SERVER_TIMESTAMP,
         }
         
@@ -500,8 +503,8 @@ def execute_trade(trade_request: TradeRequest, request: Request):
                 "side": trade_request.side,
                 "order_type": trade_request.order_type,
                 "time_in_force": trade_request.time_in_force,
-                "notional": trade_request.notional,
-                "quantity": trade_request.quantity,
+                "notional": float(trade_request.notional),
+                "quantity": float(trade_request.quantity) if trade_request.quantity is not None else None,
                 "idempotency_key": idem_key,
             }
             payload = PaperOrderCreate(
@@ -517,8 +520,8 @@ def execute_trade(trade_request: TradeRequest, request: Request):
                 side=trade_request.side,
                 order_type=trade_request.order_type,
                 time_in_force=trade_request.time_in_force,
-                notional=trade_request.notional,
-                quantity=trade_request.quantity,
+                notional=float(trade_request.notional),
+                quantity=float(trade_request.quantity) if trade_request.quantity is not None else None,
                 risk_allowed=True,
                 risk_scope=risk_result.scope,
                 risk_reason=risk_result.reason or "Allowed by risk check",
@@ -557,6 +560,45 @@ def execute_trade(trade_request: TradeRequest, request: Request):
         except Exception as e:
             logger.exception(f"Failed to insert paper order: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to insert paper order: {e}")
+
+
+@router.get("/trades/shadow/metrics", status_code=200)
+def get_shadow_trade_metrics(request: Request):
+    """
+    Compute paper (shadow) trading metrics for the current user.
+
+    Metrics:
+    - realized P&L: sum of CLOSED trades (final_pnl/realized_pnl)
+    - unrealized P&L: sum of OPEN trades marked-to-market via live_quotes (fallback to stored current_pnl)
+    - win rate: % of CLOSED trades with positive realized P&L
+    - max drawdown: peak-to-trough on cumulative realized P&L curve (USD and %)
+    """
+    ctx: TenantContext = get_tenant_context(request)
+    db = get_firestore_client()
+
+    trades_ref = (
+        db.collection("users")
+        .document(ctx.uid)
+        .collection("shadowTradeHistory")
+    )
+
+    open_docs = with_firestore_retry(lambda: list(trades_ref.where("status", "==", "OPEN").stream()))
+    closed_docs = with_firestore_retry(lambda: list(trades_ref.where("status", "==", "CLOSED").stream()))
+
+    open_trades = [(d.to_dict() or {}) for d in open_docs]
+    closed_trades = [(d.to_dict() or {}) for d in closed_docs]
+
+    # Build a minimal mark-price map from live_quotes for current unrealized.
+    symbols = sorted({str(t.get("symbol", "")).strip().upper() for t in open_trades if str(t.get("symbol", "")).strip()})
+    marks: dict[str, Decimal] = {}
+    for sym in symbols[:100]:
+        marks[sym] = get_current_price(sym)
+
+    metrics = compute_shadow_metrics(open_trades=open_trades, closed_trades=closed_trades, live_prices_by_symbol=marks)
+    return {
+        **metrics.to_api_dict(),
+        "as_of": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @router.post("/trades/close-shadow", status_code=200)
@@ -618,27 +660,42 @@ def close_shadow_trade(close_request: CloseShadowTradeRequest, request: Request)
         # Get current exit price
         symbol = shadow_data.get("symbol")
         exit_price = get_current_price(symbol)
+        exit_price_q = exit_price.quantize(Decimal("0.01")) if exit_price > 0 else exit_price
         
-        if exit_price == Decimal("0"):
+        if exit_price_q == Decimal("0"):
             raise HTTPException(
                 status_code=500, 
                 detail=f"Unable to get current price for {symbol}. Please try again."
             )
         
-        # Calculate final P&L (use existing current_pnl as the final realized P&L)
-        final_pnl = shadow_data.get("current_pnl", "0.00")
-        pnl_percent = shadow_data.get("pnl_percent", "0.00")
+        # Calculate final realized P&L from entry->exit (do NOT rely on stored current_pnl being fresh).
+        realized_pnl, realized_pnl_pct = compute_trade_pnl(
+            entry_price=shadow_data.get("entry_price", "0"),
+            current_price=exit_price_q,
+            quantity=shadow_data.get("quantity", "0"),
+            side=str(shadow_data.get("side") or "BUY"),
+        )
+        final_pnl = str(realized_pnl)
+        pnl_percent = str(realized_pnl_pct)
         
         # Update the document to CLOSED status
         # This will trigger the Cloud Function analyze_closed_trade
         update_data = {
             "status": "CLOSED",
-            "exit_price": str(exit_price),
+            "exit_price": str(exit_price_q),
             "exit_reason": close_request.exit_reason,
             "closed_at": firestore.SERVER_TIMESTAMP,
             "closed_at_iso": datetime.now(timezone.utc).isoformat(),
-            "final_pnl": final_pnl,  # Store final P&L
-            "final_pnl_percent": pnl_percent,  # Store final P&L percent
+            # Explicit realized fields for clarity/analytics.
+            "realized_pnl": final_pnl,
+            "realized_pnl_percent": pnl_percent,
+            "is_win": True if realized_pnl > 0 else False,
+            # Back-compat fields used by journaling/UI.
+            "final_pnl": final_pnl,
+            "final_pnl_percent": pnl_percent,
+            "current_pnl": final_pnl,
+            "pnl_percent": pnl_percent,
+            "current_price": str(exit_price_q),
         }
         
         with_firestore_retry(lambda: shadow_ref.update(update_data))
@@ -654,7 +711,7 @@ def close_shadow_trade(close_request: CloseShadowTradeRequest, request: Request)
             "status": "CLOSED",
             "symbol": symbol,
             "entry_price": shadow_data.get("entry_price"),
-            "exit_price": str(exit_price),
+            "exit_price": str(exit_price_q),
             "final_pnl": final_pnl,
             "final_pnl_percent": pnl_percent,
             "exit_reason": close_request.exit_reason,
