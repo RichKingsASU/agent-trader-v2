@@ -872,11 +872,41 @@ def _intent_deps_ok() -> None:
     if emit_agent_intent is None or AgentIntent is None:
         raise RuntimeError(f"AgentIntent import failed: {_AGENT_INTENT_IMPORT_ERR!r}")
 
-def _alpaca_headers() -> Dict[str, str]:
+def _alpaca_creds() -> Tuple[str, str]:
+    """
+    Resolve Alpaca credentials from environment.
+
+    Supported patterns:
+      - ALPACA_API_KEY / ALPACA_API_SECRET (preferred)
+      - If ALPACA_ENV indicates sandbox/paper: ALPACA_SAND_KEY_ID / ALPACA_SAND_SECRET_KEY
+
+    Safety: never log or print secrets.
+    """
     key = _env_str("ALPACA_API_KEY", "")
     secret = _env_str("ALPACA_API_SECRET", "")
-    if not key or not secret:
-        raise RuntimeError("Missing Alpaca credentials: set ALPACA_API_KEY and ALPACA_API_SECRET")
+    if key and secret:
+        return key, secret
+
+    env = _env_str("ALPACA_ENV", "").lower()
+    if env in {"sandbox", "paper"}:
+        key = _env_str("ALPACA_SAND_KEY_ID", "")
+        secret = _env_str("ALPACA_SAND_SECRET_KEY", "")
+        if key and secret:
+            return key, secret
+
+    # Fall back to common variants (best-effort)
+    key = _env_str("ALPACA_KEY_ID", "") or _env_str("APCA_API_KEY_ID", "")
+    secret = _env_str("ALPACA_SECRET_KEY", "") or _env_str("APCA_API_SECRET_KEY", "")
+    if key and secret:
+        return key, secret
+
+    raise RuntimeError(
+        "Missing Alpaca credentials. Set either ALPACA_API_KEY+ALPACA_API_SECRET "
+        "or (for sandbox/paper) ALPACA_ENV=sandbox with ALPACA_SAND_KEY_ID+ALPACA_SAND_SECRET_KEY."
+    )
+
+def _alpaca_headers() -> Dict[str, str]:
+    key, secret = _alpaca_creds()
     return {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
 
 def _limit_bias_pct() -> float:
@@ -1258,10 +1288,7 @@ async def run_live(args):
 
     state: Dict[str, Any] = {}
 
-    alpaca_key = os.getenv("ALPACA_API_KEY")
-    alpaca_secret = os.getenv("ALPACA_API_SECRET")
-    if not alpaca_key or not alpaca_secret:
-        raise RuntimeError("Missing Alpaca credentials: set ALPACA_API_KEY and ALPACA_API_SECRET")
+    alpaca_key, alpaca_secret = _alpaca_creds()
 
     # alpaca-py historical client (free data compatible)
     stock_hist = StockHistoricalDataClient(alpaca_key, alpaca_secret)
