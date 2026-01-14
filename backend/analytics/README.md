@@ -243,10 +243,14 @@ class DailyPnLSummary:
     winning_trades: int         # Number of profitable trades
     losing_trades: int          # Number of losing trades
     win_rate: float            # Win rate percentage
-    avg_win: float             # Average winning trade
-    avg_loss: float            # Average losing trade
+    avg_win: float             # Average winning trade (net, after fees)
+    avg_loss: float            # Average losing trade (net, after fees)
     largest_win: float         # Largest single win
     largest_loss: float        # Largest single loss
+    expectancy: float          # Expectancy per trade (net)
+    performance_label: str     # "Profitable" | "Flat" | "Losing"
+    flat_threshold: float      # +/- band used to call a day "Flat"
+    threshold_logic: str       # Human-readable threshold rules
     symbols_traded: List[str]  # List of symbols traded
 ```
 

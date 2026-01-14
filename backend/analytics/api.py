@@ -36,6 +36,10 @@ class DailyPnLResponse(BaseModel):
     avg_loss: float
     largest_win: float
     largest_loss: float
+    expectancy: float = 0.0
+    performance_label: str = "Flat"
+    flat_threshold: float = 0.0
+    threshold_logic: str = ""
     symbols_traded: List[str]
 
 
@@ -46,6 +50,9 @@ class TradeAnalyticsResponse(BaseModel):
     overall_win_rate: float
     total_winning_trades: int
     total_losing_trades: int
+    overall_avg_win: float = 0.0
+    overall_avg_loss: float = 0.0
+    expectancy: float = 0.0
     avg_daily_pnl: float
     best_day: Optional[DailyPnLResponse]
     worst_day: Optional[DailyPnLResponse]

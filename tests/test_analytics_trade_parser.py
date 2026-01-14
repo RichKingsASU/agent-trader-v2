@@ -86,6 +86,12 @@ def test_compute_daily_pnl_basic(sample_trades):
     assert day1.gross_pnl == 50.0  # (455 - 450) * 10
     assert day1.fees == 2.0  # 1.0 + 1.0
     assert day1.total_pnl == 48.0  # 50 - 2
+    assert day1.win_rate == 100.0
+    assert day1.avg_win == 48.0  # net win (gross - fees)
+    assert day1.avg_loss == 0.0
+    assert day1.expectancy == 48.0
+    assert day1.performance_label == "Profitable"
+    assert day1.flat_threshold == 1.0
     
     # Day 2 should have loss
     day2 = summaries[1]
@@ -93,6 +99,12 @@ def test_compute_daily_pnl_basic(sample_trades):
     assert day2.gross_pnl == -40.0  # (178 - 180) * 20
     assert day2.fees == 3.0  # 1.5 + 1.5
     assert day2.total_pnl == -43.0  # -40 - 3
+    assert day2.win_rate == 0.0
+    assert day2.avg_win == 0.0
+    assert day2.avg_loss == -43.0  # net loss (gross - fees)
+    assert day2.expectancy == -43.0
+    assert day2.performance_label == "Losing"
+    assert day2.flat_threshold == 1.0
 
 
 def test_compute_win_loss_ratio(sample_trades):
@@ -116,6 +128,9 @@ def test_compute_trade_analytics(sample_trades):
     assert analytics.total_losing_trades == 1
     assert analytics.overall_win_rate == 50.0
     assert analytics.total_pnl == 5.0  # 48 - 43
+    assert analytics.overall_avg_win == 48.0
+    assert analytics.overall_avg_loss == -43.0
+    assert analytics.expectancy == 2.5  # (0.5*48) + (0.5*-43)
     
     # Check best and worst days
     assert analytics.best_day.total_pnl == 48.0
