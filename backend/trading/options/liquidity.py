@@ -60,6 +60,13 @@ def _dig(d: Any, *keys: str) -> Any:
     return cur
 
 
+def _first_non_none(*values: Any) -> Any:
+    for v in values:
+        if v is not None:
+            return v
+    return None
+
+
 @dataclass(frozen=True)
 class OptionLiquidityThresholds:
     """
@@ -130,35 +137,39 @@ def extract_liquidity_fields(snapshot_payload: dict[str, Any]) -> OptionLiquidit
     p = snapshot_payload or {}
 
     # Bid/ask can appear in several places; check common variants.
-    bid = (
-        _as_float(p.get("bid"))
-        or _as_float(p.get("bid_price"))
-        or _as_float(_dig(p, "quote", "bid"))
-        or _as_float(_dig(p, "quote", "bp"))
-        or _as_float(_dig(p, "latestQuote", "bp"))
-        or _as_float(_dig(p, "latest_quote", "bp"))
-        or _as_float(_dig(p, "latestQuote", "bid_price"))
-        or _as_float(_dig(p, "latest_quote", "bid_price"))
+    bid = _first_non_none(
+        _as_float(p.get("bid")),
+        _as_float(p.get("bid_price")),
+        _as_float(_dig(p, "quote", "bid")),
+        _as_float(_dig(p, "quote", "bp")),
+        _as_float(_dig(p, "latestQuote", "bp")),
+        _as_float(_dig(p, "latest_quote", "bp")),
+        _as_float(_dig(p, "latestQuote", "bid_price")),
+        _as_float(_dig(p, "latest_quote", "bid_price")),
     )
-    ask = (
-        _as_float(p.get("ask"))
-        or _as_float(p.get("ask_price"))
-        or _as_float(_dig(p, "quote", "ask"))
-        or _as_float(_dig(p, "quote", "ap"))
-        or _as_float(_dig(p, "latestQuote", "ap"))
-        or _as_float(_dig(p, "latest_quote", "ap"))
-        or _as_float(_dig(p, "latestQuote", "ask_price"))
-        or _as_float(_dig(p, "latest_quote", "ask_price"))
+    ask = _first_non_none(
+        _as_float(p.get("ask")),
+        _as_float(p.get("ask_price")),
+        _as_float(_dig(p, "quote", "ask")),
+        _as_float(_dig(p, "quote", "ap")),
+        _as_float(_dig(p, "latestQuote", "ap")),
+        _as_float(_dig(p, "latest_quote", "ap")),
+        _as_float(_dig(p, "latestQuote", "ask_price")),
+        _as_float(_dig(p, "latest_quote", "ask_price")),
     )
 
     # Volume / OI typically included at top-level in our normalized Firestore payload, but
     # allow nested variants too.
-    volume = _as_int(p.get("volume")) or _as_int(_dig(p, "daily", "volume")) or _as_int(_dig(p, "stats", "volume"))
-    open_interest = (
-        _as_int(p.get("open_interest"))
-        or _as_int(p.get("openInterest"))
-        or _as_int(_dig(p, "stats", "open_interest"))
-        or _as_int(_dig(p, "stats", "openInterest"))
+    volume = _first_non_none(
+        _as_int(p.get("volume")),
+        _as_int(_dig(p, "daily", "volume")),
+        _as_int(_dig(p, "stats", "volume")),
+    )
+    open_interest = _first_non_none(
+        _as_int(p.get("open_interest")),
+        _as_int(p.get("openInterest")),
+        _as_int(_dig(p, "stats", "open_interest")),
+        _as_int(_dig(p, "stats", "openInterest")),
     )
 
     if bid is not None and ask is not None and bid > 0 and ask > 0:
