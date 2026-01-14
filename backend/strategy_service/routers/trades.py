@@ -17,7 +17,7 @@ from backend.persistence.firestore_retry import with_firestore_retry
 from backend.common.kill_switch import get_kill_switch_state
 from backend.common.logging import log_event
 from backend.observability.risk_signals import risk_correlation_id
-from google.cloud import firestore
+from firebase_admin import firestore as admin_firestore  # type: ignore
 from backend.risk.daily_capital_snapshot import DailyCapitalSnapshotError, DailyCapitalSnapshotStore
 from backend.time.nyse_time import to_nyse
 from backend.common.a2a_sdk import RiskAgentSyncClient
@@ -160,6 +160,161 @@ def get_current_price(symbol: str) -> Decimal:
         return Decimal("0")
 
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        raw = os.getenv(name)
+        if raw is None:
+            return int(default)
+        s = str(raw).strip()
+        if not s:
+            return int(default)
+        return int(float(s))
+    except Exception:
+        return int(default)
+
+
+def get_trade_symbol_cooldown_seconds() -> int:
+    """
+    Per-symbol cooldown in seconds for paper execution.
+
+    Env contract:
+    - TRADE_SYMBOL_COOLDOWN_S: seconds (default 600 = 10 minutes)
+    - TRADE_SYMBOL_COOLDOWN_MIN: minutes (optional; used only if *_S is unset)
+    """
+    raw_s = str(os.getenv("TRADE_SYMBOL_COOLDOWN_S") or "").strip()
+    if raw_s:
+        return max(0, _int_env("TRADE_SYMBOL_COOLDOWN_S", 600))
+
+    raw_min = str(os.getenv("TRADE_SYMBOL_COOLDOWN_MIN") or "").strip()
+    if raw_min:
+        return max(0, _int_env("TRADE_SYMBOL_COOLDOWN_MIN", 10) * 60)
+
+    return 600
+
+
+def _norm_symbol(symbol: str) -> str:
+    return str(symbol or "").strip().upper()
+
+
+def _parse_dt_iso_best_effort(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    txt = str(s).strip()
+    if not txt:
+        return None
+    try:
+        # Handle common "Z" suffix.
+        if txt.endswith("Z"):
+            txt = txt[:-1] + "+00:00"
+        dt = datetime.fromisoformat(txt)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _consume_symbol_cooldown(
+    *,
+    db,
+    tenant_id: str,
+    uid: str,
+    symbol: str,
+    idempotency_key: str,
+    correlation_id: str,
+    execution_id: str,
+    cooldown_seconds: int,
+) -> dict:
+    """
+    Atomically enforce a per-(uid, symbol) cooldown window using Firestore.
+
+    Behavior:
+    - If within cooldown and idempotency_key differs from last_idempotency_key: deny.
+    - If idempotency_key matches last_idempotency_key: allow (replay-safe retry).
+    - On allow: advances last_trade_at to now (server timestamp).
+    """
+    tenant_id = str(tenant_id or "").strip()
+    uid = str(uid or "").strip()
+    symbol_n = _norm_symbol(symbol)
+    idem = str(idempotency_key or "").strip()
+    corr = str(correlation_id or "").strip()
+    exec_id = str(execution_id or "").strip()
+    cooldown_s = max(0, int(cooldown_seconds))
+
+    if not uid or not symbol_n:
+        return {"allowed": True, "cooldown_seconds": cooldown_s, "symbol": symbol_n}
+    if cooldown_s <= 0:
+        return {"allowed": True, "cooldown_seconds": cooldown_s, "symbol": symbol_n}
+
+    ref = db.collection("users").document(uid).collection("symbol_cooldowns").document(symbol_n)
+    now = datetime.now(timezone.utc)
+    out: dict = {}
+
+    transaction = db.transaction()
+
+    @admin_firestore.transactional  # type: ignore[misc]
+    def _txn(txn):  # type: ignore[no-untyped-def]
+        snap = ref.get(transaction=txn)
+        data = snap.to_dict() if getattr(snap, "exists", False) else {}
+
+        last_idem = str((data or {}).get("last_idempotency_key") or "").strip()
+        last_at = (data or {}).get("last_trade_at")
+        last_iso = str((data or {}).get("last_trade_at_iso") or "").strip() or None
+
+        last_dt: datetime | None = None
+        if isinstance(last_at, datetime):
+            last_dt = last_at
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+        else:
+            last_dt = _parse_dt_iso_best_effort(last_iso)
+
+        allowed = True
+        remaining_s = 0
+
+        # Replay-safe: allow the exact same request key even during cooldown.
+        if last_dt is not None and last_idem and idem and last_idem == idem:
+            allowed = True
+        elif last_dt is not None:
+            elapsed = (now - last_dt).total_seconds()
+            if elapsed < float(cooldown_s):
+                allowed = False
+                remaining_s = int(max(0.0, float(cooldown_s) - float(elapsed)))
+
+        if allowed:
+            txn.set(
+                ref,
+                {
+                    "tenant_id": tenant_id,
+                    "uid": uid,
+                    "symbol": symbol_n,
+                    "cooldown_seconds": int(cooldown_s),
+                    "last_trade_at": admin_firestore.SERVER_TIMESTAMP,
+                    "last_trade_at_iso": now.isoformat(),
+                    "last_idempotency_key": idem,
+                    "last_correlation_id": corr,
+                    "last_execution_id": exec_id,
+                    "updated_at": admin_firestore.SERVER_TIMESTAMP,
+                    "updated_at_iso": now.isoformat(),
+                },
+                merge=True,
+            )
+
+        out.update(
+            {
+                "allowed": bool(allowed),
+                "symbol": symbol_n,
+                "cooldown_seconds": int(cooldown_s),
+                "remaining_seconds": int(remaining_s),
+                "last_trade_at_iso": last_iso or (last_dt.isoformat() if last_dt is not None else None),
+                "last_idempotency_key": last_idem or None,
+            }
+        )
+
+    with_firestore_retry(lambda: _txn(transaction))
+    return out
+
+
 def _read_user_account_snapshot(*, db, uid: str) -> dict:
     """
     Read the warm-cache account snapshot required to initialize the daily capital snapshot.
@@ -246,13 +401,13 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, idem
             "quantity": str(qty),
             "entry_price": str(fill_price),  # Using 'entry_price' for consistency with P&L tracking
             "status": "OPEN",  # Using 'OPEN' status to enable P&L tracking in heartbeat
-            "created_at": firestore.SERVER_TIMESTAMP,
+            "created_at": admin_firestore.SERVER_TIMESTAMP,
             "created_at_iso": datetime.now(timezone.utc).isoformat(),
             # P&L tracking fields (initialized)
             "current_pnl": "0.00",
             "pnl_percent": "0.00",
             "current_price": str(fill_price),
-            "last_updated": firestore.SERVER_TIMESTAMP,
+            "last_updated": admin_firestore.SERVER_TIMESTAMP,
         }
         
         # Write to user-scoped shadowTradeHistory collection (idempotent on shadow_id).
@@ -429,7 +584,7 @@ def execute_trade(trade_request: TradeRequest, request: Request):
                 "side": trade_request.side,
                 "notional": str(trade_request.notional),
                 "status": "reserved",
-                "created_at": firestore.SERVER_TIMESTAMP,
+                "created_at": admin_firestore.SERVER_TIMESTAMP,
                 "created_at_iso": datetime.now(timezone.utc).isoformat(),
             }
             try:
@@ -487,6 +642,59 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     # LIVE MODE: Proceed with actual broker order (paper order for now)
     else:
         try:
+            # Cooldown guard (paper execution only): prevent overtrading per symbol.
+            cooldown_s = get_trade_symbol_cooldown_seconds()
+            cd = _consume_symbol_cooldown(
+                db=db,
+                tenant_id=ctx.tenant_id,
+                uid=ctx.uid,
+                symbol=trade_request.symbol,
+                idempotency_key=str(idem or ""),
+                correlation_id=corr,
+                execution_id=execution_id,
+                cooldown_seconds=cooldown_s,
+            )
+            if not bool(cd.get("allowed", True)):
+                try:
+                    log_event(
+                        logger,
+                        "execution.cooldown_blocked",
+                        severity="WARNING",
+                        correlation_id=corr,
+                        execution_id=execution_id,
+                        tenant_id=ctx.tenant_id,
+                        uid=ctx.uid,
+                        mode="paper",
+                        symbol=cd.get("symbol") or trade_request.symbol,
+                        side=trade_request.side,
+                        cooldown_seconds=int(cd.get("cooldown_seconds") or cooldown_s),
+                        remaining_seconds=int(cd.get("remaining_seconds") or 0),
+                        last_trade_at_iso=cd.get("last_trade_at_iso"),
+                        last_idempotency_key=cd.get("last_idempotency_key"),
+                    )
+                except Exception:
+                    pass
+                logger.warning(
+                    "cooldown_blocked symbol=%s remaining_s=%s cooldown_s=%s last_trade_at=%s correlation_id=%s execution_id=%s",
+                    cd.get("symbol") or trade_request.symbol,
+                    int(cd.get("remaining_seconds") or 0),
+                    int(cd.get("cooldown_seconds") or cooldown_s),
+                    cd.get("last_trade_at_iso"),
+                    corr,
+                    execution_id,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "symbol_cooldown_active",
+                        "symbol": cd.get("symbol") or trade_request.symbol,
+                        "cooldown_seconds": int(cd.get("cooldown_seconds") or cooldown_s),
+                        "remaining_seconds": int(cd.get("remaining_seconds") or 0),
+                        "last_trade_at": cd.get("last_trade_at_iso"),
+                        "message": "Trade blocked by per-symbol cooldown to prevent overtrading.",
+                    },
+                )
+
             logical_order = {
                 "uid": ctx.uid,
                 "correlation_id": corr,
@@ -635,7 +843,7 @@ def close_shadow_trade(close_request: CloseShadowTradeRequest, request: Request)
             "status": "CLOSED",
             "exit_price": str(exit_price),
             "exit_reason": close_request.exit_reason,
-            "closed_at": firestore.SERVER_TIMESTAMP,
+            "closed_at": admin_firestore.SERVER_TIMESTAMP,
             "closed_at_iso": datetime.now(timezone.utc).isoformat(),
             "final_pnl": final_pnl,  # Store final P&L
             "final_pnl_percent": pnl_percent,  # Store final P&L percent
