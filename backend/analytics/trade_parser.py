@@ -111,23 +111,40 @@ def compute_daily_pnl(
         for symbol, symbol_trades in trades_by_symbol.items():
             # Sort by timestamp to ensure proper FIFO ordering
             symbol_trades.sort(key=lambda t: t.ts)
-            
-            # Use FIFO to calculate realized P&L for closed positions
-            pnl_result = compute_pnl_fifo(symbol_trades)
-            
-            for closed_position in pnl_result.closed_positions:
-                realized_pnl = closed_position.realized_pnl
-                fees = closed_position.total_fees
-                
-                daily_pnl += realized_pnl
-                daily_fees += fees
-                
-                if realized_pnl > 0:
+
+            # compute_pnl_fifo expects Mapping[str, Any], not LedgerTrade objects
+            pnl_trades = [
+                {
+                    "trade_id": (t.broker_fill_id or t.order_id or f"{t.run_id}_{i}"),
+                    "symbol": t.symbol,
+                    "side": t.side,
+                    "qty": t.qty,
+                    "price": t.price,
+                    "ts": t.ts,
+                    "fees": t.fees,
+                }
+                for i, t in enumerate(symbol_trades)
+            ]
+
+            # FIFO P&L attribution: realized_* totals are for matched quantities (i.e., closed P&L)
+            pnl_result = compute_pnl_fifo(pnl_trades)
+
+            daily_pnl += pnl_result.realized_pnl_gross
+            daily_fees += pnl_result.realized_fees
+
+            # Count and characterize "closing contributions" by looking at attributed trades
+            for at in pnl_result.trades:
+                # Opening inventory trades have zero realized components.
+                if at.realized_pnl_gross == 0.0 and at.realized_fees == 0.0:
+                    continue
+
+                realized_net = at.realized_pnl_net
+                if realized_net > 0:
                     winning_trades += 1
-                    wins.append(realized_pnl)
-                elif realized_pnl < 0:
+                    wins.append(realized_net)
+                elif realized_net < 0:
                     losing_trades += 1
-                    losses.append(realized_pnl)
+                    losses.append(realized_net)
         
         # Calculate summary statistics
         total_trades = winning_trades + losing_trades
@@ -140,7 +157,7 @@ def compute_daily_pnl(
         daily_summaries.append(
             DailyPnLSummary(
                 date=date_str,
-                total_pnl=daily_pnl - daily_fees,
+                total_pnl=(daily_pnl - daily_fees),
                 gross_pnl=daily_pnl,
                 fees=daily_fees,
                 trades_count=total_trades,
@@ -259,12 +276,27 @@ def compute_win_loss_ratio(
     
     for symbol, symbol_trades in trades_by_symbol.items():
         symbol_trades.sort(key=lambda t: t.ts)
-        pnl_result = compute_pnl_fifo(symbol_trades)
-        
-        for closed_position in pnl_result.closed_positions:
-            if closed_position.realized_pnl > 0:
+
+        pnl_trades = [
+            {
+                "trade_id": (t.broker_fill_id or t.order_id or f"{t.run_id}_{i}"),
+                "symbol": t.symbol,
+                "side": t.side,
+                "qty": t.qty,
+                "price": t.price,
+                "ts": t.ts,
+                "fees": t.fees,
+            }
+            for i, t in enumerate(symbol_trades)
+        ]
+        pnl_result = compute_pnl_fifo(pnl_trades)
+
+        for at in pnl_result.trades:
+            if at.realized_pnl_gross == 0.0 and at.realized_fees == 0.0:
+                continue
+            if at.realized_pnl_net > 0:
                 winning_trades += 1
-            elif closed_position.realized_pnl < 0:
+            elif at.realized_pnl_net < 0:
                 losing_trades += 1
     
     total_trades = winning_trades + losing_trades

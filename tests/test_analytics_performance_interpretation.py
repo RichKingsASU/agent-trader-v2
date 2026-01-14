@@ -21,12 +21,11 @@ def test_compute_expectancy_per_trade_gross_and_net():
         avg_fee_per_trade=2.0,
     )
 
-    # Gross expectancy: 0.6*100 + 0.4*(-80) = 28
-    assert out["expectancy_gross_per_trade"] == 28.0
+    # Base expectancy: 0.6*100 + 0.4*(-80) = 28
+    assert out["expectancy_per_trade"] == 28.0
 
-    # Net expectancy: subtract fee from both outcomes
-    # 0.6*(98) + 0.4*(-82) = 25.2
-    assert out["expectancy_net_per_trade"] == 25.2
+    # Fee-adjusted expectancy subtracts avg_fee_per_trade
+    assert out["expectancy_fee_adjusted_per_trade"] == 26.0
 
 
 def test_classify_day_thresholds():

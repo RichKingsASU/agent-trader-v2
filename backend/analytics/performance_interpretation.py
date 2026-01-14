@@ -8,10 +8,8 @@ This module translates raw daily metrics (P&L, win rate, avg win/loss) into:
 
 Notes on inputs:
 - `DailyPnLSummary.total_pnl` is NET (gross realized P&L minus fees)
-- `DailyPnLSummary.avg_win` / `avg_loss` are based on realized P&L values coming out
-  of FIFO closeouts (i.e., typically GROSS, before fees). Fees are reported separately.
-  To provide a net-of-fees expectancy estimate, we allocate daily fees evenly across
-  closed trades.
+- `DailyPnLSummary.avg_win` / `avg_loss` are based on net realized P&L from FIFO closeouts
+  (i.e., after allocated fees). Fees are also reported separately for transparency.
 """
 
 from __future__ import annotations
@@ -46,13 +44,13 @@ def compute_expectancy_per_trade(
     avg_fee_per_trade: float = 0.0,
 ) -> Dict[str, float]:
     """
-    Compute gross and net expectancy per trade.
+    Compute expectancy per trade (and an optional fee-adjusted variant).
 
     Definitions (per closed trade):
     - p_win = win_rate_pct / 100
     - p_loss = 1 - p_win
-    - Expectancy (gross) = p_win * avg_win + p_loss * avg_loss
-    - Expectancy (net)   = p_win * (avg_win - fee) + p_loss * (avg_loss - fee)
+    - Expectancy (base) = p_win * avg_win + p_loss * avg_loss
+    - Fee-adjusted expectancy = Expectancy (base) - avg_fee_per_trade
 
     Where `avg_loss` is expected to be negative (e.g., -12.34).
     """
@@ -61,20 +59,15 @@ def compute_expectancy_per_trade(
     p_loss = 1.0 - p_win
 
     avg_fee = float(avg_fee_per_trade)
-    avg_win_net = float(avg_win) - avg_fee
-    avg_loss_net = float(avg_loss) - avg_fee
-
-    expectancy_gross = p_win * float(avg_win) + p_loss * float(avg_loss)
-    expectancy_net = p_win * avg_win_net + p_loss * avg_loss_net
+    expectancy_base = p_win * float(avg_win) + p_loss * float(avg_loss)
+    expectancy_fee_adjusted = expectancy_base - avg_fee
 
     return {
         "p_win": p_win,
         "p_loss": p_loss,
         "avg_fee_per_trade": avg_fee,
-        "avg_win_net": avg_win_net,
-        "avg_loss_net": avg_loss_net,
-        "expectancy_gross_per_trade": expectancy_gross,
-        "expectancy_net_per_trade": expectancy_net,
+        "expectancy_per_trade": expectancy_base,
+        "expectancy_fee_adjusted_per_trade": expectancy_fee_adjusted,
     }
 
 
@@ -120,7 +113,10 @@ def emit_daily_summary(
         win_rate_pct=float(day.win_rate),
         avg_win=float(day.avg_win),
         avg_loss=float(day.avg_loss),
-        avg_fee_per_trade=avg_fee,
+        # avg_win/avg_loss are already net-of-fees from FIFO attribution in trade_parser.
+        # We still compute avg_fee_per_trade and include it in the output for transparency,
+        # but we avoid subtracting it again from expectancy.
+        avg_fee_per_trade=0.0,
     )
 
     label = classify_day(net_pnl=float(day.total_pnl), thresholds=thresholds)
@@ -128,7 +124,7 @@ def emit_daily_summary(
     avg_loss_abs = abs(float(day.avg_loss)) if float(day.avg_loss) != 0 else 0.0
     win_loss_ratio = (float(day.avg_win) / avg_loss_abs) if avg_loss_abs > 0 else float("inf")
 
-    edge = float(expectancy["expectancy_net_per_trade"])
+    edge = float(expectancy["expectancy_per_trade"])
     edge_signal = "positive edge" if edge > 0 else ("break-even edge" if edge == 0 else "negative edge")
 
     # Interpretation heuristics: keep short and actionable.
@@ -165,6 +161,7 @@ def emit_daily_summary(
             "avg_win": float(day.avg_win),
             "avg_loss": float(day.avg_loss),
             "win_loss_ratio": win_loss_ratio,
+            "avg_fee_per_trade": avg_fee,
             **expectancy,
         },
         "thresholds": {
