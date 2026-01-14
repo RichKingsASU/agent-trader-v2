@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Protocol, runtime_checkable
 
-from backend.persistence.firestore_retry import with_firestore_retry
-
 logger = logging.getLogger(__name__)
 
 
@@ -107,6 +105,8 @@ class _FirestoreReservationHandle(ReservationHandle):
             return
         self._released = True
         try:
+            from backend.persistence.firestore_retry import with_firestore_retry
+
             with_firestore_retry(
                 lambda: self._doc_ref.set(
                     {
@@ -150,6 +150,7 @@ class FirestoreReservationManager:
         meta: dict[str, Any] | None = None,
     ) -> ReservationHandle:
         from backend.persistence.firebase_client import get_firestore_client
+        from backend.persistence.firestore_retry import with_firestore_retry
 
         tenant_id = str(tenant_id).strip()
         broker_account_id = str(broker_account_id).strip()
