@@ -32,6 +32,13 @@ from backend.risk.capital_reservation import (
     reserve_capital_atomic,
     release_capital_atomic,
 )
+from backend.execution.reservations import (
+    BestEffortReservationManager,
+    NoopReservation,
+    ReservationHandle,
+    ReservationManager,
+    resolve_tenant_id_from_metadata,
+)
 from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
 from backend.observability.risk_signals import risk_correlation_id
 
@@ -1785,6 +1792,9 @@ class ExecutionEngine:
             str(get_env("EXEC_DRY_RUN", "1")).strip().lower() in {"1", "true", "yes", "on"}
         )
         self._enable_smart_routing = enable_smart_routing
+        # Best-effort, non-throwing reservation wrapper. If no manager is provided,
+        # reservations are a no-op.
+        self._reservations = BestEffortReservationManager(reservations)
         self._capital_provider: _FirestoreCapitalProvider | None = None
         self._risk_limits_provider: _FirestoreRiskLimitsProvider | None = None
 
