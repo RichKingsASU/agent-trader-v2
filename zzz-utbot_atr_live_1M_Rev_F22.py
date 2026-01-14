@@ -27,10 +27,15 @@ from uuid import uuid4
 
 import pandas as pd
 import ta
-import alpaca_trade_api as tradeapi
 from ta.momentum import RSIIndicator
 
 import requests
+
+# Alpaca official SDK (alpaca-py): https://alpaca.markets/sdks/python/
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.live import StockDataStream
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 # AgentTrader intent emission (non-executing).
 try:
@@ -136,6 +141,53 @@ CARRY_MAX_DIST_ATR_DEFAULT  = 2.0
 LIMIT_BIAS_PCT_DEFAULT = 0.001  # 0.1% default
 ALPACA_STOCK_FEED = "iex"       # Alpaca free stock feed
 ALPACA_OPTIONS_FEED_DEFAULT = "indicative"  # Alpaca free options snapshots feed
+
+
+def _parse_timeframe(tf: Any) -> TimeFrame:
+    """
+    Adapter for helper code that historically used legacy timeframe strings
+    like "1Min", "5Min", "15Min".
+    """
+    if tf is None:
+        return TimeFrame.Minute
+    s = str(tf).strip()
+    if s.endswith("Min"):
+        try:
+            n = int(s[:-3])
+            return TimeFrame(n, TimeFrameUnit.Minute)
+        except Exception:
+            return TimeFrame.Minute
+    if s.endswith("Hour"):
+        try:
+            n = int(s[:-4])
+            return TimeFrame(n, TimeFrameUnit.Hour)
+        except Exception:
+            return TimeFrame.Hour
+    # Fall back (alpaca-py also accepts "1Min" strings in some contexts, but be strict)
+    return TimeFrame.Minute
+
+
+class _AlpacaPyRestAdapter:
+    """
+    Minimal adapter so existing helper functions (e.g., `seed_utbot_from_history`)
+    can continue calling `get_bars(...)` while the underlying API calls use alpaca-py.
+    """
+
+    def __init__(self, client: StockHistoricalDataClient, *, default_feed: str):
+        self._client = client
+        self._default_feed = str(default_feed).strip().lower() or ALPACA_STOCK_FEED
+
+    def get_bars(self, symbol: str, timeframe: Any, start=None, end=None, limit: int | None = None, adjustment: str | None = None, feed: str | None = None, **_kwargs):  # noqa: ANN001
+        req = StockBarsRequest(
+            symbol_or_symbols=str(symbol).upper(),
+            timeframe=_parse_timeframe(timeframe),
+            start=start,
+            end=end,
+            limit=limit,
+            adjustment=adjustment or "raw",
+            feed=(str(feed).strip().lower() if feed else self._default_feed),
+        )
+        return self._client.get_stock_bars(req)
 
 
 print("CWD:", os.getcwd())
@@ -1186,11 +1238,14 @@ async def run_live(args):
 
     state: Dict[str, Any] = {}
 
-    rest = tradeapi.REST(
-        os.getenv("ALPACA_API_KEY"),
-        os.getenv("ALPACA_API_SECRET"),
-        os.getenv("ALPACA_BASE_URL"),
-    )
+    alpaca_key = os.getenv("ALPACA_API_KEY")
+    alpaca_secret = os.getenv("ALPACA_API_SECRET")
+    if not alpaca_key or not alpaca_secret:
+        raise RuntimeError("Missing Alpaca credentials: set ALPACA_API_KEY and ALPACA_API_SECRET")
+
+    # alpaca-py historical client (free data compatible)
+    stock_hist = StockHistoricalDataClient(alpaca_key, alpaca_secret)
+    rest = _AlpacaPyRestAdapter(stock_hist, default_feed=ALPACA_STOCK_FEED)
 
     builder_5m  = MultiTFBuilder("5m", 5)
     builder_15m = MultiTFBuilder("15m", 15)
@@ -1424,13 +1479,8 @@ async def run_live(args):
         except Exception:
             pass
 
-    # Alpaca stream: FREE 1-minute bars (IEX)
-    stream = tradeapi.Stream(
-        os.getenv("ALPACA_API_KEY"),
-        os.getenv("ALPACA_API_SECRET"),
-        base_url=os.getenv("ALPACA_BASE_URL"),
-        data_feed=ALPACA_STOCK_FEED,
-    )
+    # Alpaca stream: FREE 1-minute bars (IEX) via alpaca-py
+    stream = StockDataStream(alpaca_key, alpaca_secret, feed=ALPACA_STOCK_FEED)
 
     async def on_bar(bar):
         nonlocal df5, df15
