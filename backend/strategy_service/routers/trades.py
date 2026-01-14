@@ -23,6 +23,13 @@ from backend.time.nyse_time import to_nyse
 from backend.common.a2a_sdk import RiskAgentSyncClient
 from backend.contracts.risk import TradeCheckRequest
 
+from backend.execution.option_liquidity import (
+    OptionLiquidityThresholds,
+    evaluate_option_liquidity,
+    extract_option_liquidity_metrics,
+    fetch_alpaca_option_snapshot,
+)
+
 from ..db import build_raw_order, insert_paper_order
 from ..db import insert_paper_order_idempotent
 from ..models import PaperOrderCreate
@@ -48,6 +55,88 @@ class TradeRequest(BaseModel):
     notional: float
     quantity: float = None
     idempotency_key: str | None = None
+
+
+def _is_option_instrument(instrument_type: str | None) -> bool:
+    return str(instrument_type or "").strip().lower() in {"option", "options"}
+
+
+def _enforce_option_liquidity_or_reject(
+    *,
+    symbol: str,
+    instrument_type: str | None,
+    correlation_id: str,
+    execution_id: str,
+    tenant_id: str,
+    uid: str,
+    strategy_id: str,
+) -> None:
+    """
+    Liquidity gate for option contracts (paper + shadow).
+    """
+    if not _is_option_instrument(instrument_type):
+        return
+
+    thresholds = OptionLiquidityThresholds.from_env()
+    if not thresholds.enabled:
+        return
+
+    try:
+        snap = fetch_alpaca_option_snapshot(option_symbol=symbol)
+        metrics = extract_option_liquidity_metrics(snap)
+        allowed, reason_code, details = evaluate_option_liquidity(
+            option_symbol=symbol,
+            metrics=metrics,
+            thresholds=thresholds,
+        )
+    except Exception as e:
+        # Data unavailable: fail-closed by default, fail-open only if explicitly configured.
+        allowed = bool(thresholds.fail_open)
+        reason_code = "option_liquidity_data_unavailable_fail_open" if allowed else "option_liquidity_data_unavailable"
+        details = {
+            "symbol": symbol,
+            "thresholds": {
+                "min_open_interest": thresholds.min_open_interest,
+                "min_volume": thresholds.min_volume,
+                "max_spread_pct_of_mid": thresholds.max_spread_pct_of_mid,
+                "enabled": thresholds.enabled,
+                "fail_open": thresholds.fail_open,
+            },
+            "error": {"type": type(e).__name__, "message": str(e)},
+        }
+
+    if not allowed:
+        try:
+            log_event(
+                logger,
+                "execution.option_liquidity.rejected",
+                severity="WARNING",
+                correlation_id=correlation_id,
+                execution_id=execution_id,
+                tenant_id=tenant_id,
+                uid=uid,
+                strategy_id=strategy_id,
+                symbol=symbol,
+                instrument_type=str(instrument_type or ""),
+                reason_code=reason_code,
+                thresholds=details.get("thresholds"),
+                metrics=details.get("metrics"),
+                missing=details.get("missing"),
+                error=details.get("error"),
+            )
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "option_liquidity_rejected",
+                "reason_code": reason_code,
+                "symbol": symbol,
+                "thresholds": details.get("thresholds"),
+                "metrics": details.get("metrics"),
+                "missing": details.get("missing"),
+            },
+        )
 
 
 def _stable_id(*, scope: str, key: str) -> str:
@@ -354,6 +443,17 @@ def execute_trade(trade_request: TradeRequest, request: Request):
             status_code=409,
             detail={"error": "kill_switch_enabled", "source": source, "message": "Execution is globally halted."},
         )
+
+    # Option liquidity gate (applies to shadow + paper/live).
+    _enforce_option_liquidity_or_reject(
+        symbol=trade_request.symbol,
+        instrument_type=trade_request.instrument_type,
+        correlation_id=corr,
+        execution_id=execution_id,
+        tenant_id=ctx.tenant_id,
+        uid=ctx.uid,
+        strategy_id=str(trade_request.strategy_id),
+    )
     
     # Risk check (always performed regardless of mode)
     # Populate `current_day_loss` from (current equity - starting equity), so max_loss_per_day can be enforced.

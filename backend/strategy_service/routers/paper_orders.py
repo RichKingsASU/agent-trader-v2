@@ -12,6 +12,13 @@ from backend.tenancy.context import TenantContext
 from backend.common.logging import log_event
 from backend.observability.risk_signals import risk_correlation_id
 
+from backend.execution.option_liquidity import (
+    OptionLiquidityThresholds,
+    evaluate_option_liquidity,
+    extract_option_liquidity_metrics,
+    fetch_alpaca_option_snapshot,
+)
+
 from ..db import build_raw_order, insert_paper_order
 from ..db import insert_paper_order_idempotent
 from ..models import PaperOrderCreate
@@ -40,6 +47,83 @@ class PaperOrderRequest(BaseModel):
     idempotency_key: str | None = None
 
 
+def _is_option_instrument(instrument_type: str | None) -> bool:
+    return str(instrument_type or "").strip().lower() in {"option", "options"}
+
+
+def _enforce_option_liquidity_or_reject(
+    *,
+    symbol: str,
+    instrument_type: str | None,
+    correlation_id: str,
+    execution_id: str,
+    tenant_id: str,
+    uid: str,
+    strategy_id: str,
+) -> None:
+    if not _is_option_instrument(instrument_type):
+        return
+    thresholds = OptionLiquidityThresholds.from_env()
+    if not thresholds.enabled:
+        return
+
+    try:
+        snap = fetch_alpaca_option_snapshot(option_symbol=symbol)
+        metrics = extract_option_liquidity_metrics(snap)
+        allowed, reason_code, details = evaluate_option_liquidity(
+            option_symbol=symbol,
+            metrics=metrics,
+            thresholds=thresholds,
+        )
+    except Exception as e:
+        allowed = bool(thresholds.fail_open)
+        reason_code = "option_liquidity_data_unavailable_fail_open" if allowed else "option_liquidity_data_unavailable"
+        details = {
+            "symbol": symbol,
+            "thresholds": {
+                "min_open_interest": thresholds.min_open_interest,
+                "min_volume": thresholds.min_volume,
+                "max_spread_pct_of_mid": thresholds.max_spread_pct_of_mid,
+                "enabled": thresholds.enabled,
+                "fail_open": thresholds.fail_open,
+            },
+            "error": {"type": type(e).__name__, "message": str(e)},
+        }
+
+    if not allowed:
+        try:
+            log_event(
+                __import__("logging").getLogger(__name__),
+                "execution.option_liquidity.rejected",
+                severity="WARNING",
+                correlation_id=correlation_id,
+                execution_id=execution_id,
+                tenant_id=tenant_id,
+                uid=uid,
+                strategy_id=strategy_id,
+                symbol=symbol,
+                instrument_type=str(instrument_type or ""),
+                reason_code=reason_code,
+                thresholds=details.get("thresholds"),
+                metrics=details.get("metrics"),
+                missing=details.get("missing"),
+                error=details.get("error"),
+            )
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "option_liquidity_rejected",
+                "reason_code": reason_code,
+                "symbol": symbol,
+                "thresholds": details.get("thresholds"),
+                "metrics": details.get("metrics"),
+                "missing": details.get("missing"),
+            },
+        )
+
+
 @router.post("/paper_orders", tags=["paper_orders"])
 async def create_paper_order(order: PaperOrderRequest, request: Request):
     ctx: TenantContext = get_tenant_context(request)
@@ -50,6 +134,17 @@ async def create_paper_order(order: PaperOrderRequest, request: Request):
         import uuid
 
         order.execution_id = str(uuid.uuid4())
+
+    # Option liquidity gate (paper order endpoint).
+    _enforce_option_liquidity_or_reject(
+        symbol=order.symbol,
+        instrument_type=order.instrument_type,
+        correlation_id=corr,
+        execution_id=order.execution_id,
+        tenant_id=ctx.tenant_id,
+        uid=ctx.uid,
+        strategy_id=str(order.strategy_id),
+    )
     # 1. Run risk check
     try:
         risk_req = TradeCheckRequest(

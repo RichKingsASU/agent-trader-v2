@@ -14,6 +14,7 @@ from typing import Any, Optional, Protocol, runtime_checkable
 import requests
 
 from backend.common.env import get_env
+from backend.common.logging import log_event
 from backend.common.agent_mode import require_live_mode as require_trading_live_mode
 from backend.common.kill_switch import (
     ExecutionHaltedError,
@@ -34,6 +35,12 @@ from backend.risk.capital_reservation import (
 )
 from backend.vnext.risk_guard.interfaces import RiskGuardLimits, RiskGuardState, RiskGuardTrade, evaluate_risk_guard
 from backend.observability.risk_signals import risk_correlation_id
+from backend.execution.option_liquidity import (
+    OptionLiquidityThresholds,
+    evaluate_option_liquidity,
+    extract_option_liquidity_metrics,
+    fetch_alpaca_option_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -465,6 +472,21 @@ class MarketDataProvider:
                 # Forex uses different format (remove slash)
                 forex_symbol = symbol.replace("/", "")
                 endpoint = f"{self._data_base}/forex/{forex_symbol}/quotes/latest"
+            elif asset_class == "OPTIONS":
+                # Options: use the snapshots endpoint (includes latestQuote + dailyBar + open interest when available).
+                snap = fetch_alpaca_option_snapshot(option_symbol=symbol, timeout_s=float(self._timeout))
+                metrics = extract_option_liquidity_metrics(snap)
+                return {
+                    "bid": float(metrics.get("bid") or 0.0),
+                    "ask": float(metrics.get("ask") or 0.0),
+                    "spread": float(metrics.get("spread") or 0.0),
+                    "spread_pct": float(metrics.get("spread_pct") or 0.0),
+                    "mid_price": float(metrics.get("mid") or 0.0),
+                    "timestamp": metrics.get("timestamp"),
+                    # Extras for option-specific liquidity enforcement
+                    "open_interest": metrics.get("open_interest"),
+                    "volume": metrics.get("volume"),
+                }
             else:
                 # Default to stocks
                 endpoint = f"{self._data_base}/stocks/{symbol}/quotes/latest"
@@ -2376,6 +2398,52 @@ class ExecutionEngine:
             }
             self._critical("exec.pretrade_assertion_failed", payload=payload)
             raise PreTradeAssertionError(f"quote_not_fresh:{freshness.reason_code}")
+
+        # ---- Option liquidity gate (fail-closed) ----
+        # Applies to ALL option strategies by enforcing at the engine "choke point".
+        is_option = (
+            str(getattr(intent, "asset_class", "") or "").strip().upper() == "OPTIONS"
+            or str(intent.metadata.get("instrument_type") or "").strip().lower() in {"option", "options"}
+        )
+        if is_option:
+            thresholds = OptionLiquidityThresholds.from_env()
+            allowed, reason_code, details = evaluate_option_liquidity(
+                option_symbol=intent.symbol,
+                metrics={
+                    "open_interest": quote.get("open_interest"),
+                    "volume": quote.get("volume"),
+                    "bid": quote.get("bid"),
+                    "ask": quote.get("ask"),
+                    "mid": quote.get("mid_price"),
+                    "spread": quote.get("spread"),
+                    "spread_pct": quote.get("spread_pct"),
+                    "timestamp": quote.get("timestamp"),
+                },
+                thresholds=thresholds,
+            )
+            if not allowed:
+                corr = risk_correlation_id(
+                    correlation_id=str(intent.metadata.get("correlation_id") or trace_id or "").strip() or None
+                )
+                execution_id = str(intent.metadata.get("execution_id") or intent.client_intent_id or "").strip() or None
+                try:
+                    log_event(
+                        logger,
+                        "execution.option_liquidity.rejected",
+                        severity="WARNING",
+                        correlation_id=corr,
+                        execution_id=execution_id,
+                        strategy_id=intent.strategy_id,
+                        symbol=intent.symbol,
+                        asset_class=str(intent.asset_class or ""),
+                        reason_code=reason_code,
+                        thresholds=details.get("thresholds"),
+                        metrics=details.get("metrics"),
+                        missing=details.get("missing"),
+                    )
+                except Exception:
+                    pass
+                raise PreTradeAssertionError(f"option_liquidity_rejected:{reason_code}")
 
         # ---- Price + notional estimation ----
         est_price = None
