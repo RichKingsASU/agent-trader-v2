@@ -25,6 +25,16 @@ from strategies.loader import get_strategy_loader
 logger = logging.getLogger(__name__)
 
 
+def load_strategies(*, db: Optional[firestore.Client] = None) -> Dict[str, Any]:
+    """
+    Load all available strategies.
+
+    This indirection exists so tests can patch `load_strategies` without needing
+    to patch the loader internals.
+    """
+    return get_strategy_loader(db=db).get_all_strategies()
+
+
 class ConsensuAction(Enum):
     """Standardized consensus actions"""
     BUY = "BUY"
@@ -146,7 +156,7 @@ class ConsensusEngine:
         self.db = db
         
         # Load all available strategies
-        self.available_strategies = get_strategy_loader(db=self.db).get_all_strategies()
+        self.available_strategies = load_strategies(db=self.db)
         
         logger.info(
             f"ConsensusEngine initialized: threshold={self.consensus_threshold}, "
