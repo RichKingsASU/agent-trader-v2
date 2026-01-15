@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "market-bars-1m topic schema (v1)",
+  "type": "object",
+  "required": ["schemaVersion", "event_type", "agent_name", "git_sha", "ts", "trace_id", "payload"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "event_type": { "type": "string", "minLength": 1 },
+    "agent_name": { "type": "string", "minLength": 1 },
+    "git_sha": { "type": "string", "minLength": 1 },
+    "ts": { "type": "string", "minLength": 1 },
+    "trace_id": { "type": "string", "minLength": 1 },
+    "payload": {
+      "type": "object",
+      "required": ["symbol", "timeframe", "ts", "open", "high", "low", "close"],
+      "properties": {
+        "symbol": { "type": "string", "minLength": 1 },
+        "timeframe": { "const": "1m" },
+        "ts": { "type": "string", "minLength": 1 },
+        "open": { "type": "number" },
+        "high": { "type": "number" },
+        "low": { "type": "number" },
+        "close": { "type": "number" },
+        "volume": { "type": "number" },
+        "source": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

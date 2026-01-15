@@ -25,6 +25,8 @@ service-account-key.json
 !tsconfig.json
 !tsconfig.*.json
 !tsconfig*.json
+!contracts/schemas/*.json
+!contracts/fixtures/**/*.json
 *.pem
 *.key
 deploy_logs/

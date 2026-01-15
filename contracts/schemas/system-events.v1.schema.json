@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "system-events topic schema (v1)",
+  "type": "object",
+  "required": ["schemaVersion", "event_type", "agent_name", "git_sha", "ts", "trace_id", "payload"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "event_type": { "type": "string", "minLength": 1 },
+    "agent_name": { "type": "string", "minLength": 1 },
+    "git_sha": { "type": "string", "minLength": 1 },
+    "ts": { "type": "string", "minLength": 1 },
+    "trace_id": { "type": "string", "minLength": 1 },
+    "payload": {
+      "type": "object",
+      "required": ["timestamp", "severity", "service", "env", "event_type"],
+      "properties": {
+        "timestamp": { "type": "string", "minLength": 1 },
+        "severity": { "type": "string", "minLength": 1 },
+        "service": { "type": "string", "minLength": 1 },
+        "env": { "type": "string", "minLength": 1 },
+        "event_type": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

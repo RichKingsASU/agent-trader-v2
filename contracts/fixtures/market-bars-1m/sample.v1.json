@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "event_type": "market.bars.1m",
+  "agent_name": "pytest",
+  "git_sha": "deadbeef",
+  "ts": "2026-01-08T00:00:00Z",
+  "trace_id": "trace123",
+  "payload": {
+    "symbol": "SPY",
+    "timeframe": "1m",
+    "ts": "2026-01-08T00:00:00Z",
+    "open": 100.0,
+    "high": 101.0,
+    "low": 99.5,
+    "close": 100.5,
+    "volume": 12345,
+    "source": "synthetic"
+  }
+}
