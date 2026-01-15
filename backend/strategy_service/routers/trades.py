@@ -198,7 +198,13 @@ def _require_daily_capital_snapshot(*, db, tenant_id: str, uid: str) -> object:
     return snap
 
 
-def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, idempotency_key: str | None = None) -> dict:
+def create_shadow_trade(
+    trade_request: TradeRequest,
+    ctx: TenantContext,
+    *,
+    idempotency_key: str | None = None,
+    shadow_id: str | None = None,
+) -> dict:
     """
     Create a synthetic shadow trade and log it to user-scoped shadowTradeHistory collection.
     
@@ -214,7 +220,7 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, idem
     try:
         db = get_firestore_client()
         raw_key = (idempotency_key or "").strip() or None
-        shadow_id = _stable_id(scope="shadow_trade", key=raw_key) if raw_key else str(uuid4())
+        shadow_id = (shadow_id or "").strip() or (_stable_id(scope="shadow_trade", key=raw_key) if raw_key else str(uuid4()))
         
         # Get current price for fill simulation
         fill_price = get_current_price(trade_request.symbol)
