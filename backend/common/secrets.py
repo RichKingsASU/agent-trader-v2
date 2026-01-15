@@ -55,17 +55,8 @@ def get_secret(
         google.api_core.exceptions.NotFound: If the secret or version does not exist.
         google.api_core.exceptions.PermissionDenied: If permissions are insufficient.
     """
-    # Explicitly forbidden fallback for DATABASE_URL
-    if secret_name == "DATABASE_URL" and _should_allow_env_fallback():
-        # This condition implies that if fallback is enabled, but secret is DATABASE_URL,
-        # we should still *not* fall back. This means only attempt SM access.
-        pass
-    elif not _should_allow_env_fallback():
-        # If fallback is not globally enabled, then it's not allowed for this secret.
-        allow_env_fallback_for_this_secret = False
-    else:
-        # Fallback is globally enabled, check if this specific secret is excluded (e.g. DATABASE_URL)
-        allow_env_fallback_for_this_secret = True
+    # Env fallback is globally controlled; DATABASE_URL is explicitly forbidden.
+    allow_env_fallback_for_this_secret = _should_allow_env_fallback() and (secret_name != "DATABASE_URL")
 
     # Infer project_id if not provided
     if not project_id:
