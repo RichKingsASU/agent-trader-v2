@@ -18,7 +18,7 @@ Fee handling:
       realized_gross - (open_fees_per_unit + close_fees_per_unit) * matched_qty
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from typing import Any, Deque, Iterable, Mapping, Optional
 from collections import deque
@@ -94,7 +94,7 @@ def _req_ts(t: Mapping[str, Any], k: str = "ts") -> datetime:
 
 
 def compute_pnl_fifo(
-    trades: Iterable[Mapping[str, Any]],
+    trades: Iterable[Any],
     *,
     trade_id_field: str = "trade_id",
     sort_by_ts: bool = True,
@@ -112,7 +112,17 @@ def compute_pnl_fifo(
 
     trade_id is optional in the dict; if absent, it is synthesized as "t_{i}".
     """
-    raw: list[dict[str, Any]] = [dict(t) for t in trades]
+    def _trade_to_dict(t: Any) -> dict[str, Any]:
+        if isinstance(t, Mapping):
+            return dict(t)
+        if is_dataclass(t):
+            v = asdict(t)
+            return v if isinstance(v, dict) else dict(v)
+        if hasattr(t, "__dict__"):
+            return dict(vars(t))
+        raise TypeError(f"trade must be a mapping-like object, got {type(t).__name__}")
+
+    raw: list[dict[str, Any]] = [_trade_to_dict(t) for t in trades]
     if sort_by_ts:
         # Stable ordering: (ts, trade_id-or-index)
         def _key(i: int) -> tuple[datetime, str]:
