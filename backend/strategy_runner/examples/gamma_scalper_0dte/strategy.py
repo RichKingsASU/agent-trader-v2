@@ -305,10 +305,17 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
             f"hedge_qty adjusted to {hedge_qty}"
         )
     
-    # Round to nearest whole share
+    # Round to nearest whole share.
     # Use banker's rounding (ROUND_HALF_EVEN) for deterministic .5 handling:
     # -6.5 -> -6, 6.5 -> 6
-    return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_EVEN)
+    q = hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_EVEN)
+
+    # If we're above the hedging threshold but the rounded hedge is 0 shares,
+    # still hedge minimally (1 share) to move delta back inside the band.
+    if q == Decimal("0") and hedge_qty != Decimal("0"):
+        return Decimal("-1") if hedge_qty < 0 else Decimal("1")
+
+    return q
 
 
 def _should_hedge(net_delta: Decimal, current_time: datetime) -> bool:
