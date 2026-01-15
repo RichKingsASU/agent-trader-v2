@@ -238,12 +238,21 @@ def _get_hedging_threshold() -> Decimal:
         Decimal: Current hedging threshold
     """
     global _macro_event_active, _stop_loss_multiplier
+    global _last_gex_value, _last_gex_update
     
     # Fetch latest market regime data (includes GEX and macro events)
     # Only fetch if we haven't checked recently (cache for 60 seconds)
     if _last_macro_check is None or (utc_now() - _last_macro_check).total_seconds() > 60:
         _fetch_market_regime_from_firestore()
     
+    # Defensive fallback: if Firestore fetch is unavailable in this runtime,
+    # allow env-provided GEX to drive the hedging threshold.
+    if _last_gex_value is None:
+        env_gex = os.getenv("GEX_VALUE")
+        if env_gex:
+            _last_gex_value = _to_decimal(env_gex)
+            _last_gex_update = utc_now()
+
     base_threshold = HEDGING_THRESHOLD
     gex = _last_gex_value
     
