@@ -36,4 +36,6 @@ firebase-debug.log
 # TypeScript build artifacts
 packages/*/dist/
 packages/shared-types/dist/
+!packages/shared-types/dist/
+!packages/shared-types/dist/envelope.js
 *.tsbuildinfo
