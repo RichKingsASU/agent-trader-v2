@@ -409,6 +409,21 @@ async def livez(response: Response) -> dict[str, Any]:
 @app.get("/ops/status")
 async def ops_status() -> dict[str, Any]:
     """
+    Minimal ops status contract (import/test friendly).
+    """
+    last_hb_dt: datetime | None = getattr(app.state, "last_heartbeat_utc", None)
+    return {
+        "uptime": max(0.0, time.monotonic() - _PROCESS_START_MONOTONIC),
+        "last_heartbeat": _iso_utc(last_hb_dt),
+        "data_freshness_seconds": None,
+        "build_sha": _build_sha(),
+        "agent_mode": _agent_mode(),
+    }
+
+
+@app.get("/ops/status/full")
+async def ops_status_full() -> dict[str, Any]:
+    """
     Stable ops status contract (best-effort).
 
     Note: This endpoint may perform a small dependency read (marketdata heartbeat)
