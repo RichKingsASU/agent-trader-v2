@@ -504,6 +504,9 @@ class FirestoreWriter:
         doc: dict[str, Any],
         replay: Optional[ReplayContext] = None,
         replay_dedupe_key: Optional[str] = None,
+        business_dedupe_collection: Optional[str] = None,
+        business_dedupe_key: Optional[str] = None,
+        business_dedupe_doc: Optional[dict[str, Any]] = None,
     ) -> Tuple[bool, str]:
         ref = self._db.collection(self._col(collection)).document(str(doc_id))
 
@@ -512,9 +515,7 @@ class FirestoreWriter:
             # This prevents duplicates from updating SERVER_TIMESTAMP fields.
             msg_id = str(getattr(source, "message_id", "") or "").strip()
             if msg_id:
-                dedupe_ref = self._db.collection(self._col("ops_message_dedupe")).document(
-                    _dedupe_doc_id(kind=str(collection), topic=str(source.topic), message_id=msg_id)
-                )
+                dedupe_ref = self._db.collection(self._col("ops_dedupe")).document(msg_id)
                 first, _ = ensure_message_once(
                     txn=txn,
                     dedupe_ref=dedupe_ref,
@@ -523,6 +524,23 @@ class FirestoreWriter:
                 )
                 if not first:
                     return False, "duplicate_message_noop"
+
+            # Business-level dedupe (used when replay context is absent).
+            if business_dedupe_collection and business_dedupe_key:
+                b_ref = self._db.collection(self._col(str(business_dedupe_collection))).document(str(business_dedupe_key))
+                snap = b_ref.get(transaction=txn)
+                if getattr(snap, "exists", False):
+                    return False, "duplicate_business_noop"
+                try:
+                    txn.create(
+                        b_ref,
+                        dict(business_dedupe_doc or {"key": str(business_dedupe_key), "createdAt": self._firestore.SERVER_TIMESTAMP}),
+                    )
+                except Exception as e:
+                    # Test fakes raise RuntimeError("AlreadyExists"); treat as duplicate.
+                    if "AlreadyExists" in str(e):
+                        return False, "duplicate_business_noop"
+                    raise
 
             if replay is not None:
                 ok, why = ensure_event_not_applied(
@@ -664,6 +682,21 @@ class FirestoreWriter:
         source: SourceInfo,
         replay: Optional[ReplayContext] = None,
     ) -> Tuple[bool, str]:
+        business_dedupe_collection = None
+        business_dedupe_key = None
+        business_dedupe_doc = None
+        if replay is None:
+            # Business-level dedupe key: stable across different Pub/Sub deliveries
+            # for the same logical signal.
+            sym = str((data or {}).get("symbol") or (symbol or "")).strip().upper()
+            strat = str((data or {}).get("strategyId") or (data or {}).get("strategy") or (strategy or "")).strip()
+            act = str((data or {}).get("action") or (action or "")).strip().upper()
+            sig_type = str((data or {}).get("signalType") or (data or {}).get("signal_type") or "").strip().lower()
+            key_obj = {"symbol": sym, "strategyId": strat, "action": act, "signalType": sig_type}
+            business_dedupe_collection = "ops_trade_signal_dedupe_business"
+            business_dedupe_key = _short_hash_id(key_obj)
+            business_dedupe_doc = {"createdAt": self._firestore.SERVER_TIMESTAMP, **key_obj}
+
         doc: dict[str, Any] = {
             "docId": str(doc_id),
             "eventId": str(event_id) if event_id else None,
@@ -693,6 +726,9 @@ class FirestoreWriter:
             doc=doc,
             replay=replay,
             replay_dedupe_key=str(replay_dedupe_key or event_id or doc_id),
+            business_dedupe_collection=business_dedupe_collection,
+            business_dedupe_key=business_dedupe_key,
+            business_dedupe_doc=business_dedupe_doc,
         )
 
     def dedupe_and_upsert_ops_service(
