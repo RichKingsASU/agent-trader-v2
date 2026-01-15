@@ -71,8 +71,15 @@ class StrategyLoader:
         strategies = loader.get_all_strategies()
         signals = await loader.evaluate_all_strategies_with_maestro(market_data, account_snapshot)
     """
+
+    # Class-level rate limiting state (shared across warm invocations).
+    _batch_write_limit: int = 500
+    _doc_write_limit: int = 50
+    _batch_cooldown_sec: float = 5.0
+    _last_batch_time: float = 0.0
+    _current_batch_count: int = 0
     
-    def __init__(self, db=None):
+    def __init__(self, db=None, *, tenant_id: str = "default", uid: Optional[str] = None, config: Optional[Dict[str, Any]] = None):
         """
         Initialize the strategy loader and discover all strategies.
         
@@ -80,11 +87,24 @@ class StrategyLoader:
             db: Optional Firestore client for agent identity registration.
                 If provided, each strategy will be registered with a cryptographic
                 identity for Zero-Trust signal authentication.
+            tenant_id: Tenant identifier (multi-tenancy).
+            uid: User identifier (optional).
+            config: Optional loader config (rate limiting knobs, etc).
         """
         self.strategies: Dict[str, Any] = {}
         self._strategy_classes: Dict[str, Type] = {}
         self._load_errors: Dict[str, str] = {}
         self._db = db
+        self.tenant_id = str(tenant_id or "default")
+        self.uid = uid
+
+        # Maestro orchestration (optional; requires Firestore and module availability).
+        self.maestro = None
+        if HAS_MAESTRO and db is not None:
+            try:
+                self.maestro = MaestroController(db=db, tenant_id=self.tenant_id, uid=self.uid)  # type: ignore[misc]
+            except Exception as e:
+                logger.warning("Failed to initialize MaestroController: %s", e)
         
         # Initialize identity manager if Firestore client provided
         self._identity_manager = None
