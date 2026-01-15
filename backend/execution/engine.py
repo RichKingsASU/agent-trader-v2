@@ -400,15 +400,30 @@ class ExecutionEngine:
                     pass
             raise
 
+    def _enforce_paper_only(self, *, operation: str) -> None:
+        """
+        Secondary safety boundary for engine methods (cancel/status polling).
+
+        Tests inject a broker with `_alpaca.api_base_url`; enforce the same
+        paper-only rules regardless of broker implementation details.
+        """
+        trading_mode = str(os.getenv("TRADING_MODE") or "paper").strip().lower() or "paper"
+        base_url = getattr(getattr(self._broker, "_alpaca", None), "api_base_url", "") or ""
+        base_url_s = str(base_url).strip().lower()
+        is_live_host = ("api.alpaca.markets" in base_url_s) and ("paper-api.alpaca.markets" not in base_url_s)
+        if trading_mode != "paper" or is_live_host:
+            fatal_if_execution_reached(
+                operation=operation,
+                explicit_message="REFUSED: live Alpaca execution is forbidden (paper-only safety boundary).",
+                context={"trading_mode": trading_mode, "alpaca_base_url": base_url_s},
+            )
+
     def cancel(self, *, broker_order_id: str) -> dict[str, Any]:
-        # Enforce the same boundary as AlpacaBroker (tests patch _broker._alpaca).
-        if hasattr(self._broker, "_enforce_paper_only"):
-            self._broker._enforce_paper_only(operation="engine.cancel")  # type: ignore[attr-defined]
+        self._enforce_paper_only(operation="engine.cancel")
         return self._broker.cancel_order(broker_order_id=broker_order_id)
 
     def sync_and_ledger_if_filled(self, *, broker_order_id: str) -> dict[str, Any]:
-        if hasattr(self._broker, "_enforce_paper_only"):
-            self._broker._enforce_paper_only(operation="engine.get_order_status")  # type: ignore[attr-defined]
+        self._enforce_paper_only(operation="engine.get_order_status")
         status = self._broker.get_order_status(broker_order_id=broker_order_id)
         return status
 
