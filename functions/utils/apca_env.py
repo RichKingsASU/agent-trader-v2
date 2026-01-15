@@ -12,7 +12,7 @@ from backend.common.env import (
 from backend.common.agent_mode import AgentMode, get_agent_mode
 
 
-@dataclass(frozen=True)
+@dataclass
 class ApcaEnv:
     api_key_id: str
     api_secret_key: str
