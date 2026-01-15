@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { getFirestore, collection, addDoc, updateDoc, deleteDoc, onSnapshot, doc, serverTimestamp } from "firebase/firestore";
+import { getFirestore, addDoc, updateDoc, deleteDoc, onSnapshot, serverTimestamp } from "firebase/firestore";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,7 @@ import { ArrowLeft, Loader2, PieChart as PieChartIcon, Plus, Trash2, RefreshCw, 
 import { toast } from "sonner";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { PieChart, Pie, Cell, Legend, ResponsiveContainer } from "recharts";
+import { userSettingsCollection, userSettingsDoc } from "@/lib/tenancy/firestore";
 
 interface Allocation {
   id: string;
@@ -76,7 +77,7 @@ export default function Allocation() {
     if (!user) return;
 
     const db = getFirestore();
-    const allocationsRef = collection(db, "userSettings", user.uid, "allocation");
+    const allocationsRef = userSettingsCollection(db, user.uid, "allocation");
 
     const unsubscribe = onSnapshot(
       allocationsRef,
@@ -121,7 +122,7 @@ export default function Allocation() {
 
     try {
       const db = getFirestore();
-      const allocationsRef = collection(db, "userSettings", user.uid, "allocation");
+      const allocationsRef = userSettingsCollection(db, user.uid, "allocation");
       
       await addDoc(allocationsRef, {
         symbol: newSymbol.toUpperCase(),
@@ -148,7 +149,7 @@ export default function Allocation() {
 
     try {
       const db = getFirestore();
-      const allocationRef = doc(db, "userSettings", user.uid, "allocation", id);
+      const allocationRef = userSettingsDoc(db, user.uid, "allocation", id);
       await deleteDoc(allocationRef);
       toast.success(`Removed ${symbol} from portfolio allocation`);
     } catch (err: any) {

@@ -4,9 +4,10 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
 import { Loader2, BookOpen, TrendingUp, TrendingDown, Clock, Target, AlertCircle } from "lucide-react";
-import { getFirestore, collection, query, orderBy, limit, onSnapshot, QuerySnapshot, DocumentData } from "firebase/firestore";
+import { getFirestore, query, orderBy, limit, onSnapshot, QuerySnapshot, DocumentData } from "firebase/firestore";
 import { app } from "@/firebase";
 import { useAuth } from "@/contexts/AuthContext";
+import { userCollection } from "@/lib/tenancy/firestore";
 
 interface JournalEntry {
   id: string;
@@ -40,7 +41,7 @@ export const TradingJournal: React.FC = () => {
     }
 
     const db = getFirestore(app);
-    const journalRef = collection(db, "users", user.uid, "tradeJournal");
+    const journalRef = userCollection(db, user.uid, "tradeJournal");
     
     // Query journal entries, ordered by most recent
     const q = query(

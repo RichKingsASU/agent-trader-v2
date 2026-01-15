@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { doc, onSnapshot, updateDoc } from "firebase/firestore";
+import { onSnapshot, updateDoc } from "firebase/firestore";
 import { db } from "@/firebase";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { AlertTriangle, Shield } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { systemDoc } from "@/lib/tenancy/firestore";
 
 /**
  * ShadowToggle Component
@@ -24,7 +25,7 @@ export const ShadowToggle = () => {
 
   useEffect(() => {
     // Subscribe to systemStatus/config document
-    const configRef = doc(db, "systemStatus", "config");
+    const configRef = systemDoc(db, "config");
     
     const unsubscribe = onSnapshot(
       configRef,
@@ -59,7 +60,7 @@ export const ShadowToggle = () => {
 
   const handleToggle = async (checked: boolean) => {
     try {
-      const configRef = doc(db, "systemStatus", "config");
+      const configRef = systemDoc(db, "config");
       await updateDoc(configRef, {
         is_shadow_mode: checked,
         updated_at: new Date(),

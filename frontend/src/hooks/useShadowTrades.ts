@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
-import { getFirestore, collection, query, where, onSnapshot, QuerySnapshot, DocumentData } from "firebase/firestore";
+import { getFirestore, query, where, onSnapshot, QuerySnapshot, DocumentData } from "firebase/firestore";
 import { app } from "@/firebase";
 import { useAuth } from "@/contexts/AuthContext";
+import { shadowTradeHistoryCollection } from "@/lib/tenancy/firestore";
 
 export interface ShadowTrade {
   id: string;
@@ -54,7 +55,7 @@ export const useShadowTrades = (): UseShadowTradesReturn => {
     }
 
     const db = getFirestore(app);
-    const shadowTradesRef = collection(db, "shadowTradeHistory");
+    const shadowTradesRef = shadowTradeHistoryCollection(db);
     
     // Query OPEN shadow trades for current user
     const q = query(

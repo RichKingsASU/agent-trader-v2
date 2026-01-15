@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, AlertCircle, RefreshCw, TrendingUp, TrendingDown, Sparkles } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { getFirestore, collection, query, orderBy, limit, onSnapshot, QuerySnapshot, DocumentData } from "firebase/firestore";
+import { getFirestore, query, orderBy, limit, onSnapshot, QuerySnapshot, DocumentData } from "firebase/firestore";
 import { app } from "@/firebase";
+import { marketDataCollection } from "@/lib/tenancy/firestore";
 
 interface SectorSentiment {
   sector: string;
@@ -43,7 +44,7 @@ export const SentimentTreemap: React.FC = () => {
     const db = getFirestore(app);
     
     // Listen to marketData/sentiment/sectors collection
-    const sentimentRef = collection(db, "marketData", "sentiment", "sectors");
+    const sentimentRef = marketDataCollection(db, "sentiment", "sectors");
     const q = query(
       sentimentRef,
       orderBy("marketCap", "desc"),

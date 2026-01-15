@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { doc, onSnapshot } from "firebase/firestore";
+import { onSnapshot } from "firebase/firestore";
 import { db } from "@/firebase";
 import { Shield } from "lucide-react";
+import { systemDoc } from "@/lib/tenancy/firestore";
 
 /**
  * ShadowModeIndicator Component
@@ -16,7 +17,7 @@ export const ShadowModeIndicator = () => {
 
   useEffect(() => {
     // Subscribe to systemStatus/config document
-    const configRef = doc(db, "systemStatus", "config");
+    const configRef = systemDoc(db, "config");
     
     const unsubscribe = onSnapshot(
       configRef,

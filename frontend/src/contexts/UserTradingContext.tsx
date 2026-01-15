@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
-import { doc, collection, onSnapshot, query, orderBy, limit } from "firebase/firestore";
+import { onSnapshot, query, orderBy, limit } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "./AuthContext";
+import { userCollection, userDoc } from "@/lib/tenancy/firestore";
 
 /**
  * UserTradingContext: Multi-Tenant SaaS Context for User-Specific Trading Data
@@ -112,7 +113,7 @@ export const UserTradingProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setAccountError(null);
     
     // Multi-tenant path: users/{uid}/data/snapshot
-    const snapshotRef = doc(db, "users", user.uid, "data", "snapshot");
+    const snapshotRef = userDoc(db, user.uid, "data", "snapshot");
     
     const unsubscribe = onSnapshot(
       snapshotRef,
@@ -147,7 +148,7 @@ export const UserTradingProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setShadowTradesError(null);
     
     // Multi-tenant path: users/{uid}/shadowTradeHistory
-    const tradesRef = collection(db, "users", user.uid, "shadowTradeHistory");
+    const tradesRef = userCollection(db, user.uid, "shadowTradeHistory");
     const tradesQuery = query(tradesRef, orderBy("created_at", "desc"), limit(100));
     
     const unsubscribe = onSnapshot(
@@ -183,7 +184,7 @@ export const UserTradingProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setSignalsError(null);
     
     // Multi-tenant path: users/{uid}/signals
-    const signalsRef = collection(db, "users", user.uid, "signals");
+    const signalsRef = userCollection(db, user.uid, "signals");
     const signalsQuery = query(signalsRef, orderBy("timestamp", "desc"), limit(50));
     
     const unsubscribe = onSnapshot(

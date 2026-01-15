@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
 import { ResponsiveTreeMap } from "@nivo/treemap";
 import { scaleLinear } from "d3-scale";
 import { interpolateRgb } from "d3-interpolate";
-import { collection, onSnapshot, query } from "firebase/firestore";
+import { onSnapshot, query } from "firebase/firestore";
 import { db } from "@/firebase";
+import { marketDataCollection } from "@/lib/tenancy/firestore";
 
 // Data structure for sector sentiment from Firestore
 interface SectorSentiment {
@@ -172,7 +173,7 @@ export const SentimentHeatmap: React.FC<SentimentHeatmapProps> = ({ tenantId }) 
     setError(null);
 
     try {
-      const sectorsQuery = query(collection(db, "marketData", "sentiment", "sectors"));
+      const sectorsQuery = query(marketDataCollection(db, "sentiment", "sectors"));
       
       const unsubscribe = onSnapshot(
         sectorsQuery,
