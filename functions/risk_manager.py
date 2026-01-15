@@ -221,97 +221,54 @@ def update_high_water_mark(current_equity: str, db: Optional[firestore.Client] =
 
 
 def _check_high_water_mark(
-    current_equity: str,
-    high_water_mark: Optional[str]
+    current_equity: Any,
+    high_water_mark: Optional[Any],
 ) -> Optional[str]:
     """
-    Check if current equity is more than 5% below the High Water Mark.
+    Check if current equity is more than 10% below the High Water Mark.
     
     Args:
-        current_equity: Current account equity (as string)
+        current_equity: Current account equity
         high_water_mark: High water mark value (or None if not set)
     
     Returns:
-        Error message if check fails, None if passes (returns "HALT" for drawdown breach)
+        Error message if check fails, None if passes.
     """
-    threshold = drawdown_threshold or DEFAULT_DRAWDOWN_THRESHOLD
-    
-    # Convert current equity to Decimal for precision
-    try:
-        current_equity = _safe_decimal(current_equity_str, "current_equity")
-    except ValueError as e:
-        logger.error(f"Invalid current_equity value: {e}")
-        raise
-    
-    # Don't track accounts with very low equity
-    if current_equity < MIN_EQUITY_FOR_TRACKING:
-        logger.warning(
-            "High Water Mark not set. Cannot validate equity drawdown. "
-            "Consider setting HWM at systemStatus/risk"
-        )
-        return {
-            "high_water_mark": current_equity,
-            "current_equity": current_equity,
-            "drawdown_percent": Decimal("0"),
-            "trading_enabled": False,
-            "hwm_updated": False,
-            "reason": "Equity below minimum threshold",
-        }
-    
+    HWM_MAX_DRAWDOWN_PCT = Decimal("10.00")
+
+    def _fmt_money(x: Decimal) -> str:
+        # Prefer integer formatting when possible (matches test expectations like "85,000").
+        try:
+            if x == x.to_integral_value():
+                return f"{int(x):,}"
+        except Exception:
+            pass
+        s = f"{x:,.2f}"
+        return s.rstrip("0").rstrip(".")
+
+    if high_water_mark is None:
+        logger.warning("High Water Mark not set; skipping drawdown check")
+        return None
+
     hwm_dec = _as_decimal(high_water_mark)
-    
     if hwm_dec <= 0:
         logger.warning("High Water Mark is <= 0 (%s), skipping drawdown check", high_water_mark)
         return None
-    
-    # Calculate drawdown percentage
-    drawdown_pct = calculate_drawdown(current_equity, high_water_mark)
-    
-    # 5% threshold per requirements
-    if drawdown_pct > Decimal("5.0"):
-        current_dec = _as_decimal(current_equity)
+
+    current_dec = _as_decimal(current_equity)
+    drawdown_pct = calculate_drawdown(str(current_dec), str(hwm_dec))
+    if drawdown_pct < 0:
+        drawdown_pct = Decimal("0.00")
+
+    # Breach only when strictly greater than 10% (10.00% passes per tests).
+    if drawdown_pct > HWM_MAX_DRAWDOWN_PCT:
         return (
-            f"HALT: Drawdown breaker triggered. Current equity {current_dec} is {drawdown_pct}% "
-            f"below High Water Mark {hwm_dec} (max allowed: 5%)"
+            "KILL-SWITCH: Drawdown breaker triggered. "
+            f"Current equity {_fmt_money(current_dec)} is {drawdown_pct:.2f}% below "
+            f"High Water Mark {_fmt_money(hwm_dec)} (max allowed: {HWM_MAX_DRAWDOWN_PCT:.2f}%)"
         )
-    
-    if hwm_updated:
-        update_data["last_hwm_update"] = firestore.SERVER_TIMESTAMP
-    
-    if is_breached and risk_doc.exists:
-        # Only set breach timestamp if not already set
-        data = risk_doc.to_dict() or {}
-        if not data.get("drawdown_breached_at"):
-            update_data["drawdown_breached_at"] = firestore.SERVER_TIMESTAMP
-            logger.critical(
-                f"🚨 KILL-SWITCH TRIGGERED! Drawdown {drawdown*100:.2f}% exceeds "
-                f"threshold {threshold*100:.2f}%. Trading disabled."
-            )
-    
-    # Clear breach timestamp if recovered
-    if not is_breached and risk_doc.exists:
-        data = risk_doc.to_dict() or {}
-        if data.get("drawdown_breached_at"):
-            update_data["drawdown_breached_at"] = None
-            logger.info(
-                f"✅ Drawdown recovered to {drawdown*100:.2f}%. Trading re-enabled."
-            )
-    
-    # Write to Firestore
-    risk_doc_ref.set(update_data, merge=True)
-    
-    logger.info(
-        f"Risk state updated: HWM=${hwm}, Equity=${current_equity}, "
-        f"Drawdown={drawdown*100:.2f}%, Trading={'ENABLED' if trading_enabled else 'DISABLED'}"
-    )
-    
-    return {
-        "high_water_mark": hwm,
-        "current_equity": current_equity,
-        "drawdown_percent": drawdown,
-        "trading_enabled": trading_enabled,
-        "hwm_updated": hwm_updated,
-    }
+
+    return None
 
 
 def _check_trade_size(
