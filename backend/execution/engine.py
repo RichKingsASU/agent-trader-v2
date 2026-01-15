@@ -1669,7 +1669,9 @@ class RiskManager:
 
         # Position size
         try:
-            database_url = os.getenv("DATABASE_URL")
+            from backend.common.secrets import get_database_url  # noqa: WPS433
+
+            database_url = get_database_url(required=True)
             if self._positions is None and database_url:
                 self._positions = _PostgresPositions(database_url=database_url)
             if self._positions is None:

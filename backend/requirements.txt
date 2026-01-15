@@ -9,6 +9,7 @@ requests
 tenacity
 google-genai
 google-cloud-pubsub
+google-cloud-secret-manager
 
 # Firebase / Firestore
 firebase-admin
@@ -16,7 +17,6 @@ google-cloud-firestore
 google-genai
 
 # Runtime config / messaging / utilities
-python-dotenv
 nats-py
 pandas
 pyyaml

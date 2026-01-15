@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from backend.common.secrets import configure_database_url_env
+
+# Fail-fast: DATABASE_URL must come from Secret Manager (no shell exports).
+configure_database_url_env()
+
 from backend.common.config_contract import validate_or_exit as _validate_or_exit
 
 # Fail-fast env contract validation (must run before other backend imports).

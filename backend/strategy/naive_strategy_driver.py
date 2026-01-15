@@ -8,18 +8,13 @@ from datetime import timedelta
 
 from backend.common.logging import init_structured_logging
 from backend.common.freshness import check_freshness, stale_after_for_bar_interval
+from backend.common.secrets import get_database_url
 
 init_structured_logging(service="naive-strategy-driver")
 logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-DB_URL = os.getenv("DATABASE_URL")
-if not DB_URL:
-    logger.critical(
-        "DATABASE_URL missing; refusing to start",
-        extra={"event_type": "config.missing", "missing": ["DATABASE_URL"]},
-    )
-    sys.exit(1)
+DB_URL = get_database_url(required=True)
 
 def get_last_n_bars(symbol: str, n: int, session: str = 'REGULAR'):
     """Fetches the last N bars for a symbol from the database."""

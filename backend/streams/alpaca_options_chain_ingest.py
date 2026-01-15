@@ -169,20 +169,9 @@ def main() -> int:
         max_pages=max_pages,
     )
 
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        logger.info(
-            "options_snapshots_fetched",
-            extra={
-                "event_type": "options_snapshots_fetched",
-                "mode": "api_only",
-                "underlying": underlying,
-                "snapshots": len(snapshots),
-                "pages_used": pages_used,
-                "snapshot_time": snapshot_time.isoformat(),
-            },
-        )
-        return 0
+    from backend.common.secrets import get_database_url  # noqa: WPS433
+
+    db_url = get_database_url(required=True)
 
     upserted = upsert_snapshots(
         db_url=db_url,

@@ -2,6 +2,7 @@ import os
 from dataclasses import dataclass
 
 from backend.common.config import env_str
+from backend.common.secrets import get_secret
 
 @dataclass
 class Config:
@@ -25,9 +26,9 @@ def load_config() -> Config:
         vertex_ai_location=env_str("VERTEX_AI_LOCATION", default="us-central1") or "us-central1",
         price_stream_url=env_str("PRICE_STREAM_URL"),
         options_flow_url=env_str("OPTIONS_FLOW_URL"),
-        options_flow_api_key=env_str("OPTIONS_FLOW_API_KEY"),
+        options_flow_api_key=get_secret("OPTIONS_FLOW_API_KEY", required=False),
         news_stream_url=env_str("NEWS_STREAM_URL"),
-        news_stream_api_key=env_str("NEWS_STREAM_API_KEY"),
+        news_stream_api_key=get_secret("NEWS_STREAM_API_KEY", required=False),
         account_updates_url=env_str("ACCOUNT_UPDATES_URL"),
-        account_updates_api_key=env_str("ACCOUNT_UPDATES_API_KEY"),
+        account_updates_api_key=get_secret("ACCOUNT_UPDATES_API_KEY", required=False),
     )

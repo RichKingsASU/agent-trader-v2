@@ -12,7 +12,8 @@ import requests
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from backend.utils.session import get_market_session
 from backend.common.timeutils import parse_alpaca_timestamp
-from backend.common.env import get_alpaca_key_id, get_alpaca_secret_key
+from backend.common.alpaca_env import configure_alpaca_env
+from backend.common.secrets import get_database_url
 
 def main():
     """
@@ -20,9 +21,10 @@ def main():
     and upserts it into the market_data_1m table with a session flag.
     """
     # --- Configuration (Cloud Shell-safe: env vars only; no .env files) ---
-    database_url = os.getenv("DATABASE_URL")
-    api_key = get_alpaca_key_id(required=True)
-    secret_key = get_alpaca_secret_key(required=True)
+    database_url = get_database_url(required=True)
+    alpaca = configure_alpaca_env(required=True)
+    api_key = alpaca.api_key_id
+    secret_key = alpaca.api_secret_key
     symbols_str = os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ")
     symbols = [s.strip() for s in symbols_str.split(',')]
     feed = os.getenv("ALPACA_FEED", "iex")
@@ -84,10 +86,6 @@ def main():
                 )
             )
     
-    if not database_url:
-        print(f"[{dt.datetime.now().isoformat()}] DATABASE_URL not set; API-only mode (no DB writes).")
-        return
-
     print(f"[{dt.datetime.now().isoformat()}] Upserting {len(records_to_upsert)} records into the database.")
 
     try:

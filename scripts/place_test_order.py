@@ -4,7 +4,6 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.common.exceptions import APIError
-from dotenv import load_dotenv
 
 def main():
     """
@@ -23,23 +22,16 @@ def main():
         # (The runtime execution engine has its own defenses.)
         pass
 
-    dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env.local')
-    load_dotenv(dotenv_path=dotenv_path)
-
-    api_key = os.getenv("APCA_API_KEY_ID")
-    secret_key = os.getenv("APCA_API_SECRET_KEY")
-    # Safety: if a base URL is configured, it must be paper-only.
     try:
-        from backend.common.env import assert_paper_alpaca_base_url  # type: ignore
+        from backend.common.alpaca_env import configure_alpaca_env  # type: ignore
 
-        _ = assert_paper_alpaca_base_url(os.getenv("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets")
+        alpaca = configure_alpaca_env(required=True)
     except Exception as e:
-        print(f"REFUSED: invalid Alpaca trading base URL: {e}")
-        exit(2)
-
-    if not api_key or not secret_key:
-        print("ERROR: APCA_API_KEY_ID and APCA_API_SECRET_KEY must be set in .env.local.")
+        print(f"ERROR: unable to configure Alpaca credentials from Secret Manager: {e}")
         exit(1)
+
+    api_key = alpaca.api_key_id
+    secret_key = alpaca.api_secret_key
 
     print("--> Placing test order: SPY BUY 1 Qty")
     try:

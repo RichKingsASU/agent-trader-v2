@@ -5,12 +5,11 @@ from datetime import datetime
 
 import psycopg
 
+from backend.common.secrets import get_database_url
+
 
 def get_db_url() -> str:
-    url = os.getenv("DATABASE_URL")
-    if not url:
-        raise RuntimeError("DATABASE_URL env var is not set")
-    return url
+    return get_database_url(required=True)
 
 
 def build_raw_order(logical_order: dict) -> dict:

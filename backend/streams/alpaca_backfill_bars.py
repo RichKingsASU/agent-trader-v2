@@ -12,8 +12,10 @@ import requests
 from psycopg2.extras import execute_values
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from backend.common.alpaca_env import configure_alpaca_env
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.logging import init_structured_logging
+from backend.common.secrets import get_database_url
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.time.providers import normalize_alpaca_timestamp
 
@@ -83,10 +85,9 @@ def main():
         pass
     logger.info("Alpaca backfill script started.")
 
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        logger.critical("Missing required env var: DATABASE_URL")
-        return
+    # Fail-fast: secrets must come from Secret Manager (no shell exports).
+    _ = configure_alpaca_env(required=True)
+    db_url = get_database_url(required=True)
 
     alpaca = load_alpaca_env(require_keys=True)
     headers = {"APCA-API-KEY-ID": alpaca.key_id, "APCA-API-SECRET-KEY": alpaca.secret_key}

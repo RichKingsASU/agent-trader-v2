@@ -12,6 +12,7 @@ from alpaca.data.enums import DataFeed
 from alpaca.data.live.stock import StockDataStream
 
 from backend.common.timeutils import ensure_aware_utc, utc_now
+from backend.common.secrets import get_database_url
 from backend.dataplane.file_store import FileCandleStore, FileTickStore
 from backend.marketdata.candles.aggregator import CandleAggregator
 from backend.marketdata.candles.models import Candle, Tick
@@ -55,9 +56,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        database_url = os.getenv("DATABASE_URL")
-        if not database_url:
-            raise RuntimeError("Missing required env var: DATABASE_URL")
+        database_url = get_database_url(required=True)
         symbols = _env_list("ALPACA_SYMBOLS", "SPY,IWM,QQQ")
 
         timeframes = _env_list(

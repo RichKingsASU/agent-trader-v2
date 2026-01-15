@@ -549,10 +549,9 @@ def main() -> int:
         pass
 
     cfg = load_config()
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        logger.error("DATABASE_URL is required")
-        return 2
+    from backend.common.secrets import get_database_url  # noqa: WPS433
+
+    db_url = get_database_url(required=True)
 
     alpaca = load_alpaca_env(require_keys=True)
     hdrs = _headers(alpaca.key_id, alpaca.secret_key)

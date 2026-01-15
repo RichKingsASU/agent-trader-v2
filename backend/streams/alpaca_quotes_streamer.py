@@ -10,6 +10,8 @@ from alpaca.data.enums import DataFeed
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+from backend.common.alpaca_env import configure_alpaca_env
+from backend.common.secrets import get_database_url
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.utils.session import get_market_session
 from backend.common.ops_metrics import (
@@ -29,6 +31,7 @@ LAST_MARKETDATA_SOURCE: str = "alpaca_quotes_streamer"
 _BACKOFF: Backoff | None = None
 _RESET_BACKOFF_ON_FIRST_QUOTE: bool = False
 _RETRY_WINDOW_STARTED_M: float | None = None
+DB_URL: str | None = None
 
 
 def get_last_marketdata_ts() -> datetime | None:
@@ -47,18 +50,6 @@ def _mark_marketdata_seen(ts: datetime | None = None) -> None:
         ts = ts.replace(tzinfo=timezone.utc)
     LAST_MARKETDATA_TS_UTC = ts.astimezone(timezone.utc)
 
-
-try:
-    alpaca = load_alpaca_env()
-    API_KEY = alpaca.key_id
-    SECRET_KEY = alpaca.secret_key
-    DB_URL = os.getenv("DATABASE_URL")
-    if not DB_URL:
-        raise KeyError("DATABASE_URL")
-    SYMBOLS = [s.strip() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ").split(",") if s.strip()]
-except KeyError as e:
-    logging.error(f"FATAL: Missing required environment variable: {e}")
-    exit(1)
 
 _batch_last_log_ts = 0.0
 _batch_count = 0
@@ -125,10 +116,10 @@ async def quote_data_handler(data):
     emit_ctx = None
     try:
         session = get_market_session(datetime.now(timezone.utc))
-        db_url = os.getenv("DATABASE_URL")
-        if not db_url:
-            raise RuntimeError("Missing required env var: DATABASE_URL")
-        with psycopg2.connect(db_url) as conn:
+        global DB_URL
+        if not DB_URL:
+            raise RuntimeError("DATABASE_URL not configured (Secret Manager)")
+        with psycopg2.connect(DB_URL) as conn:
             with conn.cursor() as cur:
                 emit_ctx = intent_start(
                     "marketdata_emit",
@@ -189,6 +180,11 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
     `ready_event` is an optional synchronization primitive used by the parent
     service to mark readiness once subscriptions are configured.
     """
+    # Fail-fast: configure secrets from Secret Manager (no shell exports).
+    _ = configure_alpaca_env(required=True)
+    global DB_URL
+    DB_URL = get_database_url(required=True)
+
     alpaca = load_alpaca_env()
     symbols = _symbols_from_env()
 

@@ -48,6 +48,7 @@ google-api-core[grpc]==2.28.1
     #   google-cloud-core
     #   google-cloud-firestore
     #   google-cloud-pubsub
+    #   google-cloud-secret-manager
     #   google-cloud-storage
 google-auth[requests]==2.47.0
     # via
@@ -55,6 +56,7 @@ google-auth[requests]==2.47.0
     #   google-cloud-core
     #   google-cloud-firestore
     #   google-cloud-pubsub
+    #   google-cloud-secret-manager
     #   google-cloud-storage
     #   google-genai
 google-cloud-core==2.5.0
@@ -66,6 +68,8 @@ google-cloud-firestore==2.22.0
     #   -r backend/requirements.txt
     #   firebase-admin
 google-cloud-pubsub==2.34.0
+    # via -r backend/requirements.txt
+google-cloud-secret-manager==2.26.0
     # via -r backend/requirements.txt
 google-cloud-storage==3.7.0
     # via firebase-admin
@@ -83,11 +87,14 @@ googleapis-common-protos[grpc]==1.72.0
     #   grpc-google-iam-v1
     #   grpcio-status
 grpc-google-iam-v1==0.14.3
-    # via google-cloud-pubsub
+    # via
+    #   google-cloud-pubsub
+    #   google-cloud-secret-manager
 grpcio==1.76.0
     # via
     #   google-api-core
     #   google-cloud-pubsub
+    #   google-cloud-secret-manager
     #   googleapis-common-protos
     #   grpc-google-iam-v1
     #   grpcio-status
@@ -149,11 +156,13 @@ proto-plus==1.27.0
     #   google-api-core
     #   google-cloud-firestore
     #   google-cloud-pubsub
+    #   google-cloud-secret-manager
 protobuf==6.33.2
     # via
     #   google-api-core
     #   google-cloud-firestore
     #   google-cloud-pubsub
+    #   google-cloud-secret-manager
     #   googleapis-common-protos
     #   grpc-google-iam-v1
     #   grpcio-status
@@ -183,8 +192,6 @@ pyjwt[crypto]==2.10.1
     # via firebase-admin
 python-dateutil==2.9.0.post0
     # via pandas
-python-dotenv==1.2.1
-    # via -r backend/requirements.txt
 pytz==2025.2
     # via pandas
 pyyaml==6.0.3

@@ -103,8 +103,9 @@ from last_hour_engine import (
     is_last_hour as is_last_hour_ny,
 )
 
-from dotenv import load_dotenv, find_dotenv
-load_dotenv(find_dotenv(usecwd=True), override=False)
+#
+# NOTE: python-dotenv removed; this module relies on process env or Secret Manager-backed config.
+#
 
 # ─────────────────────────────────────────────────────────────
 # CONSTANTS
@@ -1281,7 +1282,7 @@ async def do_exit(args, contract, qty, entry_px, side, bar1m, reason, origin, ac
 # MAIN LIVE LOOP (Alpaca FREE 1-minute bars; logic preserved)
 # ─────────────────────────────────────────────────────────────
 async def run_live(args):
-    load_dotenv()
+    # dotenv removed (no-op)
     _require_paper_only()
     _intent_deps_ok()
     _require_alpaca_py()

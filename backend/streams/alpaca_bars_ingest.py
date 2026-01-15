@@ -250,7 +250,9 @@ def main():
         logger.error("ALPACA_SYMBOLS resolved to an empty list; nothing to ingest.")
         sys.exit(1)
 
-    db_url = os.getenv("DATABASE_URL")
+    from backend.common.secrets import get_database_url  # noqa: WPS433
+
+    db_url = get_database_url(required=True)
     alpaca = load_alpaca_env(require_keys=True)
     base = alpaca.data_stocks_base_v2
     headers = {"APCA-API-KEY-ID": alpaca.key_id, "APCA-API-SECRET-KEY": alpaca.secret_key}
@@ -258,13 +260,6 @@ def main():
     logger.info("Starting short-window ingest...")
     logger.info("Resolved target table: %s | symbols: %s | feed: %s", TARGET_TABLE, ", ".join(SYMS), FEED)
     total_upserted = 0
-    # API-only mode for Cloud Shell / local smoke tests.
-    if not db_url:
-        for s in SYMS:
-            bars = fetch_bars(sym=s, base=base, headers=headers, feed=FEED, limit=5)
-            logger.info("%s: fetched %d bars (API-only mode; DATABASE_URL not set)", s, len(bars))
-        logger.info("Short-window ingest finished (API-only mode).")
-        return
 
     try:
         with _connect_db(db_url) as conn:

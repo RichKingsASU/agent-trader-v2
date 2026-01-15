@@ -7,6 +7,8 @@ import psycopg2
 from psycopg2.extras import execute_values
 from tenacity import retry, wait_exponential, stop_after_attempt
 
+from backend.common.alpaca_env import configure_alpaca_env
+from backend.common.secrets import get_database_url
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.time.providers import normalize_alpaca_timestamp
 from backend.utils.session import get_market_session
@@ -15,9 +17,8 @@ from backend.utils.session import get_market_session
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-DB_URL = os.getenv("DATABASE_URL")
-if not DB_URL:
-    raise RuntimeError("Missing required env var: DATABASE_URL")
+_ = configure_alpaca_env(required=True)
+DB_URL = get_database_url(required=True)
 alpaca = load_alpaca_env(require_keys=True)
 ALPACA_KEY = alpaca.key_id
 ALPACA_SEC = alpaca.secret_key

@@ -1,7 +1,6 @@
 fastapi
 psycopg[binary]
 uvicorn
-python-dotenv
 pyyaml>=6.0.2
 httpx
 requests
@@ -17,3 +16,4 @@ exchange-calendars==4.6.0
 google-cloud-firestore
 firebase-admin
 google-genai
+google-cloud-secret-manager

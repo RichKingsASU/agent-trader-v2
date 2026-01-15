@@ -6,10 +6,9 @@ import logging
 import psycopg
 
 from backend.common.logging import init_structured_logging
+from backend.common.secrets import get_database_url
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL env var is not set")
+DATABASE_URL = get_database_url(required=True)
 
 init_structured_logging(service="test-insert-market-candle")
 logger = logging.getLogger(__name__)

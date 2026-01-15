@@ -90,6 +90,16 @@ def get_alpaca_key_id(*, required: bool = True) -> str:
     Env contract (official Alpaca SDK):
     - APCA_API_KEY_ID
     """
+    # Prefer Secret Manager sourcing when env isn't set (no shell exports required).
+    if (os.getenv("APCA_API_KEY_ID") is None or str(os.getenv("APCA_API_KEY_ID") or "").strip() == "") and required:
+        try:
+            from backend.common.alpaca_env import configure_alpaca_env  # noqa: WPS433
+
+            configure_alpaca_env(required=True)
+        except Exception:
+            # Fall through to legacy env/alias resolution; final required check below.
+            pass
+
     # Canonical (official Alpaca SDK)
     v = get_env("APCA_API_KEY_ID", default=None, required=False)
     # Common historical/infra aliases (normalize to canonical so Alpaca SDKs can read them).
@@ -122,6 +132,15 @@ def get_alpaca_secret_key(*, required: bool = True) -> str:
     Env contract (official Alpaca SDK):
     - APCA_API_SECRET_KEY
     """
+    # Prefer Secret Manager sourcing when env isn't set (no shell exports required).
+    if (os.getenv("APCA_API_SECRET_KEY") is None or str(os.getenv("APCA_API_SECRET_KEY") or "").strip() == "") and required:
+        try:
+            from backend.common.alpaca_env import configure_alpaca_env  # noqa: WPS433
+
+            configure_alpaca_env(required=True)
+        except Exception:
+            pass
+
     # Canonical (official Alpaca SDK)
     v = get_env("APCA_API_SECRET_KEY", default=None, required=False)
     # Common historical/infra aliases (normalize to canonical so Alpaca SDKs can read them).
@@ -146,6 +165,15 @@ def get_alpaca_api_base_url(*, required: bool = True) -> str:
     Env contract (official Alpaca SDK):
     - APCA_API_BASE_URL
     """
+    # Prefer Secret Manager sourcing when env isn't set (no shell exports required).
+    if (os.getenv("APCA_API_BASE_URL") is None or str(os.getenv("APCA_API_BASE_URL") or "").strip() == "") and required:
+        try:
+            from backend.common.alpaca_env import configure_alpaca_env  # noqa: WPS433
+
+            configure_alpaca_env(required=True)
+        except Exception:
+            pass
+
     # Canonical (official Alpaca SDK)
     v = get_env("APCA_API_BASE_URL", default=None, required=False)
     # Common historical/infra aliases.
