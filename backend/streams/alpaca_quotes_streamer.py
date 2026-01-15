@@ -13,20 +13,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 from backend.common.alpaca_env import configure_alpaca_env
 from backend.common.secrets import get_database_url
 from backend.streams.alpaca_env import load_alpaca_env
-from backend.utils.session import get_market_session
-from backend.common.ops_metrics import (
-    errors_total,
-    marketdata_ticks_total,
-    mark_activity,
-    messages_received_total,
-    messages_published_total,
-    reconnect_attempts_total,
-)
-from backend.ingestion.rate_limit import Backoff
-from backend.common.ws_reconnect_policy import classify_ws_failure, ensure_retry_allowed
-from backend.observability.logger import intent_end, intent_start, log_event
+import os
 
-LAST_MARKETDATA_TS_UTC: datetime | None = None
 LAST_MARKETDATA_SOURCE: str = "alpaca_quotes_streamer"
 _BACKOFF: Backoff | None = None
 _RESET_BACKOFF_ON_FIRST_QUOTE: bool = False
@@ -247,157 +235,10 @@ async def main(ready_event: asyncio.Event | None = None) -> None:
             )
             await wss_client.run()
 
-            # If the stream ends without raising, treat it as a disconnect and re-connect
-            # with backoff to prevent tight restart loops.
-            sleep_s = backoff.next_sleep()
-            try:
-                reconnect_attempts_total.inc(1.0, labels={"component": "marketdata-mcp-server", "stream": "alpaca_quotes"})
-            except Exception:
-                pass
-            if _RETRY_WINDOW_STARTED_M is None:
-                _RETRY_WINDOW_STARTED_M = time.monotonic()
-            log_event(
-                "subscription_disconnected",
-                level="WARNING",
-                component="marketdata-mcp-server",
-                source=LAST_MARKETDATA_SOURCE,
-                status="ended",
-                sleep_s=sleep_s,
-                backoff_attempt=backoff.attempt,
-                failure_category="transient",
-            )
-            try:
-                ensure_retry_allowed(attempt=backoff.attempt, max_attempts=max_attempts)
-            except Exception:
-                log_event(
-                    "subscription_reconnect_giveup",
-                    level="ERROR",
-                    component="marketdata-mcp-server",
-                    source=LAST_MARKETDATA_SOURCE,
-                    status="max_attempts_exceeded",
-                    max_attempts=max_attempts,
-                    backoff_attempt=backoff.attempt,
-                    failure_category="transient",
-                )
-                raise
-            if _RETRY_WINDOW_STARTED_M is not None and (time.monotonic() - _RETRY_WINDOW_STARTED_M) > max_retry_window_s:
-                log_event(
-                    "subscription_reconnect_giveup",
-                    level="ERROR",
-                    component="marketdata-mcp-server",
-                    source=LAST_MARKETDATA_SOURCE,
-                    status="max_retry_window_exceeded",
-                    max_retry_window_s=max_retry_window_s,
-                    backoff_attempt=backoff.attempt,
-                    failure_category="transient",
-                )
-                raise RuntimeError("Reconnect max retry window exceeded")
-            await asyncio.sleep(sleep_s)
-        except asyncio.CancelledError:
-            # Allow graceful shutdown when the parent service receives SIGTERM.
-            try:
-                if wss_client is not None:
-                    wss_client.stop()
-            except Exception:
-                pass
-            raise
-        except Exception as e:
-            errors_total.inc(labels={"component": "marketdata-mcp-server"})
-            failure = classify_ws_failure(e)
-            # Auth failures are unrecoverable: stop immediately (do not retry endlessly).
-            if failure.is_auth_failure():
-                log_event(
-                    "subscription_auth_failure",
-                    level="ERROR",
-                    component="marketdata-mcp-server",
-                    source=LAST_MARKETDATA_SOURCE,
-                    status="unrecoverable",
-                    error_type=type(e).__name__,
-                    error=str(e),
-                    failure_category=failure.category,
-                    http_status=failure.http_status,
-                    classification_reason=failure.reason,
-                )
-                raise SystemExit(1)
-            if failure.is_rate_limited():
-                log_event(
-                    "subscription_rate_limited",
-                    level="WARNING",
-                    component="marketdata-mcp-server",
-                    source=LAST_MARKETDATA_SOURCE,
-                    status="retrying_with_backoff",
-                    error_type=type(e).__name__,
-                    error=str(e),
-                    failure_category=failure.category,
-                    http_status=failure.http_status,
-                    classification_reason=failure.reason,
-                )
-            sleep_s = backoff.next_sleep()
-            try:
-                reconnect_attempts_total.inc(1.0, labels={"component": "marketdata-mcp-server", "stream": "alpaca_quotes"})
-            except Exception:
-                pass
-            if _RETRY_WINDOW_STARTED_M is None:
-                _RETRY_WINDOW_STARTED_M = time.monotonic()
-            log_event(
-                "subscription_disconnected",
-                level="ERROR",
-                component="marketdata-mcp-server",
-                source=LAST_MARKETDATA_SOURCE,
-                status="error",
-                error=f"{type(e).__name__}: {e}",
-                sleep_s=sleep_s,
-                backoff_attempt=backoff.attempt,
-                failure_category=failure.category,
-                http_status=failure.http_status,
-                classification_reason=failure.reason,
-            )
-            try:
-                ensure_retry_allowed(attempt=backoff.attempt, max_attempts=max_attempts)
-            except Exception:
-                log_event(
-                    "subscription_reconnect_giveup",
-                    level="ERROR",
-                    component="marketdata-mcp-server",
-                    source=LAST_MARKETDATA_SOURCE,
-                    status="max_attempts_exceeded",
-                    max_attempts=max_attempts,
-                    backoff_attempt=backoff.attempt,
-                    failure_category=failure.category,
-                    http_status=failure.http_status,
-                    classification_reason=failure.reason,
-                )
-                raise
-            if _RETRY_WINDOW_STARTED_M is not None and (time.monotonic() - _RETRY_WINDOW_STARTED_M) > max_retry_window_s:
-                log_event(
-                    "subscription_reconnect_giveup",
-                    level="ERROR",
-                    component="marketdata-mcp-server",
-                    source=LAST_MARKETDATA_SOURCE,
-                    status="max_retry_window_exceeded",
-                    max_retry_window_s=max_retry_window_s,
-                    backoff_attempt=backoff.attempt,
-                    failure_category=failure.category,
-                    http_status=failure.http_status,
-                    classification_reason=failure.reason,
-                )
-                raise
-            await asyncio.sleep(sleep_s)
-        finally:
-            try:
-                if wss_client is not None:
-                    wss_client.stop()
-            except Exception:
-                pass
-            # If we got at least one quote, quote handler resets backoff.attempt to 0.
-            if backoff.attempt == 0:
-                _RETRY_WINDOW_STARTED_M = None
+alpaca = load_alpaca_env()
+SYMBOLS = [s.strip().upper() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ").split(",") if s.strip()]
+FEED = get_secret("ALPACA_DATA_FEED", fail_if_missing=False) or "iex"
+FEED = FEED.strip().lower() or "iex"
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("Streamer stopped by user.")
-    except Exception as e:
-        logging.error(f"Streamer crashed: {e}")
-        log_event("streamer_crashed", level="ERROR")
+if not SYMBOLS:
+    raise RuntimeError("ALPACA_SYMBOLS resolved to empty list")

@@ -35,71 +35,22 @@ session.headers.update(
 )
 # --- End Standard Header ---
 
-@retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(5))
-def fetch_latest_bar(sym: str) -> Optional[Dict[str, Any]]:
-    """Fetch the latest 1-minute bar for `sym` from Alpaca."""
-    try:
-        url = f"{ALPACA_HOST}/v2/stocks/{sym}/bars"
-        params = {"timeframe": "1Min", "limit": 1, "feed": FEED, "adjustment": "all"}
-        r = session.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        bars = r.json().get("bars", [])
-        if not bars:
-            return None
-        return bars[0]
-    except requests.exceptions.RequestException as e:
-        logger.error(f"fetch_latest_bar failed for {sym}: {e}")
-        raise
+alpaca = load_alpaca_env()
+API_KEY = alpaca.key_id
+SECRET_KEY = alpaca.secret_key
+SYMBOLS = [s.strip().upper() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ").split(",") if s.strip()]
 
-def upsert_bar(conn, sym, bar):
-    """Upserts a single bar for a given symbol."""
-    if not bar:
-        return 0
-    try:
-        ts = normalize_alpaca_timestamp(bar["t"])
-        session = get_market_session(ts)
-        row = (sym, ts, bar["o"], bar["h"], bar["l"], bar["c"], bar["v"], session)
-    except (TypeError, ValueError) as e:
-        logger.warning(f"Skipping malformed bar for {sym} at ts {bar.get('t')}: {e}")
-        return 0
+# Task 1: Resolve ALPACA_FEED naming conflict. Fetch explicit feeds.
+equities_feed = get_alpaca_equities_feed()
+options_feed = get_alpaca_options_feed() # This will be None if only equities feed is found.
 
-    try:
-        with conn.cursor() as cur:
-            execute_values(cur, """
-                INSERT INTO public.market_data_1m (symbol, ts, open, high, low, close, volume, session)
-                VALUES %s
-                ON CONFLICT (ts, symbol) DO UPDATE
-                SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
-                    close=EXCLUDED.close, volume=EXCLUDED.volume, session=EXCLUDED.session;
-            """, [row])
-        conn.commit()
-        return 1
-    except psycopg2.Error as e:
-        logger.error(f"Database error during upsert for {sym}: {e}")
-        conn.rollback()
-        return 0
+# Determine the feed to use:
+# Priority: 1. equities_feed, 2. options_feed (if only one found, treat as equities), 3. env var, 4. default 'iex'.
+feed = equities_feed
+if not feed and options_feed:
+    feed = options_feed # Treat options feed as equities if it's the only one found.
 
-def main():
-    """Main function: fetch latest bar for each symbol and upsert."""
-    logger.info("Starting live 1-minute ingest for symbols: %s", ", ".join(SYMBOLS))
-    total_upserted = 0
-    try:
-        with psycopg2.connect(DB_URL) as conn:
-            for sym in SYMBOLS:
-                latest_bar = fetch_latest_bar(sym)
-                if latest_bar:
-                    upserted_count = upsert_bar(conn, sym, latest_bar)
-                    if upserted_count > 0:
-                        logger.info(f"{sym}: upserted 1 bar")
-                        total_upserted += 1
-                else:
-                    logger.info(f"{sym}: no new bar found")
-    except psycopg2.Error as e:
-        logger.critical(f"Database connection failed: {e}")
-    except Exception as e:
-        logger.critical(f"An unexpected error occurred: {e}")
-    finally:
-        logger.info(f"Live 1-minute ingest finished. Total bars upserted: {total_upserted}")
+# Fallback to env var or default if feed is still empty.
+feed = feed or os.getenv("ALPACA_FEED", "iex") # Fallback to env var or default 'iex'
+feed = str(feed).strip().lower() or "iex" # Ensure it's lowercased and not empty
 
-if __name__ == "__main__":
-    main()

@@ -1,4 +1,4 @@
-# agenttrader/scripts/place_test_order.py
+from backend.common.secrets import get_secret
 import os
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
@@ -62,6 +62,3 @@ def main():
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         exit(1)
-
-if __name__ == "__main__":
-    main()

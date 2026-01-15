@@ -18,6 +18,7 @@ from backend.common.logging import init_structured_logging
 from backend.common.secrets import get_database_url
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.time.providers import normalize_alpaca_timestamp
+import os
 
 init_structured_logging(service="alpaca-bars-backfill")
 logger = logging.getLogger(__name__)
@@ -89,42 +90,21 @@ def main():
     _ = configure_alpaca_env(required=True)
     db_url = get_database_url(required=True)
 
-    alpaca = load_alpaca_env(require_keys=True)
-    headers = {"APCA-API-KEY-ID": alpaca.key_id, "APCA-API-SECRET-KEY": alpaca.secret_key}
-    base = alpaca.data_stocks_base_v2
+alpaca = load_alpaca_env(require_keys=True)
 
-    feed = os.getenv("ALPACA_FEED", "iex")
-    syms = [s.strip().upper() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM").split(",") if s.strip()]
-    days = int(os.getenv("ALPACA_BACKFILL_DAYS", "5"))
+# Task 1: Resolve ALPACA_FEED naming conflict. Fetch explicit feeds.
+equities_feed = get_alpaca_equities_feed()
+options_feed = get_alpaca_options_feed() # This will be None if only equities feed is found.
 
-    now = dt.datetime.now(dt.timezone.utc)
-    start = now - dt.timedelta(days=days)
-    start_iso = start.isoformat(timespec="seconds").replace("+00:00", "Z")
-    end_iso = now.isoformat(timespec="seconds").replace("+00:00", "Z")
+# Determine the feed to use:
+# Priority: 1. equities_feed, 2. options_feed (if only one found, treat as equities), 3. env var, 4. default 'iex'.
+feed = equities_feed
+if not feed and options_feed:
+    feed = options_feed # Treat options feed as equities if it's the only one found.
 
-    try:
-        with psycopg2.connect(db_url, sslmode="require") as conn:
-            for s in syms:
-                try:
-                    bars = fetch_bars(
-                        base=base,
-                        headers=headers,
-                        sym=s,
-                        start_iso=start_iso,
-                        end_iso=end_iso,
-                        feed=feed,
-                    )
-                    n = upsert_bars(conn, s, bars)
-                    logger.info(f"{s}: upserted {n} bars from {start_iso} to {end_iso}")
-                except Exception as e:
-                    logger.error(f"Failed to process symbol {s}: {e}")
-    except psycopg2.Error as e:
-        logger.critical(f"Database connection failed: {e}")
-        return # Exit if DB connection fails
-    except Exception as e:
-        logger.critical(f"An unexpected error occurred: {e}")
-    finally:
-        logger.info("Alpaca backfill script finished.")
+# Fallback to env var or default if feed is still empty.
+feed = feed or os.getenv("ALPACA_FEED", "iex") # Fallback to env var or default 'iex'
+feed = str(feed).strip().lower() or "iex" # Ensure it's lowercased and not empty
 
-if __name__ == "__main__":
-    main()
+syms = [s.strip().upper() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM").split(",") if s.strip()]
+days = int(os.getenv("ALPACA_BACKFILL_DAYS", "5"))

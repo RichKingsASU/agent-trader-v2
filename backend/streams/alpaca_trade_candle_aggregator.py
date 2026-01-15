@@ -348,37 +348,23 @@ async def main() -> None:
     logger.info("Subscribing to trades for: %s", ",".join(cfg.symbols))
     wss_client.subscribe_trades(trade_handler, *cfg.symbols)
 
-    try:
-        await wss_client.run()
-    finally:
-        # Best-effort shutdown flush
-        try:
-            flushed = agg.flush(utc_now())
-            if candle_store is not None:
-                try:
-                    finals = [c for c in flushed if getattr(c, "is_final", False)]
-                    if finals:
-                        grouped: dict[tuple[str, str], list[EmittedCandle]] = {}
-                        for c in finals:
-                            grouped.setdefault((c.symbol, c.timeframe), []).append(c)
-                        for (sym, tf), batch in grouped.items():
-                            candle_store.write_candles(sym, tf, batch)
-                except Exception:
-                    logger.exception("candle store write failed (shutdown flush)")
+symbols = _env_list("ALPACA_SYMBOLS", "SPY,IWM,QQQ")
 
-            for c in flushed:
-                out_q.put_nowait(c)
-            await out_q.join()
-        except Exception:
-            logger.exception("shutdown flush failed")
+# Task 1: Resolve ALPACA_FEED naming conflict. Fetch explicit feeds.
+equities_feed = get_alpaca_equities_feed()
+options_feed = get_alpaca_options_feed() # This will be None if only equities feed is found.
 
-        for t in tasks:
-            t.cancel()
+# Determine the feed to use for runtime.
+# Priority: 1. equities_feed, 2. options_feed (if only one found, treat as equities), 3. env var, 4. default 'iex'.
+feed = equities_feed
+if not feed and options_feed:
+    feed = options_feed # Treat options feed as equities if it's the only one found.
 
+# Fallback to env var or default if feed is still empty.
+feed = feed or os.getenv("ALPACA_FEED", "iex") # Fallback to env var or default 'iex'
+feed = str(feed).strip().lower() or "iex" # Ensure it's lowercased and not empty
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+flush_interval_sec = float(os.getenv("CANDLE_FLUSH_INTERVAL_SEC", "1.0"))
+db_batch_max = int(os.getenv("CANDLE_DB_BATCH_MAX", "500"))
 
+alpaca = load_alpaca_env()

@@ -107,7 +107,7 @@ from last_hour_engine import (
 # NOTE: python-dotenv removed; this module relies on process env or Secret Manager-backed config.
 #
 
-# ─────────────────────────────────────────────────────────────
+# load_dotenv()
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────
 CONTRACT_MULT = 100

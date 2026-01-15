@@ -88,33 +88,16 @@ def main():
     
     print(f"[{dt.datetime.now().isoformat()}] Upserting {len(records_to_upsert)} records into the database.")
 
-    try:
-        try:
-            import psycopg  # type: ignore
-        except Exception as e:
-            raise RuntimeError(
-                "DATABASE_URL is set but psycopg is not installed in this environment. "
-                "Install it (e.g. pip install psycopg[binary]) to enable DB upserts."
-            ) from e
+# Determine the feed to use for runtime.
+# Priority: 1. equities_feed, 2. options_feed (if only one found, treat as equities), 3. default 'iex'.
+feed = equities_feed
+if not feed and options_feed:
+    feed = options_feed # Treat options feed as equities if it's the only one found.
 
-        with psycopg.connect(database_url) as conn:
-            with conn.cursor() as cur:
-                upsert_sql = """
-                INSERT INTO public.market_data_1m (ts, symbol, open, high, low, close, volume, session)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (ts, symbol) DO UPDATE SET
-                    open = EXCLUDED.open,
-                    high = EXCLUDED.high,
-                    low = EXCLUDED.low,
-                    close = EXCLUDED.close,
-                    volume = EXCLUDED.volume,
-                    session = EXCLUDED.session;
-                """
-                cur.executemany(upsert_sql, records_to_upsert)
-        print(f"[{dt.datetime.now().isoformat()}] Database upsert successful.")
-    except Exception as e:
-        print(f"[{dt.datetime.now().isoformat()}] ERROR: Database upsert failed: {e}")
-        raise
+# If feed is still empty after checking secrets, use default 'iex'.
+# Removed fallback to os.getenv("ALPACA_FEED", ...) as per requirement.
+feed = feed or "iex"
+feed = str(feed).strip().lower() or "iex" # Ensure it's lowercased and not empty
 
-if __name__ == "__main__":
-    main()
+data_base = get_secret("ALPACA_DATA_HOST", default="https://data.alpaca.markets")
+data_base = data_base.rstrip("/")

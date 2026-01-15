@@ -1,39 +1,31 @@
 from backend.common.secrets import get_secret, get_alpaca_equities_feed, get_alpaca_options_feed
-from backend.common.env import get_alpaca_key_id, get_alpaca_secret_key, get_env
+from backend.common.env import get_alpaca_api_base_url, get_alpaca_key_id, get_alpaca_secret_key, get_env
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.common.config import _parse_bool # Assuming _parse_bool is available or defined elsewhere if not standard
 from typing import Dict, Any, Tuple, List, Optional
 import os
 
-def _alpaca_headers() -> Dict[str, str]:
-    key = get_alpaca_key_id(required=True)
-    secret = get_alpaca_secret_key(required=True)
-    return {
-        "APCA-API-KEY-ID": key,
-        "APCA-API-SECRET-KEY": secret,
-    }
+TRADING_BASE = get_alpaca_api_base_url(required=True)
+alpaca_paper: Optional[bool] = None
 
-headers = _alpaca_headers()
-
-# Task 1: Resolve ALPACA_FEED naming conflict. Fetch explicit options feed.
-equities_feed = get_alpaca_equities_feed()
-options_feed = get_alpaca_options_feed() # This will be None if only equities feed is found.
+# Fetch explicit equities and options feeds from secrets.
+equities_feed_secret = get_alpaca_equities_feed()
+options_feed_secret = get_alpaca_options_feed() # This will be None if only equities feed is found.
 
 # Determine feed to use for options chain.
 # Priority: options_feed secret, then fallback to env var or default 'indicative'.
-# If only equities feed is found (handled by get_alpaca_equities_feed), options_feed will be None.
-feed = options_feed
+# If only equities feed is found (handled by get_alpaca_equities_feed), options_feed_secret will be None.
+feed = options_feed_secret
 if not feed:
     # Fallback to env var or default if options_feed secret is missing.
     feed = os.getenv("ALPACA_OPTIONS_FEED", "indicative")
 
 feed = str(feed).strip().lower() or "indicative" # Ensure it's lowercased and not empty
 
-max_pages = int(os.getenv("ALPACA_OPTIONS_MAX_PAGES", "3"))
+stock_feed = os.getenv("ALPACA_STOCK_FEED", "iex").strip().lower() if os.getenv("ALPACA_STOCK_FEED") else "iex"
 
-    from backend.common.secrets import get_database_url  # noqa: WPS433
-
-    db_url = get_database_url(required=True)
+if os.getenv("ALPACA_PAPER") is not None:
+    alpaca_paper = _parse_bool(os.getenv("ALPACA_PAPER"))
 
 symbols = _parse_csv_symbols(str(get_env("ALPACA_SYMBOLS", "SPY,IWM,QQQ")))
 
