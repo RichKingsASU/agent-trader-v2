@@ -17,6 +17,7 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL env var is not set")
 
 SYMBOL = "SPY"
+TABLE = "public.market_data_1m"
 logger = logging.getLogger(__name__)
 _SHUTDOWN_EVENT = threading.Event()
 
@@ -85,14 +86,21 @@ def main() -> None:
                     "dummy_stream.inserted",
                     extra={
                         "event_type": "dummy_stream.inserted",
+                        "table": TABLE,
                         "iteration_id": iteration_id,
                         "ts": row[0].isoformat() if hasattr(row[0], "isoformat") else str(row[0]),
-                        "symbol": row[1],
+                        "symbol": str(row[1]).strip().upper() if row[1] is not None else None,
+                        "symbol_raw": row[1],
                         "open": float(row[2]),
                         "high": float(row[3]),
                         "low": float(row[4]),
                         "close": float(row[5]),
                         "volume": int(row[6]),
+                        # Deterministic ingestion visibility for integrity checks.
+                        "rows_inserted": 1,
+                        "ts_min": row[0].isoformat() if hasattr(row[0], "isoformat") else str(row[0]),
+                        "ts_max": row[0].isoformat() if hasattr(row[0], "isoformat") else str(row[0]),
+                        "symbol_count": 1,
                     },
                 )
             except Exception as e:
