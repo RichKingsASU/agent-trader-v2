@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
+from backend.common.logging import install_fastapi_request_id_middleware
 from backend.common.app_heartbeat_writer import start_heartbeat_background, stop_heartbeat_background
 from backend.common.ops_metrics import REGISTRY
 from backend.ops.status_contract import OpsStatus as OpsStatusModel
