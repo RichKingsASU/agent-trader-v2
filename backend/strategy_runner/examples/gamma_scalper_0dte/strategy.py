@@ -28,7 +28,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, time
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_EVEN
 from typing import Any, Dict, List, Optional
 from backend.time.nyse_time import NYSE_TZ, parse_ts, to_nyse, utc_now
 
@@ -297,7 +297,9 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
         )
     
     # Round to nearest whole share
-    return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    # Use banker's rounding (ROUND_HALF_EVEN) for deterministic .5 handling:
+    # -6.5 -> -6, 6.5 -> 6
+    return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_EVEN)
 
 
 def _should_hedge(net_delta: Decimal, current_time: datetime) -> bool:
