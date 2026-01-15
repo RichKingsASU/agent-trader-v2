@@ -685,7 +685,8 @@ class FirestoreWriter:
         business_dedupe_collection = None
         business_dedupe_key = None
         business_dedupe_doc = None
-        if replay is None:
+        # Business-level dedupe is only used when there is no stable event_id.
+        if replay is None and (event_id is None or str(event_id).strip() == ""):
             # Business-level dedupe key: stable across different Pub/Sub deliveries
             # for the same logical signal.
             sym = str((data or {}).get("symbol") or (symbol or "")).strip().upper()
