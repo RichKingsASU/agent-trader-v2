@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -96,6 +95,21 @@ def _parse_rfc3339(value: Any) -> Optional[datetime]:
 def _short_hash_id(obj: Any) -> str:
     raw = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:32]
+
+
+def _dedupe_doc_id(*, kind: str, topic: str, message_id: str) -> str:
+    """
+    Stable Firestore document id for message-level dedupe.
+
+    - Deterministic (same inputs => same id)
+    - No '/' characters
+    - Bounded length
+    """
+    raw_kind = str(kind or "unknown").strip() or "unknown"
+    safe_kind = "".join(ch if (ch.isalnum() or ch in {"_", "-"}) else "_" for ch in raw_kind)[:50] or "unknown"
+    raw = f"{raw_kind}|{str(topic or '').strip()}|{str(message_id or '').strip()}"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+    return f"{safe_kind}_{digest}"
 
 
 def _max_dt(*values: Optional[datetime]) -> Optional[datetime]:
@@ -543,25 +557,6 @@ class FirestoreWriter:
 
         txn = self._db.transaction()
         return self._firestore.transactional(_txn)(txn)
-
-
-def _dedupe_doc_id(*, kind: str, topic: str, message_id: str) -> str:
-    """
-    Build a stable Firestore document id for message-level dedupe.
-
-    Requirements:
-    - Deterministic (same inputs => same id)
-    - Does not contain '/' (Firestore path separator)
-    - Bounded length (avoid very long Pub/Sub message ids)
-    """
-    raw_kind = str(kind or "unknown").strip() or "unknown"
-    raw_topic = str(topic or "").strip()
-    raw_mid = str(message_id or "").strip()
-
-    # Keep kind readable; hash full tuple for bounded length.
-    safe_kind = "".join(ch if (ch.isalnum() or ch in {"_", "-"} ) else "_" for ch in raw_kind)[:50] or "unknown"
-    digest = hashlib.sha256(f"{raw_kind}|{raw_topic}|{raw_mid}".encode("utf-8")).hexdigest()[:32]
-    return f"{safe_kind}_{digest}"
 
     def upsert_market_tick(
         self,
