@@ -46,7 +46,7 @@ class TradingSignal:
     def __init__(
         self,
         signal_type: SignalType,
-        symbol: str,
+        symbol: str | None = None,
         asset_class: AssetClass = AssetClass.EQUITY,
         confidence: float = 0.0,
         reasoning: str = "",
@@ -54,7 +54,22 @@ class TradingSignal:
         metadata: Optional[Dict[str, Any]] = None
     ):
         self.signal_type = signal_type
-        self.symbol = symbol.upper().strip()
+        # Back-compat: older call sites use TradingSignal(signal_type, confidence, reasoning)
+        # with no explicit symbol/asset_class.
+        if symbol is not None and not isinstance(symbol, str):
+            confidence = float(symbol)
+            reasoning = str(asset_class)
+            symbol = ""
+            asset_class = AssetClass.EQUITY
+
+        symbol_s = str(symbol or "").upper().strip()
+        self.symbol = symbol_s
+
+        if isinstance(asset_class, str):
+            try:
+                asset_class = AssetClass[str(asset_class).strip().upper()]
+            except Exception:
+                asset_class = AssetClass.EQUITY
         self.asset_class = asset_class
         self.confidence = max(0.0, min(1.0, confidence))  # Clamp between 0 and 1
         self.reasoning = reasoning
