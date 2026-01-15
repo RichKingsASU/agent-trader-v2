@@ -114,14 +114,18 @@ def compute_daily_pnl(
             
             # Use FIFO to calculate realized P&L for closed positions
             pnl_result = compute_pnl_fifo(symbol_trades)
-            
-            for closed_position in pnl_result.closed_positions:
-                realized_pnl = closed_position.realized_pnl
-                fees = closed_position.total_fees
-                
+
+            # Compatibility: `compute_pnl_fifo` returns per-trade attribution.
+            # Count only trades that actually realize P&L (i.e., closing matches).
+            for tr in pnl_result.trades:
+                realized_pnl = float(tr.realized_pnl_gross)
+                fees = float(tr.realized_fees)
+                if realized_pnl == 0.0 and fees == 0.0:
+                    continue
+
                 daily_pnl += realized_pnl
                 daily_fees += fees
-                
+
                 if realized_pnl > 0:
                     winning_trades += 1
                     wins.append(realized_pnl)
@@ -260,11 +264,15 @@ def compute_win_loss_ratio(
     for symbol, symbol_trades in trades_by_symbol.items():
         symbol_trades.sort(key=lambda t: t.ts)
         pnl_result = compute_pnl_fifo(symbol_trades)
-        
-        for closed_position in pnl_result.closed_positions:
-            if closed_position.realized_pnl > 0:
+
+        for tr in pnl_result.trades:
+            realized_pnl = float(tr.realized_pnl_gross)
+            realized_fees = float(tr.realized_fees)
+            if realized_pnl == 0.0 and realized_fees == 0.0:
+                continue
+            if realized_pnl > 0:
                 winning_trades += 1
-            elif closed_position.realized_pnl < 0:
+            elif realized_pnl < 0:
                 losing_trades += 1
     
     total_trades = winning_trades + losing_trades
