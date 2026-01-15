@@ -35,11 +35,9 @@ def get_apca_env() -> ApcaEnv:
     base_url = _get_required("APCA_API_BASE_URL")
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
     
-    base_url = assert_valid_alpaca_base_url(
-        url=base_url,
-        agent_mode=agent_mode,
-        trading_mode=trading_mode,
-    )
+    agent_mode = get_agent_mode()
+    trading_mode = str(os.getenv("TRADING_MODE") or "paper").strip().lower() or "paper"
+    base_url = assert_valid_alpaca_base_url(url=base_url, agent_mode=agent_mode, trading_mode=trading_mode)
     return ApcaEnv(api_key_id=key_id, api_secret_key=secret_key, api_base_url=base_url)
 
 
