@@ -6,14 +6,6 @@ from typing import Any
 
 from backend.common.secrets import get_secret
 
-# Define AgentMode Enum if not already defined or imported. Assuming it's available.
-# If not, it might need a placeholder or import. For now, assuming it's available.
-# Placeholder for AgentMode if not imported elsewhere:
-# class AgentMode:
-#     PAPER = "paper"
-#     LIVE = "live"
-#     SANDBOX = "sandbox"
-
 def get_alpaca_key_id(*, required: bool = True) -> str | None:
     """
     Returns the Alpaca API key ID from Secret Manager (or env fallback as implemented by `get_secret`).
