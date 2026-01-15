@@ -26,13 +26,14 @@ def main():
     # dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env.local')
     # load_dotenv(dotenv_path=dotenv_path)
 
-    api_key = get_secret("APCA_API_KEY_ID", required=True)
-    secret_key = get_secret("APCA_API_SECRET_KEY", required=True)
+    api_key = get_secret("APCA_API_KEY_ID", fail_if_missing=True)
+    secret_key = get_secret("APCA_API_SECRET_KEY", fail_if_missing=True)
     # Safety: if a base URL is configured, it must be paper-only.
     try:
         from backend.common.env import assert_paper_alpaca_base_url  # type: ignore
 
-        _ = assert_paper_alpaca_base_url(get_secret("APCA_API_BASE_URL", default="https://paper-api.alpaca.markets"))
+        base_url = get_secret("APCA_API_BASE_URL", fail_if_missing=False) or "https://paper-api.alpaca.markets"
+        _ = assert_paper_alpaca_base_url(base_url)
     except Exception as e:
         print(f"REFUSED: invalid Alpaca trading base URL: {e}")
         exit(2)

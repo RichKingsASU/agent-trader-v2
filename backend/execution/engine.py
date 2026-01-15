@@ -73,7 +73,7 @@ class ExecutionEngineConfig:
         self.idempotency_store_id = str(_get_secret_or_env("EXEC_IDEMPOTENCY_STORE_ID", default="")).strip() or None
         self.idempotency_store_key = str(_get_secret_or_env("EXEC_IDEMPOTENCY_STORE_KEY", default="")).strip() or None
 
-        self.execution_confirm_token = str(get_secret("EXECUTION_CONFIRM_TOKEN", default="")).strip()
+        self.execution_confirm_token = str(get_secret("EXECUTION_CONFIRM_TOKEN", fail_if_missing=False)).strip()
 
         self.max_future_skew_s = float(os.getenv("STRATEGY_EVENT_MAX_FUTURE_SKEW_SECONDS") or "5")
 
@@ -104,7 +104,7 @@ class ExecutionEngineConfig:
         # --- Alpaca ---
         self.alpaca_api_key = get_secret("APCA_API_KEY_ID")
         self.alpaca_secret_key = get_secret("APCA_API_SECRET_KEY")
-        self.alpaca_base_url = get_secret("APCA_API_BASE_URL", default="https://paper-api.alpaca.markets")
+        self.alpaca_base_url = get_secret("APCA_API_BASE_URL", fail_if_missing=False) or "https://paper-api.alpaca.markets"
 
         # --- Check for contradictory settings ---
         if self.trading_mode == "live" and self.alpaca_base_url == "https://paper-api.alpaca.markets":
@@ -155,13 +155,14 @@ class ExecutionEngineConfig:
         }
 
     def set_replay_context(self, *, agent_name: str | None = None):
-        if self.tenant_id and (os.getenv("AGENT_NAME") or "").strip():
-            self"agent_name": str(os.getenv("AGENT_NAME") or "execution-engine").strip() or "execution-engine",
-            "agent_id": self.tenant_id, # Legacy mapping from tenant_id to agent_id
-            "run_id": self.tenant_id, # Legacy mapping
-        )
-    else:
-        self.replay_context = None
+        if self.tenant_id and (agent_name or os.getenv("AGENT_NAME") or "").strip():
+            self.replay_context = ReplayContext(
+                agent_name=agent_name or os.getenv("AGENT_NAME") or "execution-engine",
+                agent_id=self.tenant_id,  # Legacy mapping from tenant_id to agent_id
+                run_id=self.tenant_id,  # Legacy mapping
+            )
+        else:
+            self.replay_context = None
 
 def _as_int_or_none(v: str | None) -> int | None:
     try:

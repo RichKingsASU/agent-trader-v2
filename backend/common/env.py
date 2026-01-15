@@ -22,7 +22,7 @@ def _get_required(name: str, default: Any = None, *, required: bool = True) -> A
     If required and not found, raises RuntimeError.
     """
     # Prefer Secret Manager for sensitive values.
-    value = get_secret(name, default=default, fail_if_missing=False)
+    value = get_secret(name, fail_if_missing=False)
     if value:
         return value
 
