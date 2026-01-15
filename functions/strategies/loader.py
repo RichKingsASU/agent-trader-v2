@@ -97,6 +97,9 @@ class StrategyLoader:
         self._db = db
         self.tenant_id = str(tenant_id or "default")
         self.uid = uid
+        # Back-compat shim for tests that introspect class-level rate limiting state.
+        # NOTE: this is NOT Python's special `__class__`; it's a name-mangled attribute.
+        self._StrategyLoader__class__ = self.__class__
 
         # Maestro orchestration (optional; requires Firestore and module availability).
         self.maestro = None
