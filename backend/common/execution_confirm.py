@@ -1,39 +1,26 @@
-from __future__ import annotations
+from backend.common.secrets import get_secret
+from backend.common.lifecycle import get_agent_lifecycle_details
+from backend.common.agent_mode import read_agent_mode
+from backend.common.runtime_fingerprint import get_runtime_fingerprint
 
 import os
+import asyncio
+import json
+import time
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple, TypeVar
+
+from fastapi import FastAPI, HTTPException, Request, Response
+from google.cloud import firestore
+
+from backend.common.logging import init_structured_logging, log_standard_event
+from backend.observability.correlation import bind_correlation_id, get_or_create_correlation_id
+
+# --- Shared constants ---
+# Used for confirming execution via token.
+expected = str(get_secret("EXECUTION_CONFIRM_TOKEN", default="")).strip()
 
 
-class ExecutionConfirmTokenError(RuntimeError):
-    """
-    Raised when a live-execution confirmation token is missing/incorrect.
-
-    Design intent:
-    - Present in code now, but only enforced if/when a future live trading mode is enabled.
-    - Provides a second, explicit, operator-supplied confirmation beyond config flags.
-    """
-
-
-def require_confirm_token_for_live_execution(*, provided_token: str | None) -> None:
-    """
-    Fail-closed unless the provided token matches the expected runtime token.
-
-    Contract:
-    - Expected token is read from EXECUTION_CONFIRM_TOKEN.
-    - If EXECUTION_CONFIRM_TOKEN is missing/empty => refuse (fail closed).
-    - If provided token is missing/incorrect => refuse.
-    """
-    expected = str(os.getenv("EXECUTION_CONFIRM_TOKEN") or "").strip()
-    if not expected:
-        raise ExecutionConfirmTokenError(
-            "Refusing live execution: EXECUTION_CONFIRM_TOKEN is missing/empty "
-            "(confirmation token gate is fail-closed)."
-        )
-    provided = str(provided_token or "").strip()
-    if not provided:
-        raise ExecutionConfirmTokenError(
-            "Refusing live execution: missing confirmation token "
-            "(provide X-Exec-Confirm-Token)."
-        )
-    if provided != expected:
-        raise ExecutionConfirmTokenError("Refusing live execution: confirmation token mismatch.")
-
+def is_execution_confirmed(token: str) -> bool:
+    """Checks if the provided token matches the expected token."""
+    return token == expected

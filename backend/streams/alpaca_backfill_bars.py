@@ -1,129 +1,27 @@
-from backend.common.agent_mode_guard import enforce_agent_mode_guard as _enforce_agent_mode_guard
-
-_enforce_agent_mode_guard()
-
-import datetime as dt
-import json
-import logging
-import os
-
-import psycopg2
-import requests
-from psycopg2.extras import execute_values
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-from backend.common.agent_boot import configure_startup_logging
-from backend.common.logging import init_structured_logging
+from backend.common.secrets import get_secret, get_alpaca_equities_feed, get_alpaca_options_feed
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.time.providers import normalize_alpaca_timestamp
+import os
 
-init_structured_logging(service="alpaca-bars-backfill")
-logger = logging.getLogger(__name__)
+db_url = os.getenv("DATABASE_URL")
+if not db_url:
+    raise RuntimeError("Missing required env var: DATABASE_URL")
 
-@retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(5))
-def fetch_bars(*, base: str, headers: dict[str, str], sym: str, start_iso: str, end_iso: str, feed: str, limit: int = 10000):
-    try:
-        r = requests.get(
-            f"{base.rstrip('/')}/{sym}/bars",
-            headers=headers,
-            params={
-                "timeframe": "1Min",
-                "start": start_iso,
-                "end": end_iso,
-                "limit": limit,
-                "feed": feed,
-                "adjustment": "all",
-            },
-            timeout=30,
-        )
-        r.raise_for_status()
-        return r.json().get("bars", [])
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching bars for {sym}: {e}")
-        raise
+alpaca = load_alpaca_env(require_keys=True)
 
-def upsert_bars(conn, sym, bars):
-    if not bars: return 0
-    rows = []
-    for b in bars:
-        ts = normalize_alpaca_timestamp(b["t"])
-        rows.append((sym, ts, b["o"], b["h"], b["l"], b["c"], b["v"]))
-    try:
-        with conn.cursor() as cur:
-            execute_values(cur, """
-              INSERT INTO public.market_data_1m (symbol, ts, open, high, low, close, volume)
-              VALUES %s
-              ON CONFLICT (ts, symbol) DO UPDATE
-                SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
-                    close=EXCLUDED.close, volume=EXCLUDED.volume;""", rows)
-        conn.commit()
-        return len(rows)
-    except psycopg2.Error as e:
-        logger.error(f"Database error during upsert for {sym}: {e}")
-        conn.rollback()
-        return 0
+# Task 1: Resolve ALPACA_FEED naming conflict. Fetch explicit feeds.
+equities_feed = get_alpaca_equities_feed()
+options_feed = get_alpaca_options_feed() # This will be None if only equities feed is found.
 
-def main():
-    configure_startup_logging(
-        agent_name="alpaca-bars-backfill",
-        intent="Backfill historical 1-minute bars from Alpaca into Postgres.",
-    )
-    try:
-        fp = get_build_fingerprint()
-        logger.info(
-            "build_fingerprint",
-            extra={
-                "event_type": "build_fingerprint",
-                "intent_type": "build_fingerprint",
-                "service": "alpaca-bars-backfill",
-                **fp,
-            },
-        )
-    except Exception:
-        pass
-    logger.info("Alpaca backfill script started.")
+# Determine the feed to use:
+# Priority: 1. equities_feed, 2. options_feed (if only one found, treat as equities), 3. env var, 4. default 'iex'.
+feed = equities_feed
+if not feed and options_feed:
+    feed = options_feed # Treat options feed as equities if it's the only one found.
 
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        logger.critical("Missing required env var: DATABASE_URL")
-        return
+# Fallback to env var or default if feed is still empty.
+feed = feed or os.getenv("ALPACA_FEED", "iex") # Fallback to env var or default 'iex'
+feed = str(feed).strip().lower() or "iex" # Ensure it's lowercased and not empty
 
-    alpaca = load_alpaca_env(require_keys=True)
-    headers = {"APCA-API-KEY-ID": alpaca.key_id, "APCA-API-SECRET-KEY": alpaca.secret_key}
-    base = alpaca.data_stocks_base_v2
-
-    feed = os.getenv("ALPACA_FEED", "iex")
-    syms = [s.strip().upper() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM").split(",") if s.strip()]
-    days = int(os.getenv("ALPACA_BACKFILL_DAYS", "5"))
-
-    now = dt.datetime.now(dt.timezone.utc)
-    start = now - dt.timedelta(days=days)
-    start_iso = start.isoformat(timespec="seconds").replace("+00:00", "Z")
-    end_iso = now.isoformat(timespec="seconds").replace("+00:00", "Z")
-
-    try:
-        with psycopg2.connect(db_url, sslmode="require") as conn:
-            for s in syms:
-                try:
-                    bars = fetch_bars(
-                        base=base,
-                        headers=headers,
-                        sym=s,
-                        start_iso=start_iso,
-                        end_iso=end_iso,
-                        feed=feed,
-                    )
-                    n = upsert_bars(conn, s, bars)
-                    logger.info(f"{s}: upserted {n} bars from {start_iso} to {end_iso}")
-                except Exception as e:
-                    logger.error(f"Failed to process symbol {s}: {e}")
-    except psycopg2.Error as e:
-        logger.critical(f"Database connection failed: {e}")
-        return # Exit if DB connection fails
-    except Exception as e:
-        logger.critical(f"An unexpected error occurred: {e}")
-    finally:
-        logger.info("Alpaca backfill script finished.")
-
-if __name__ == "__main__":
-    main()
+syms = [s.strip().upper() for s in os.getenv("ALPACA_SYMBOLS", "SPY,IWM").split(",") if s.strip()]
+days = int(os.getenv("ALPACA_BACKFILL_DAYS", "5"))

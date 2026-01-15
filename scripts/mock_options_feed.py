@@ -4,18 +4,6 @@ import json
 import random
 import signal
 from datetime import datetime, timezone
-from dotenv import load_dotenv
-import nats
-
-from backend.common.nats.subjects import market_subject
-from backend.common.schemas.codec import encode_message
-from backend.common.schemas.models import MarketEventV1
-
-# --- Configuration ---
-# Load environment variables from a .env file located in the parent 'backend' directory
-dotenv_path = os.path.join(os.path.dirname(__file__), '..', 'backend', '.env')
-load_dotenv(dotenv_path=dotenv_path)
-
 NATS_URL = os.getenv("NATS_URL", "nats://localhost:4222")
 TENANT_ID = (os.getenv("TENANT_ID") or "local").strip() or "local"
 SYMBOLS = ["SPY", "IWM", "QQQ"]

@@ -3,19 +3,8 @@ import os
 import requests
 import psycopg
 from datetime import datetime
-from dotenv import load_dotenv
-import logging
-
-from backend.streams.alpaca_env import load_alpaca_env
-from backend.time.providers import normalize_alpaca_timestamp
-from backend.utils.session import get_market_session
-from backend.common.logging import init_structured_logging
-
-init_structured_logging(service="test-live-quote-ingest")
-logger = logging.getLogger(__name__)
-
-# --- Environment Configuration ---
-load_dotenv() # Load environment variables from .env.local
+# from dotenv import load_dotenv
+# load_dotenv() # Load environment variables from .env.local
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("Missing required env var: DATABASE_URL")

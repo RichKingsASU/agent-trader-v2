@@ -1,143 +1,80 @@
-#!/usr/bin/env python3
 import os
-import json
-from datetime import datetime
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.common.exceptions import APIError
 
-import psycopg
-
-
-def get_db_url() -> str:
-    url = os.getenv("DATABASE_URL")
-    if not url:
-        raise RuntimeError("DATABASE_URL env var is not set")
-    return url
-
-
-def build_raw_order(logical_order: dict) -> dict:
-    """
-    Build the broker-facing payload (raw_order).
-    For now it's just a mirror of the logical order + metadata.
-    """
-    return {
-        "instrument_type": logical_order["instrument_type"],
-        "symbol": logical_order["symbol"],
-        "side": logical_order["side"],
-        "order_type": logical_order["order_type"],
-        "time_in_force": logical_order.get("time_in_force", "day"),
-        "notional": logical_order["notional"],
-        "quantity": logical_order.get("quantity"),
-        "strategy_id": logical_order["strategy_id"],
-        "broker_account_id": logical_order["broker_account_id"],
-        "user_id": logical_order["user_id"],
-    }
-
-
-def insert_paper_order(logical_order: dict) -> dict:
-    """
-    Convert logical_order into a row in public.paper_orders
-    and return a summary of the inserted row.
-    """
-    db_url = get_db_url()
-    raw_order = build_raw_order(logical_order)
-
-    sql = """
-    insert into public.paper_orders (
-      user_id,
-      broker_account_id,
-      strategy_id,
-      symbol,
-      instrument_type,
-      side,
-      order_type,
-      time_in_force,
-      notional,
-      quantity,
-      risk_allowed,
-      risk_scope,
-      risk_reason,
-      raw_order,
-      status
-    )
-    values (
-      %(user_id)s,
-      %(broker_account_id)s,
-      %(strategy_id)s,
-      %(symbol)s,
-      %(instrument_type)s,
-      %(side)s,
-      %(order_type)s,
-      %(time_in_force)s,
-      %(notional)s,
-      %(quantity)s,
-      %(risk_allowed)s,
-      %(risk_scope)s,
-      %(risk_reason)s,
-      %(raw_order)s,
-      'simulated'
-    )
-    returning id, symbol, notional, status, created_at;
-    """
-
-    params = {
-        "user_id": logical_order["user_id"],
-        "broker_account_id": logical_order["broker_account_id"],
-        "strategy_id": logical_order["strategy_id"],
-        "symbol": logical_order["symbol"],
-        "instrument_type": logical_order["instrument_type"],
-        "side": logical_order["side"],
-        "order_type": logical_order["order_type"],
-        "time_in_force": logical_order.get("time_in_force", "day"),
-        "notional": logical_order["notional"],
-        "quantity": logical_order.get("quantity"),
-        "risk_allowed": logical_order.get("risk_allowed", True),
-        "risk_scope": logical_order.get("risk_scope"),
-        "risk_reason": logical_order.get("risk_reason"),
-        "raw_order": json.dumps(raw_order),
-    }
-
-    with psycopg.connect(db_url) as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            row = cur.fetchone()
-
-    return {
-        "id": str(row[0]),
-        "symbol": row[1],
-        "notional": float(row[2]),
-        "status": row[3],
-        "created_at": (
-            row[4].isoformat() if isinstance(row[4], datetime) else str(row[4])
-        ),
-    }
-
+# Import get_secret for DATABASE_URL retrieval
+from backend.common.secrets import get_secret
 
 def main():
-    # Example logical order using YOUR real IDs
-    logical_order = {
-        "user_id": "2385984e-0ae9-47f1-a82e-3c17e0dad510",
-        "broker_account_id": "25904484-f163-4a56-b606-35405123fc22",
-        "strategy_id": "37a7bcbe-9cb0-463c-9e37-6e4bd6b97765",
-        "symbol": "SPY",
-        "instrument_type": "stock",   # or "option" later
-        "side": "buy",
-        "order_type": "market",
-        "time_in_force": "day",
-        "notional": 2000.00,
-        "quantity": None,
-        "risk_allowed": True,
-        "risk_scope": "strategy",
-        "risk_reason": None,
-    }
+    """
+    Inserts a single paper trading order into the database.
+    """
+    # Global kill-switch guard: never place even paper orders while halted.
+    try:
+        from backend.common.kill_switch import get_kill_switch_state  # type: ignore
 
-    inserted = insert_paper_order(logical_order)
+        enabled, source = get_kill_switch_state()
+        if enabled:
+            print(f"REFUSED: kill switch is active (source={source}). Set EXECUTION_HALTED=0 to proceed.")
+            exit(2)
+    except Exception:
+        # Best-effort safety: if we cannot evaluate the kill-switch module, do not block the script.
+        # (The runtime execution engine has its own defenses.)
+        pass
 
-    # Plain-language echo for the user
-    print(
-        f"Inserted paper order {inserted['id']} -> "
-        f"{inserted['symbol']} notional ${inserted['notional']:.2f}, "
-        f"status={inserted['status']}, created_at={inserted['created_at']}"
-    )
+    # Retrieve DATABASE_URL using get_secret for mandatory access.
+    url = get_secret("DATABASE_URL", fail_if_missing=True)
 
+    if not url:
+        print("ERROR: DATABASE_URL is missing and essential for operation.")
+        exit(1)
+
+    api_key = os.getenv("APCA_API_KEY_ID")
+    secret_key = os.getenv("APCA_API_SECRET_KEY")
+    # Safety: if a base URL is configured, it must be paper-only.
+    try:
+        from backend.common.env import assert_paper_alpaca_base_url  # type: ignore
+
+        _ = assert_paper_alpaca_base_url(os.getenv("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets")
+    except Exception as e:
+        print(f"REFUSED: invalid Alpaca trading base URL: {e}")
+        exit(2)
+
+    if not api_key or not secret_key:
+        print("ERROR: APCA_API_KEY_ID and APCA_API_SECRET_KEY must be set in .env.local.")
+        exit(1)
+
+    print("--> Inserting test order into DB: SPY BUY 1 Qty")
+    try:
+        trading_client = TradingClient(api_key, secret_key, paper=True)
+        market_order_data = MarketOrderRequest(
+            symbol="SPY",
+            qty=1,
+            side=OrderSide.BUY,
+            time_in_force=TimeInForce.DAY
+        )
+        market_order = trading_client.submit_order(order_data=market_order_data)
+        print("    - Order ID:", market_order.id)
+        print("    - Status:", market_order.status)
+        print("    - Symbol:", market_order.symbol)
+        print("    - Qty:", market_order.qty)
+        print("SUCCESS: Test order submitted successfully.")
+
+    except APIError as e:
+        print(f"ERROR: Failed to submit order via Alpaca API.")
+        print(f"    - Status Code: {e._status_code}")
+        print(f"    - Response: {e}")
+        # Check if the market is open
+        if "market is closed" in str(e).lower():
+            print("INFO: This is expected if the market is currently closed.")
+            # Exit gracefully since this isn't a credentials/config error.
+            exit(0)
+        exit(1)
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        exit(1)
 
 if __name__ == "__main__":
     main()

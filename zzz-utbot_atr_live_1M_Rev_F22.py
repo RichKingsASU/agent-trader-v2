@@ -103,10 +103,10 @@ from last_hour_engine import (
     is_last_hour as is_last_hour_ny,
 )
 
-from dotenv import load_dotenv, find_dotenv
-load_dotenv(find_dotenv(usecwd=True), override=False)
+# from dotenv import load_dotenv, find_dotenv
+# load_dotenv(find_dotenv(usecwd=True), override=False)
 
-# ─────────────────────────────────────────────────────────────
+# load_dotenv()
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────
 CONTRACT_MULT = 100
