@@ -4,7 +4,6 @@ from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.common.exceptions import APIError
 
-# Import get_secret for DATABASE_URL retrieval
 from backend.common.secrets import get_secret
 
 def main():
@@ -31,13 +30,14 @@ def main():
         print("ERROR: DATABASE_URL is missing and essential for operation.")
         exit(1)
 
-    api_key = os.getenv("APCA_API_KEY_ID")
-    secret_key = os.getenv("APCA_API_SECRET_KEY")
-    # Safety: if a base URL is configured, it must be paper-only.
-    try:
-        from backend.common.env import assert_paper_alpaca_base_url  # type: ignore
+    from backend.common.execution_enabled import require_execution_enabled
+    from backend.common.env import assert_paper_alpaca_base_url
 
-        _ = assert_paper_alpaca_base_url(os.getenv("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets")
+    api_key = (get_secret("APCA_API_KEY_ID", fail_if_missing=False) or os.getenv("APCA_API_KEY_ID") or "").strip()
+    secret_key = (get_secret("APCA_API_SECRET_KEY", fail_if_missing=False) or os.getenv("APCA_API_SECRET_KEY") or "").strip()
+    base_url = (get_secret("APCA_API_BASE_URL", fail_if_missing=False) or os.getenv("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets").strip()
+    try:
+        _ = assert_paper_alpaca_base_url(base_url)
     except Exception as e:
         print(f"REFUSED: invalid Alpaca trading base URL: {e}")
         exit(2)
@@ -48,6 +48,7 @@ def main():
 
     print("--> Inserting test order into DB: SPY BUY 1 Qty")
     try:
+        require_execution_enabled(operation="scripts.insert_paper_order.submit_order", context={"symbol": "SPY", "side": "buy", "qty": 1})
         trading_client = TradingClient(api_key, secret_key, paper=True)
         market_order_data = MarketOrderRequest(
             symbol="SPY",
