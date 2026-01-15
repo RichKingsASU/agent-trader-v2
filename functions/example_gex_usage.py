@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import alpaca_trade_api as tradeapi
 from functions.utils.gex_engine import calculate_net_gex, get_market_regime_summary
 from functions.utils.apca_env import assert_paper_alpaca_base_url
+from backend.common.alpaca_env import configure_alpaca_env
 
 
 def main():
@@ -35,25 +36,13 @@ def main():
     print("=" * 80)
     print()
     
-    # Initialize Alpaca API client
-    key_id = os.getenv("APCA_API_KEY_ID")
-    secret_key = os.getenv("APCA_API_SECRET_KEY")
-    base_url = os.getenv("APCA_API_BASE_URL")
-    
-    if not key_id or not secret_key or not base_url:
-        print("ERROR: Please set APCA_API_KEY_ID, APCA_API_SECRET_KEY, and APCA_API_BASE_URL environment variables")
-        print()
-        print("Example:")
-        print("  export APCA_API_KEY_ID='your_key_id'")
-        print("  export APCA_API_SECRET_KEY='your_secret_key'")
-        print("  export APCA_API_BASE_URL='https://paper-api.alpaca.markets'")
-        sys.exit(1)
-    
-    base_url = assert_paper_alpaca_base_url(base_url)
+    # Initialize Alpaca API client (Secret Manager-backed; sets APCA_* for SDK compatibility)
+    alpaca = configure_alpaca_env(required=True)
+    base_url = assert_paper_alpaca_base_url(alpaca.api_base_url)
     print(f"Connecting to Alpaca API: {base_url}")
     api = tradeapi.REST(
-        key_id=key_id,
-        secret_key=secret_key,
+        key_id=alpaca.api_key_id,
+        secret_key=alpaca.api_secret_key,
         base_url=base_url
     )
     print("✓ Connected successfully\n")

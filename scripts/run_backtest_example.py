@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../functions"))
 
 from backtester import Backtester
 from strategies.gamma_scalper import GammaScalper
+from backend.common.alpaca_env import configure_alpaca_env
 
 # Configure logging
 logging.basicConfig(
@@ -36,14 +37,11 @@ logger = logging.getLogger(__name__)
 def main():
     """Run a backtest example."""
     
-    # Check for API credentials
-    if not os.getenv("APCA_API_KEY_ID") or not os.getenv("APCA_API_SECRET_KEY"):
-        logger.error(
-            "Please set APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables.\n"
-            "Example:\n"
-            "  export APCA_API_KEY_ID='your_key'\n"
-            "  export APCA_API_SECRET_KEY='your_secret'"
-        )
+    # Configure Alpaca credentials from Secret Manager (no shell exports required).
+    try:
+        configure_alpaca_env(required=True)
+    except Exception as e:
+        logger.error(f"Unable to configure Alpaca credentials from Secret Manager: {e}")
         sys.exit(1)
     
     print("\n" + "="*70)

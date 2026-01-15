@@ -8,7 +8,7 @@ import alpaca_trade_api as tradeapi
 from alpaca_trade_api.stream import Stream
 from firebase_admin import credentials, firestore, initialize_app
 
-from functions.utils.apca_env import assert_paper_alpaca_base_url
+from backend.common.alpaca_env import configure_alpaca_env
 
 """
 Strategy VIII: Institutional Order Flow (Whale Consolidator)
@@ -39,13 +39,12 @@ class WhaleConsolidator:
         """
         # --- API and DB Initialization ---
         try:
-            base_url = assert_paper_alpaca_base_url(
-                os.environ.get("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
-            )
+            alpaca = configure_alpaca_env(required=True)
+            self._alpaca = alpaca
             self.api = tradeapi.REST(
-                key_id=os.environ.get('APCA_API_KEY_ID'),
-                secret_key=os.environ.get('APCA_API_SECRET_KEY'),
-                base_url=base_url
+                key_id=alpaca.api_key_id,
+                secret_key=alpaca.api_secret_key,
+                base_url=alpaca.api_base_url,
             )
             
             # Note: This script is deployed in 'venv_ingest', which requires firebase-admin.
@@ -61,6 +60,7 @@ class WhaleConsolidator:
             print(f"🔥 Initialization Error: {e}")
             self.api = None
             self.db = None
+            self._alpaca = None
 
         # --- Internal State ---
         self.latest_quotes = {}
@@ -174,13 +174,14 @@ class WhaleConsolidator:
             return
 
         print("🚀 WHALE ENGINE LIVE: Connecting to options data stream...")
-        base_url = assert_paper_alpaca_base_url(
-            os.environ.get("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
-        )
+        alpaca = self._alpaca
+        if alpaca is None:
+            print("🔥 Missing Alpaca configuration; refusing to start stream.")
+            return
         stream = Stream(
-            key_id=os.environ.get('APCA_API_KEY_ID'),
-            secret_key=os.environ.get('APCA_API_SECRET_KEY'),
-            base_url=base_url,
+            key_id=alpaca.api_key_id,
+            secret_key=alpaca.api_secret_key,
+            base_url=alpaca.api_base_url,
             data_feed='opra' # OPRA feed for options
         )
 

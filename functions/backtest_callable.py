@@ -14,6 +14,7 @@ from typing import Any, Dict
 import firebase_admin
 from firebase_admin import firestore
 from firebase_functions import https_fn, options
+from backend.common.alpaca_env import configure_alpaca_env
 
 logger = logging.getLogger(__name__)
 
@@ -155,9 +156,10 @@ def run_backtest(req: https_fn.CallableRequest) -> Dict[str, Any]:
             slippage_bps=backtest_config_dict.get("slippage_bps", 1)
         )
         
-        # Get Alpaca credentials
-        alpaca_key = os.environ.get("APCA_API_KEY_ID")
-        alpaca_secret = os.environ.get("APCA_API_SECRET_KEY")
+        # Get Alpaca credentials (Secret Manager-backed by default; env fallback only when enabled).
+        sm_alpaca = configure_alpaca_env(required=False)
+        alpaca_key = sm_alpaca.api_key_id or None
+        alpaca_secret = sm_alpaca.api_secret_key or None
         
         if not alpaca_key or not alpaca_secret:
             # Try to get user-specific keys from Firestore

@@ -25,21 +25,16 @@ import requests
 from firebase_admin import firestore
 
 logger = logging.getLogger(__name__)
+from backend.common.alpaca_env import configure_alpaca_env
 
 
 def _get_alpaca_headers() -> Dict[str, str]:
     """Get Alpaca API headers from environment variables."""
-    api_key = os.environ.get("APCA_API_KEY_ID")
-    secret_key = os.environ.get("APCA_API_SECRET_KEY")
-    
-    if not api_key or not secret_key:
-        raise ValueError(
-            "Missing Alpaca credentials. Set APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables."
-        )
+    alpaca = configure_alpaca_env(required=True)
     
     return {
-        "APCA-API-KEY-ID": api_key,
-        "APCA-API-SECRET-KEY": secret_key,
+        "APCA-API-KEY-ID": alpaca.api_key_id,
+        "APCA-API-SECRET-KEY": alpaca.api_secret_key,
     }
 
 

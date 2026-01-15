@@ -5,13 +5,7 @@ import time
 import alpaca_trade_api as tradeapi
 import yfinance as yf
 
-from functions.utils.apca_env import assert_paper_alpaca_base_url
-
-# --- Configuration ---
-API_KEY = os.environ.get('APCA_API_KEY_ID')
-API_SECRET = os.environ.get('APCA_API_SECRET_KEY')
-BASE_URL = os.environ.get('APCA_API_BASE_URL') or "https://paper-api.alpaca.markets"
-
+from backend.common.alpaca_env import configure_alpaca_env
 
 def _require_enable_dangerous_functions() -> None:
     """
@@ -26,9 +20,17 @@ def _require_enable_dangerous_functions() -> None:
 
 
 _require_enable_dangerous_functions()
-BASE_URL = assert_paper_alpaca_base_url(BASE_URL)
+
+# --- Alpaca (Secret Manager-backed; sets APCA_* for SDK compatibility) ---
+alpaca = configure_alpaca_env(required=True)
+
 # --- Initialize Alpaca API ---
-api = tradeapi.REST(API_KEY, API_SECRET, base_url=BASE_URL, api_version='v2')
+api = tradeapi.REST(
+    alpaca.api_key_id,
+    alpaca.api_secret_key,
+    base_url=alpaca.api_base_url,
+    api_version="v2",
+)
 
 # --- Strategy Parameters ---
 DELTA_THRESHOLD = 0.15

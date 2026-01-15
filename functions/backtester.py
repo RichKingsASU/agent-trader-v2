@@ -31,6 +31,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Union
 
 from strategies.base_strategy import BaseStrategy, SignalType, TradingSignal
+from backend.common.alpaca_env import configure_alpaca_env
 
 logger = logging.getLogger(__name__)
 
@@ -230,8 +231,13 @@ class Backtester:
             self.start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
         
         # Alpaca client
-        api_key = alpaca_api_key or os.getenv("APCA_API_KEY_ID")
-        secret_key = alpaca_secret_key or os.getenv("APCA_API_SECRET_KEY")
+        if alpaca_api_key and alpaca_secret_key:
+            api_key = alpaca_api_key
+            secret_key = alpaca_secret_key
+        else:
+            alpaca = configure_alpaca_env(required=True)
+            api_key = alpaca.api_key_id
+            secret_key = alpaca.api_secret_key
         
         if not api_key or not secret_key:
             raise ValueError(
