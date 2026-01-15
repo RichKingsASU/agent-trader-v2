@@ -48,6 +48,67 @@ def _log(level: str, message: str) -> Dict[str, Any]:
     }
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return float(default)
+    try:
+        return float(str(raw).strip())
+    except Exception:
+        return float(default)
+
+
+def _parse_iso8601_utc(value: Any) -> Optional["datetime.datetime"]:
+    """
+    Best-effort parse for ISO8601 timestamps into tz-aware UTC datetime.
+
+    Guest constraints:
+    - stdlib only
+    - tolerate both "...Z" and "+00:00" suffixes
+    """
+    import datetime
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    s = value.strip()
+    # Normalize Zulu suffix for older Python versions.
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.datetime.fromisoformat(s)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        # Fail-closed-ish: assume UTC (callers will still enforce max-age).
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.astimezone(datetime.timezone.utc)
+
+
+def _validate_event_timestamp(ts_raw: Any) -> tuple[bool, str]:
+    """
+    Enforce basic event timestamp safety:
+    - must be parseable ISO8601
+    - must not be too old (max age)
+    - must not be too far in the future (clock skew)
+    """
+    import datetime
+
+    max_age_s = max(0.0, _env_float("STRATEGY_EVENT_MAX_AGE_SECONDS", 30.0))
+    max_future_skew_s = max(0.0, _env_float("STRATEGY_EVENT_MAX_FUTURE_SKEW_SECONDS", 5.0))
+    dt = _parse_iso8601_utc(ts_raw)
+    if dt is None:
+        return False, "invalid_ts"
+    now = datetime.datetime.now(tz=datetime.timezone.utc)
+    age_s = (now - dt).total_seconds()
+    # Too far in the future => reject (avoid trading on future-dated events).
+    if age_s < -max_future_skew_s:
+        return False, "future_ts"
+    # Too old => reject.
+    if age_s > max_age_s:
+        return False, "stale_ts"
+    return True, "ok"
+
+
 class GuestFatal(RuntimeError):
     pass
 
@@ -194,6 +255,18 @@ def run_server(*, bundle_path: Path, port: int, work_dir: Path) -> int:
                         continue
 
                     event_id = msg.get("event_id") or "unknown"
+                    ok_ts, ts_reason = _validate_event_timestamp(msg.get("ts"))
+                    if not ok_ts:
+                        _write_ndjson(
+                            wf,
+                            [
+                                _log(
+                                    "warn",
+                                    f"dropping market_event due to timestamp_validation_failed reason={ts_reason} event_id={event_id}",
+                                )
+                            ],
+                        )
+                        continue
                     try:
                         intents_obj = handler(msg)
                         intents = _as_intents(intents_obj, str(event_id))
