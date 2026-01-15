@@ -76,6 +76,14 @@ class Positions(Protocol):
     def get_position_qty(self, *, symbol: str) -> float: ...
 
 
+class Broker(Protocol):
+    def place_order(self, *, intent: OrderIntent) -> dict[str, Any]: ...
+
+    def cancel_order(self, *, broker_order_id: str) -> dict[str, Any]: ...
+
+    def get_order_status(self, *, broker_order_id: str) -> dict[str, Any]: ...
+
+
 class RiskManager:
     def __init__(self, *, config: RiskConfig, ledger: Ledger, positions: Positions) -> None:
         self.config = config
@@ -258,7 +266,7 @@ class ExecutionEngine:
     def __init__(
         self,
         *,
-        broker: Any,
+        broker: Broker,
         risk: RiskManager | None = None,
         dry_run: bool = True,
         router: SmartRouter | None = None,

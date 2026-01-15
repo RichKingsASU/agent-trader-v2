@@ -1,50 +1,124 @@
-from backend.common.secrets import get_secret
-from backend.common.logging import init_structured_logging, log_standard_event
-from backend.common.timeutils import normalize_alpaca_timestamp
-from backend.common.pubsub_publisher import PubsubPublisher
-import os
+from __future__ import annotations
+
+import base64
 import json
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple, TypeVar
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Mapping, Optional
 
-from google.cloud import firestore
-from google.api_core.exceptions import GoogleAPICallError
 
-from backend.common.lifecycle import get_agent_lifecycle_details
-from backend.common.agent_mode import read_agent_mode
-from backend.common.runtime_fingerprint import get_runtime_fingerprint
-from backend.common.agent_mode_guard import AgentModeGuard
-from backend.common.kill_switch import KillSwitch
-from backend.common.execution_confirm import ExecutionConfirm
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
-SERVICE_NAME = os.getenv("SERVICE_NAME", "event-store")
-ENV = os.getenv("ENV", "prod")
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
-init_structured_logging(service=SERVICE_NAME, env=ENV, level=LOG_LEVEL)
-logger = logging.getLogger(__name__)
+def _parse_rfc3339(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        s = str(value).strip()
+        if not s:
+            return None
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(s)
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
-# Secrets and configuration
-mode = (os.getenv("EVENT_STORE") or "").strip().lower()
-project_id = get_secret("FIREBASE_PROJECT_ID", fail_if_missing=False) or get_secret("GOOGLE_CLOUD_PROJECT", fail_if_missing=False)
-if not project_id:
-    # Fallback to non-secret env vars if secrets are not found.
-    project_id = os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or None
 
-if not project_id:
-    raise RuntimeError("Project ID is required but not found in secrets or environment.")
+@dataclass(frozen=True, slots=True)
+class IngestedEvent:
+    event_id: str
+    message_id: str
+    event_type: str
+    payload: Any
+    attributes: dict[str, str] = field(default_factory=dict)
+    publish_time_utc: Optional[datetime] = None
+    received_at_utc: datetime = field(default_factory=_utc_now)
+    subscription: Optional[str] = None
 
-# Initialize Firestore client using the determined project_id.
-# If emulator is set, use it.
-emulator_host = os.getenv("FIRESTORE_EMULATOR_HOST")
-db_client: firestore.Client | None = None
-if emulator_host:
-    db_client = firestore.Client(project=project_id, database=str(os.getenv("FIRESTORE_DATABASE") or "(default)"), client_options={"api_endpoint": emulator_host})
-else:
-    db_client = firestore.Client(project=project_id, database=str(os.getenv("FIRESTORE_DATABASE") or "(default)"))
 
-if db_client is None:
-    raise RuntimeError("Firestore client could not be initialized.")
+def parse_pubsub_push(body: Mapping[str, Any]) -> IngestedEvent:
+    """
+    Parse a Pub/Sub push body into an `IngestedEvent`.
 
-db = db_client
+    Constraints:
+    - Pure / deterministic: no GCP dependencies; safe for unit tests.
+    - Raises ValueError on malformed envelopes.
+    """
+    if not isinstance(body, Mapping):
+        raise ValueError("invalid_envelope")
+    message = body.get("message")
+    if not isinstance(message, Mapping):
+        raise ValueError("missing_message")
+
+    message_id = str(message.get("messageId") or "").strip()
+    if not message_id:
+        raise ValueError("missing messageId")
+
+    attrs_raw = message.get("attributes") or {}
+    attributes: dict[str, str] = {}
+    if isinstance(attrs_raw, Mapping):
+        for k, v in attrs_raw.items():
+            if k is None:
+                continue
+            attributes[str(k)] = "" if v is None else str(v)
+
+    data_b64 = message.get("data")
+    if not isinstance(data_b64, str) or not data_b64.strip():
+        raise ValueError("missing data")
+    try:
+        raw = base64.b64decode(data_b64, validate=True)
+    except Exception as e:
+        raise ValueError("invalid base64 data") from e
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise ValueError("invalid json payload") from e
+
+    event_type = str(attributes.get("event_type") or "").strip()
+    if not event_type and isinstance(decoded, dict):
+        event_type = str(decoded.get("event_type") or decoded.get("eventType") or "").strip()
+    event_type = event_type or "unknown"
+
+    publish_time = _parse_rfc3339(message.get("publishTime"))
+    subscription = str(body.get("subscription") or "").strip() or None
+
+    return IngestedEvent(
+        event_id=message_id,
+        message_id=message_id,
+        event_type=event_type,
+        payload=decoded,
+        attributes=attributes,
+        publish_time_utc=publish_time,
+        received_at_utc=_utc_now(),
+        subscription=subscription,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class EventStoreSummary:
+    message_count: int
+    latest_payload_by_event_type: dict[str, Any]
+
+
+class InMemoryEventStore:
+    """
+    Deterministic, process-local event store used by unit tests.
+    """
+
+    def __init__(self) -> None:
+        self._events: list[IngestedEvent] = []
+        self._latest_by_type: dict[str, Any] = {}
+
+    def write_event(self, ev: IngestedEvent) -> None:
+        self._events.append(ev)
+        self._latest_by_type[str(ev.event_type)] = ev.payload
+
+    def get_summary(self) -> EventStoreSummary:
+        return EventStoreSummary(message_count=len(self._events), latest_payload_by_event_type=dict(self._latest_by_type))
