@@ -87,11 +87,12 @@ def assert_valid_alpaca_base_url(url: str, agent_mode: AgentMode, trading_mode: 
         if hostname == "paper-api.alpaca.markets":
             # Normalize (preserve any path; just strip trailing slash).
             return raw[:-1] if raw.endswith("/") else raw
-        else:
-            raise RuntimeError(
-                f"REFUSED: TRADING_MODE='paper' requires Alpaca base URL "
-                f"to be 'https://paper-api.alpaca.markets'. Got: {raw!r}"
-            )
+        if hostname == "api.alpaca.markets":
+            raise RuntimeError(f"REFUSED: live Alpaca trading host is forbidden in paper mode: {raw!r}")
+        raise RuntimeError(
+            f"REFUSED: Alpaca base URL validation failed for mode '{agent_mode.value}' "
+            f"and trading_mode '{trading_mode}'. Got: {raw!r}"
+        )
     
     # Live mode explicit check (only if AgentMode is LIVE)
     elif trading_mode == "live" and agent_mode == AgentMode.LIVE:
