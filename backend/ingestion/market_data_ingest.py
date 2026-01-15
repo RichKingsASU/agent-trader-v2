@@ -1,6 +1,4 @@
 from backend.common.secrets import get_secret
-from backend.streams.alpaca_env import load_alpaca_env
-from backend.time.providers import normalize_alpaca_timestamp
 import os
 
 service = str(os.getenv("SERVICE_NAME", "market-data-ingest") or os.getenv("K_SERVICE") or os.getenv("AGENT_NAME") or "market-data-ingest")
