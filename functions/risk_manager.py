@@ -289,6 +289,15 @@ def _check_trade_size(
         - trading_enabled: True if trading is allowed
         - reason: Optional explanation if trading is disabled
     """
+    def _fmt_money(x: Decimal) -> str:
+        try:
+            if x == x.to_integral_value():
+                return f"{int(x):,}"
+        except Exception:
+            pass
+        s = f"{x:,.2f}"
+        return s.rstrip("0").rstrip(".")
+
     bp_dec = _as_decimal(buying_power)
     trade_dec = Decimal(str(trade_notional))
     
@@ -304,9 +313,9 @@ def _check_trade_size(
     if trade_dec > max_allowed:
         size_pct = (trade_dec / bp_dec) * Decimal("100")
         return (
-            f"KILL-SWITCH: Trade size {trade_dec} ({size_pct:.2f}% of buying power) "
-            f"exceeds maximum allowed {max_allowed} "
-            f"(5% of buying power {bp_dec})"
+            f"KILL-SWITCH: Trade size {_fmt_money(trade_dec)} ({size_pct:.2f}% of buying power) "
+            f"exceeds maximum allowed {_fmt_money(max_allowed)} "
+            f"(5% of buying power {_fmt_money(bp_dec)})"
         )
     
     return None
