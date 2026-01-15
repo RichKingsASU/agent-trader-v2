@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import os
 from urllib.parse import urlparse
-from typing import Any, Dict, Optional
+from typing import Any
 
-# Import necessary functions from backend.common.env and backend.common.secrets
-from backend.common.env import get_alpaca_api_base_url, get_alpaca_key_id, get_alpaca_secret_key
-from backend.common.secrets import get_secret # Import get_secret for consistency
+from backend.common.secrets import get_secret
 
 # Define AgentMode Enum if not already defined or imported. Assuming it's available.
 # If not, it might need a placeholder or import. For now, assuming it's available.
@@ -16,41 +14,112 @@ from backend.common.secrets import get_secret # Import get_secret for consistenc
 #     LIVE = "live"
 #     SANDBOX = "sandbox"
 
+def get_alpaca_key_id(*, required: bool = True) -> str | None:
+    """
+    Returns the Alpaca API key ID from Secret Manager (or env fallback as implemented by `get_secret`).
+
+    - Secret name: APCA_API_KEY_ID
+    - No secret access at import time (call-time only).
+    """
+    v = get_secret("APCA_API_KEY_ID", fail_if_missing=required)
+    v = str(v).strip()
+    if v == "":
+        return None
+    return v
+
+
+def get_alpaca_secret_key(*, required: bool = True) -> str | None:
+    """
+    Returns the Alpaca API secret key from Secret Manager (or env fallback as implemented by `get_secret`).
+
+    - Secret name: APCA_API_SECRET_KEY
+    - No secret access at import time (call-time only).
+    """
+    v = get_secret("APCA_API_SECRET_KEY", fail_if_missing=required)
+    v = str(v).strip()
+    if v == "":
+        return None
+    return v
+
+
+def get_alpaca_api_base_url(*, required: bool = True) -> str | None:
+    """
+    Returns the Alpaca trading API base URL from Secret Manager (or env fallback as implemented by `get_secret`).
+
+    - Secret name: APCA_API_BASE_URL
+    - Reads ALPACA_ENV only via os.getenv (no secrets involved).
+    - No secret access at import time (call-time only).
+    """
+    _ = os.getenv("ALPACA_ENV")  # read via getenv only (required by platform rules)
+    v = get_secret("APCA_API_BASE_URL", fail_if_missing=required)
+    v = str(v).strip()
+    if v == "":
+        return None
+    return v[:-1] if v.endswith("/") else v
+
+
+def assert_paper_alpaca_base_url(url: str) -> str:
+    """
+    Safety boundary: refuse any non-paper Alpaca trading host.
+
+    Allowed:
+    - https://paper-api.alpaca.markets (optionally with a path like /v2)
+
+    Forbidden:
+    - https://api.alpaca.markets (live trading host)
+    - Any non-https URL
+    - Any URL with credentials, query, fragment, or explicit non-443 port
+    """
+    raw = (str(url) if url is not None else "").strip()
+    if raw == "":
+        raise RuntimeError("Missing required Alpaca base URL (APCA_API_BASE_URL)")
+
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() != "https":
+        raise RuntimeError(f"REFUSED: Alpaca base URL must be https: {raw!r}")
+    if parsed.port not in (None, 443):
+        raise RuntimeError(f"REFUSED: Alpaca base URL must not specify a port: {raw!r}")
+    if parsed.username or parsed.password:
+        raise RuntimeError(f"REFUSED: Alpaca base URL must not include credentials: {raw!r}")
+    if parsed.query or parsed.fragment:
+        raise RuntimeError(f"REFUSED: Alpaca base URL must not include query/fragment: {raw!r}")
+
+    hostname = (parsed.hostname or "").lower()
+    if hostname != "paper-api.alpaca.markets":
+        # Keep the error message stable and explicit for downstream safeguards/tests.
+        raise RuntimeError(f"REFUSED: live Alpaca trading host is forbidden in paper mode: {raw!r}")
+
+    return raw[:-1] if raw.endswith("/") else raw
+
+
+_allow_env_secret_fallback: bool | None = None
+
+
+def _should_allow_env_fallback() -> bool:
+    """
+    Checks if environment fallback for secrets is enabled globally.
+
+    This mirrors the behavior in `backend.common.secrets.get_secret` without importing
+    any additional non-stdlib symbols.
+    """
+    global _allow_env_secret_fallback
+    if _allow_env_secret_fallback is None:
+        _allow_env_secret_fallback = os.getenv("ALLOW_ENV_SECRET_FALLBACK", "0").strip().lower() == "1"
+    return _allow_env_secret_fallback
+
+
 def _get_required(name: str, default: Any = None, *, required: bool = True) -> Any:
     """
     Reads an environment variable, falling back to Secret Manager if available.
     If required and not found, raises RuntimeError.
     """
-    # Prefer Secret Manager for sensitive values.
-    value = get_secret(name, default=default, fail_if_missing=False)
-    if value:
-        return value
-
-    # Fallback to environment variable if allowed and not found in Secret Manager.
-    # Note: Secrets like API keys should not rely on env fallback unless explicitly allowed.
-    # The get_secret function itself handles ALLOW_ENV_SECRET_FALLBACK.
-    # If get_secret returns empty and required is True, it should fail.
-    # This function is designed to wrap get_secret.
-    
-    # If get_secret didn't find it, and required is True, it should have raised or returned empty.
-    # Let's handle the 'required' flag explicitly. If we reach here and required is True,
-    # and value is still empty, it means it wasn't found via get_secret.
-    # We should check env var here as a LAST resort if get_secret failed for non-secret reasons or if fallback is enabled.
-    # However, the prompt implies ALL secrets MUST be via get_secret.
-    # So, if it's a secret name and not found via get_secret, it should fail if required.
-    
-    # Re-thinking: the prompt says "All secrets must be retrieved via get_secret()".
-    # This implies direct os.getenv calls for secrets should be replaced.
-    # _get_required is used within apca_env.py. Let's refactor it to use get_secret primarily.
-
-    # Check Secret Manager first
-    value = get_secret(name, fail_if_missing=False) # Do not fail here, handle fallback
-
-    if value:
+    # Secret Manager first (call-time only).
+    value = get_secret(name, fail_if_missing=False)
+    if value is not None and str(value).strip() != "":
         return value
 
     # If not found in Secret Manager, check environment variable (only if allowed)
-    if _should_allow_env_fallback_for_name(name): # Need a way to know if fallback is allowed for this name
+    if _should_allow_env_fallback_for_name(name):
         env_value = os.getenv(name)
         if env_value is not None and str(env_value).strip():
             return str(env_value).strip()
