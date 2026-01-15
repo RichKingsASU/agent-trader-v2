@@ -169,6 +169,17 @@ main() {
     '^[[:space:]]*replicas:[[:space:]]*[1-9]' \
     "${execution_agent_manifests[@]}"
 
+  header "Rule: forbid committed secret files / token material"
+  if ! python3 "${REPO_ROOT}/scripts/ci/check_no_committed_secrets.py"; then
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      echo "DRY-RUN: would fail: committed secret files or high-confidence token material detected." >&2
+    else
+      fail "Committed secret files or high-confidence token material detected."
+    fi
+  else
+    pass "No committed secret material detected."
+  fi
+
   header "Result"
   pass "CI safety guard passed."
 }
