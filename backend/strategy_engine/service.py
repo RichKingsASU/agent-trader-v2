@@ -20,6 +20,7 @@ enforce_agent_mode_guard()
 
 import asyncio
 import json
+import logging
 import os
 import time
 import urllib.error
