@@ -7,7 +7,7 @@ from typing import Any, DefaultDict
 from collections import defaultdict
 
 from backend.time.nyse_time import UTC, ensure_aware_utc, parse_ts, utc_now
-from backend.marketdata.candles.models import EmittedCandle
+from backend.marketdata.candles.models import Candle, EmittedCandle, Tick
 from backend.marketdata.candles.timeframe import Timeframe, bar_range_utc, parse_timeframe, parse_timeframes
 
 logger = logging.getLogger(__name__)
