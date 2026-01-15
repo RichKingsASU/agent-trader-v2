@@ -64,11 +64,13 @@ def test_alpaca_ws_auth_smoke_auth_only_no_subscriptions() -> None:
     if not _have_creds():
         pytest.skip("Missing Alpaca credentials (ALPACA_API_KEY/ALPACA_SECRET_KEY).")
 
-    feed = (os.getenv("ALPACA_DATA_FEED") or "iex").strip().lower() or "iex"
+    from backend.common.secrets import get_secret
+
+    feed = str(get_secret("ALPACA_DATA_FEED", required=False, default="iex") or "iex").strip().lower() or "iex"
     timeout_s = float(os.getenv("ALPACA_AUTH_SMOKE_TIMEOUT_S", "5"))
     asyncio.run(alpaca_ws_auth_smoke_test(feed=feed, timeout_s=timeout_s))
 
-    ws_url = os.getenv("ALPACA_DATA_STREAM_WS_URL", "").strip() or f"wss://stream.data.alpaca.markets/v2/{feed}"
+    ws_url = str(get_secret("ALPACA_DATA_STREAM_WS_URL", required=False, default="") or "").strip() or f"wss://stream.data.alpaca.markets/v2/{feed}"
     log_json(
         intent_type="alpaca_auth_smoke_test",
         severity="INFO",

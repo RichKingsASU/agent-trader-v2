@@ -36,15 +36,11 @@ logger = logging.getLogger(__name__)
 def main():
     """Run a backtest example."""
     
-    # Check for API credentials
-    if not os.getenv("APCA_API_KEY_ID") or not os.getenv("APCA_API_SECRET_KEY"):
-        logger.error(
-            "Please set APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables.\n"
-            "Example:\n"
-            "  export APCA_API_KEY_ID='your_key'\n"
-            "  export APCA_API_SECRET_KEY='your_secret'"
-        )
-        sys.exit(1)
+    from backend.common.secrets import get_secret
+
+    # Fail loudly and early if secrets are missing.
+    _ = get_secret("APCA_API_KEY_ID", required=True)
+    _ = get_secret("APCA_API_SECRET_KEY", required=True)
     
     print("\n" + "="*70)
     print("STRATEGY BACKTESTING - QUICK START EXAMPLE")

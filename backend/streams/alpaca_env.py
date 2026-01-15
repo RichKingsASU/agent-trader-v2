@@ -81,7 +81,9 @@ def load_alpaca_env(*, require_keys: bool = True) -> AlpacaEnv:
     secret_key = get_alpaca_secret_key(required=require_keys)
 
     trading_host = _norm_host(get_alpaca_api_base_url(required=require_keys) or "https://paper-api.alpaca.markets")
-    data_host = _norm_host(os.getenv("ALPACA_DATA_HOST", "https://data.alpaca.markets"))
+    from backend.common.secrets import get_secret
+
+    data_host = _norm_host(get_secret("ALPACA_DATA_HOST", required=False, default="https://data.alpaca.markets"))
 
     # If keys are optional, return empty strings to simplify callers.
     return AlpacaEnv(

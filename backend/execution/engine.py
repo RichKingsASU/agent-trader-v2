@@ -38,9 +38,17 @@ DEFAULT_BUDGET_CACHE_S = 60.0
 # --- Execution Engine Configuration ---
 class ExecutionEngineConfig:
     def __init__(self, **kwargs: Any) -> None:
-        # Use get_secret for tenant_id and uid, with fallbacks if necessary but prioritizing secrets.
-        self.tenant_id: Optional[str] = kwargs.get("tenant_id") or get_secret("EXEC_TENANT_ID", fail_if_missing=False) or get_secret("TENANT_ID", fail_if_missing=False)
-        self.uid: Optional[str] = kwargs.get("uid") or get_secret("EXEC_UID", fail_if_missing=False) or get_secret("USER_ID", fail_if_missing=False)
+        # Runtime identifiers (not secrets).
+        self.tenant_id: Optional[str] = (
+            kwargs.get("tenant_id")
+            or (str(os.getenv("EXEC_TENANT_ID") or "").strip() or None)
+            or (str(os.getenv("TENANT_ID") or "").strip() or None)
+        )
+        self.uid: Optional[str] = (
+            kwargs.get("uid")
+            or (str(os.getenv("EXEC_UID") or "").strip() or None)
+            or (str(os.getenv("USER_ID") or "").strip() or None)
+        )
 
         self.agent_name: str = kwargs.get("agent_name", "execution-engine")
         self.agent_role: str = kwargs.get("agent_role", "execution")
@@ -78,7 +86,10 @@ class ExecutionEngineConfig:
         self.max_future_skew_s = float(os.getenv("STRATEGY_EVENT_MAX_FUTURE_SKEW_SECONDS") or "5")
 
         self.postgres_url = get_secret("DATABASE_URL", fail_if_missing=True) # Treat as secret
-        self.firestore_project_id = get_secret("FIREBASE_PROJECT_ID", fail_if_missing=True) # Treat as secret
+        # Firestore project id is runtime configuration (not a secret).
+        self.firestore_project_id = str(os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
+        if not self.firestore_project_id:
+            raise RuntimeError("Missing required env var: FIREBASE_PROJECT_ID (or GOOGLE_CLOUD_PROJECT)")
         self.firestore_emulator_host = os.getenv("FIRESTORE_EMULATOR_HOST") # Config, not secret
 
         self.idempotency_ttl_minutes = int(os.getenv("INTENT_TTL_MINUTES") or "5")

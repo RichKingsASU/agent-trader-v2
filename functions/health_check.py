@@ -8,16 +8,15 @@ from functions.utils.apca_env import assert_paper_alpaca_base_url
 def check_alpaca():
     """Checks the connection to Alpaca."""
     print("Checking Alpaca connection...")
-    if not os.environ.get('APCA_API_KEY_ID') or not os.environ.get('APCA_API_SECRET_KEY'):
-        print("Alpaca API keys not found. Please set the APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables.")
-        return False
     try:
+        from backend.common.secrets import get_secret
+
         base_url = assert_paper_alpaca_base_url(
-            os.environ.get("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
+            get_secret("APCA_API_BASE_URL", required=False, default="https://paper-api.alpaca.markets")
         )
         api = tradeapi.REST(
-            os.environ.get('APCA_API_KEY_ID'),
-            os.environ.get('APCA_API_SECRET_KEY'),
+            get_secret("APCA_API_KEY_ID", required=True),
+            get_secret("APCA_API_SECRET_KEY", required=True),
             base_url=base_url,
             api_version='v2'
         )

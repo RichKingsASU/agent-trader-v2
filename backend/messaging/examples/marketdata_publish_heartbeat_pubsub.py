@@ -1,4 +1,3 @@
-from backend.common.secrets import get_secret
 from google.cloud import pubsub_v1
 import os
 import json
@@ -8,6 +7,7 @@ from typing import Any, Dict, Optional
 
 # Import necessary components from backend.common.logging
 from backend.common.logging import init_structured_logging, log_standard_event
+from backend.common.env import get_env
 
 # Shared constants
 SERVICE_NAME = os.getenv("SERVICE_NAME", "marketdata-pubsub-publisher")
@@ -17,16 +17,18 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 init_structured_logging(service=SERVICE_NAME, env=ENV, level=LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
-# Load configuration from environment variables, prioritizing Secret Manager
-PROJECT_ID = get_secret("PUBSUB_PROJECT_ID", fail_if_missing=True)
-TOPIC_ID = get_secret("PUBSUB_TOPIC_ID", fail_if_missing=True)
-
 HEARTBEAT_LOG_INTERVAL_S = float(os.getenv("OPS_HEARTBEAT_LOG_INTERVAL_S", "60"))
 # ─────────────────────────────────────────────────────────────
 # Pub/Sub Publisher client initialization
 # ─────────────────────────────────────────────────────────────
 publisher = pubsub_v1.PublisherClient()
-topic_path = publisher.topic_path(PROJECT_ID, TOPIC_ID)
+
+
+def _topic_path() -> str:
+    # Runtime config only (not a secret). Resolve at runtime to avoid import-time access.
+    project_id = get_env("PUBSUB_PROJECT_ID", required=True)
+    topic_id = get_env("PUBSUB_TOPIC_ID", required=True)
+    return publisher.topic_path(project_id, topic_id)
 
 def _publish_message(
     message: Dict[str, Any],
@@ -35,7 +37,7 @@ def _publish_message(
 ) -> str:
     """Publishes a message to Pub/Sub."""
     data = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    future = publisher.publish(topic_path, data, **(attributes or {}))
+    future = publisher.publish(_topic_path(), data, **(attributes or {}))
     return future.result(timeout=max(0.0, float(timeout_s)))
 
 def publish_heartbeat(

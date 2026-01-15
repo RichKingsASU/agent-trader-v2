@@ -31,20 +31,18 @@ def main():
         print("ERROR: DATABASE_URL is missing and essential for operation.")
         exit(1)
 
-    api_key = os.getenv("APCA_API_KEY_ID")
-    secret_key = os.getenv("APCA_API_SECRET_KEY")
+    api_key = get_secret("APCA_API_KEY_ID", required=True)
+    secret_key = get_secret("APCA_API_SECRET_KEY", required=True)
     # Safety: if a base URL is configured, it must be paper-only.
     try:
         from backend.common.env import assert_paper_alpaca_base_url  # type: ignore
 
-        _ = assert_paper_alpaca_base_url(os.getenv("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets")
+        _ = assert_paper_alpaca_base_url(
+            get_secret("APCA_API_BASE_URL", required=False, default="https://paper-api.alpaca.markets")
+        )
     except Exception as e:
         print(f"REFUSED: invalid Alpaca trading base URL: {e}")
         exit(2)
-
-    if not api_key or not secret_key:
-        print("ERROR: APCA_API_KEY_ID and APCA_API_SECRET_KEY must be set in .env.local.")
-        exit(1)
 
     print("--> Inserting test order into DB: SPY BUY 1 Qty")
     try:

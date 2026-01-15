@@ -10,6 +10,7 @@ from backend.common.env import (
     get_alpaca_secret_key,
 )
 from backend.common.agent_mode import AgentMode, get_agent_mode
+from backend.common.secrets import get_secret
 
 
 @dataclass(frozen=True)
@@ -20,10 +21,7 @@ class ApcaEnv:
 
 
 def _get_required(name: str) -> str:
-    v = os.environ.get(name)
-    if v is None or str(v).strip() == "":
-        raise RuntimeError(f"Missing required env var: {name}")
-    return str(v).strip()
+    return get_secret(name, required=True)
 
 
 def get_apca_env() -> ApcaEnv:
@@ -34,7 +32,10 @@ def get_apca_env() -> ApcaEnv:
     secret_key = _get_required("APCA_API_SECRET_KEY")
     base_url = _get_required("APCA_API_BASE_URL")
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
-    
+
+    agent_mode = get_agent_mode()
+    trading_mode = str(os.getenv("TRADING_MODE") or "paper").strip().lower() or "paper"
+
     base_url = assert_valid_alpaca_base_url(
         url=base_url,
         agent_mode=agent_mode,

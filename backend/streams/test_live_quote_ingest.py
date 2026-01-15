@@ -1,26 +1,24 @@
-# agenttrader/backend/streams/test_live_quote_ingest.py
+import logging
 import os
-import requests
-import psycopg
 from datetime import datetime
-# from dotenv import load_dotenv
-# load_dotenv() # Load environment variables from .env.local
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("Missing required env var: DATABASE_URL")
-alpaca = load_alpaca_env()
-API_KEY = alpaca.key_id
-SECRET_KEY = alpaca.secret_key
-SYMBOLS_STR = os.getenv("ALPACA_SYMBOLS", "SPY") # Test with one symbol for speed
-SYMBOLS = [s.strip() for s in SYMBOLS_STR.split(',')]
 
-def fetch_latest_quote(symbol: str):
+import psycopg
+import requests
+
+from backend.common.secrets import get_secret
+from backend.streams.alpaca_env import load_alpaca_env
+from backend.time.providers import normalize_alpaca_timestamp
+from backend.utils.session import get_market_session
+
+logger = logging.getLogger(__name__)
+
+def fetch_latest_quote(*, symbol: str, alpaca: object, api_key: str, secret_key: str):
     """Fetches the latest quote for a symbol from Alpaca."""
     url = f"{alpaca.data_stocks_base_v2}/{symbol}/quotes/latest"
     try:
         r = requests.get(
             url,
-            headers={"APCA-API-KEY-ID": API_KEY, "APCA-API-SECRET-KEY": SECRET_KEY},
+            headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": secret_key},
             timeout=10,
         )
         r.raise_for_status()
@@ -36,7 +34,8 @@ def main():
     """Fetches a single quote and upserts it to trigger a realtime event."""
     logger.info("Running test quote ingest", extra={"event_type": "test_quote_ingest.start"})
     try:
-        conn = psycopg.connect(DATABASE_URL)
+        db_url = get_secret("DATABASE_URL", required=True)
+        conn = psycopg.connect(db_url)
     except psycopg.OperationalError as e:
         logger.critical(
             "Could not connect to database",
@@ -44,8 +43,14 @@ def main():
         )
         return
 
-    symbol_to_test = SYMBOLS[0]
-    quote = fetch_latest_quote(symbol_to_test)
+    alpaca = load_alpaca_env()
+    symbol_to_test = (os.getenv("ALPACA_SYMBOLS", "SPY").split(",")[0] or "SPY").strip().upper()
+    quote = fetch_latest_quote(
+        symbol=symbol_to_test,
+        alpaca=alpaca,
+        api_key=alpaca.key_id,
+        secret_key=alpaca.secret_key,
+    )
 
     if not quote:
         logger.warning(

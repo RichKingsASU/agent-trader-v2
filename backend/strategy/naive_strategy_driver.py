@@ -12,14 +12,20 @@ from backend.common.freshness import check_freshness, stale_after_for_bar_interv
 init_structured_logging(service="naive-strategy-driver")
 logger = logging.getLogger(__name__)
 
-# --- Configuration ---
-DB_URL = os.getenv("DATABASE_URL")
-if not DB_URL:
-    logger.critical(
-        "DATABASE_URL missing; refusing to start",
-        extra={"event_type": "config.missing", "missing": ["DATABASE_URL"]},
-    )
-    sys.exit(1)
+_DB_URL: str | None = None
+
+
+def _get_db_url() -> str:
+    """
+    Resolve DATABASE_URL at runtime (never at import time).
+    """
+
+    global _DB_URL
+    if _DB_URL is None:
+        from backend.common.secrets import get_secret
+
+        _DB_URL = get_secret("DATABASE_URL", required=True)
+    return _DB_URL
 
 def get_last_n_bars(symbol: str, n: int, session: str = 'REGULAR'):
     """Fetches the last N bars for a symbol from the database."""
@@ -28,7 +34,7 @@ def get_last_n_bars(symbol: str, n: int, session: str = 'REGULAR'):
         extra={"event_type": "bars.fetch", "symbol": symbol, "n": n, "session": session},
     )
     try:
-        with psycopg2.connect(DB_URL) as conn:
+        with psycopg2.connect(_get_db_url()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """

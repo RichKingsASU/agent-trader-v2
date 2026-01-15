@@ -162,7 +162,9 @@ class QuiverQuantitativeClient:
     BASE_URL = "https://api.quiverquant.com/beta"
     
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("QUIVER_API_KEY")
+        from backend.common.secrets import get_secret
+
+        self.api_key = api_key or get_secret("QUIVER_API_KEY", required=False, default="")
         if not self.api_key:
             logger.warning("QUIVER_API_KEY not set. Using mock data mode.")
         

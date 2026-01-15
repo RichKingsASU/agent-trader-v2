@@ -8,10 +8,9 @@ import psycopg
 
 
 def get_db_url() -> str:
-    url = os.getenv("DATABASE_URL")
-    if not url:
-        raise RuntimeError("DATABASE_URL env var is not set")
-    return url
+    from backend.common.secrets import get_secret
+
+    return get_secret("DATABASE_URL", required=True)
 
 
 def build_raw_order(logical_order: dict) -> dict:

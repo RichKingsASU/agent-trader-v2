@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from backend.common.secrets import get_secret
+
 
 @dataclass(frozen=True)
 class NewsIngestConfig:
@@ -38,6 +40,7 @@ def _env(name: str, default: str | None = None) -> str | None:
 def from_env() -> NewsIngestConfig:
     data_root = Path(_env("DATA_PLANE_ROOT", "data") or "data")
     cursor_path = Path(_env("NEWS_INGEST_CURSOR_PATH", str(data_root / "news" / "cursor.json")) or "")
+    api_key = str(get_secret("NEWS_API_KEY", required=False, default="") or "").strip() or None
     return NewsIngestConfig(
         poll_interval_s=float(_env("NEWS_INGEST_POLL_INTERVAL_S", "30") or "30"),
         max_events_per_poll=int(_env("NEWS_INGEST_MAX_EVENTS_PER_POLL", "200") or "200"),
@@ -45,6 +48,6 @@ def from_env() -> NewsIngestConfig:
         cursor_path=cursor_path,
         source=_env("NEWS_INGEST_SOURCE", "news-api-stub") or "news-api-stub",
         api_base_url=_env("NEWS_API_BASE_URL", "https://example.invalid") or "https://example.invalid",
-        api_key=_env("NEWS_API_KEY", None),
+        api_key=api_key,
     )
 

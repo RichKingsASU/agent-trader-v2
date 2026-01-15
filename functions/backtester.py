@@ -229,9 +229,11 @@ class Backtester:
         else:
             self.start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
         
-        # Alpaca client
-        api_key = alpaca_api_key or os.getenv("APCA_API_KEY_ID")
-        secret_key = alpaca_secret_key or os.getenv("APCA_API_SECRET_KEY")
+        from backend.common.secrets import get_secret
+
+        # Alpaca client (secrets resolved via backend.common.secrets)
+        api_key = alpaca_api_key or get_secret("APCA_API_KEY_ID", required=True)
+        secret_key = alpaca_secret_key or get_secret("APCA_API_SECRET_KEY", required=True)
         
         if not api_key or not secret_key:
             raise ValueError(

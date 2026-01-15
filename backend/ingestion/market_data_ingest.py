@@ -1,4 +1,4 @@
-from backend.common.secrets import get_secret
+from backend.common.env import get_env
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.time.providers import normalize_alpaca_timestamp
 import os
@@ -12,54 +12,27 @@ max_attempts = int(os.getenv("RECONNECT_MAX_ATTEMPTS", "5"))
 min_sleep_s = float(os.getenv("RECONNECT_MIN_SLEEP_S", "0.5"))
 ingest_poll_s = float(os.getenv("INGEST_ENABLED_POLL_S", "5"))
 
-# Project ID retrieval: prioritize secrets, then fall back to env vars.
-project_id = get_secret("FIRESTORE_PROJECT_ID", fail_if_missing=False)
-if not project_id:
-    project_id = get_secret("GCP_PROJECT", fail_if_missing=False)
-if not project_id:
-    project_id = get_secret("GOOGLE_CLOUD_PROJECT", fail_if_missing=False)
+# Project id is runtime configuration (not a secret).
+project_id = (
+    get_env("FIRESTORE_PROJECT_ID")
+    or get_env("FIREBASE_PROJECT_ID")
+    or get_env("GCP_PROJECT")
+    or get_env("GOOGLE_CLOUD_PROJECT")
+)
 
-# If project ID is still missing after checking secrets, use environment variables as a last resort config.
-if not project_id:
-    project_id = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or ""
+# Pub/Sub project id is runtime configuration (not a secret).
+pubsub_project_id = (
+    get_env("PUBSUB_PROJECT_ID")
+    or get_env("GCP_PROJECT")
+    or get_env("GOOGLE_CLOUD_PROJECT")
+)
 
-# Pub/Sub Project ID retrieval: prioritize secrets, then fall back to env vars.
-# This is slightly different from above as it has a specific fallback for PUBSUB_PROJECT_ID if available.
-pubsub_project_id = get_secret("PUBSUB_PROJECT_ID", fail_if_missing=False)
-if not pubsub_project_id:
-    # Fallback using common project ID sources if PUBSUB_PROJECT_ID secret is missing.
-    pubsub_project_id = get_secret("FIRESTORE_PROJECT_ID", fail_if_missing=False) # Fallback if PUBSUB_PROJECT_ID secret is missing
-if not pubsub_project_id:
-    pubsub_project_id = get_secret("GCP_PROJECT", fail_if_missing=False) # Fallback to GCP_PROJECT secret
-if not pubsub_project_id:
-    pubsub_project_id = get_secret("GOOGLE_CLOUD_PROJECT", fail_if_missing=False) # Fallback to GOOGLE_CLOUD_PROJECT secret
-
-# If project ID is still missing after checking secrets, use env var as last resort config.
-if not pubsub_project_id:
-    pubsub_project_id = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or ""
-
-topic_id = get_secret("MARKET_BARS_1M_TOPIC_ID", fail_if_missing=True)
+topic_id = get_env("MARKET_BARS_1M_TOPIC_ID", required=True)
 event_type = (os.getenv("MARKET_BARS_1M_EVENT_TYPE") or "market.bars.1m").strip()
 interval_s = float(os.getenv("SYNTHETIC_BAR_INTERVAL_S") or "5")
 base_px = float(os.getenv("SYNTHETIC_BASE_PRICE") or "500.0")
 
-# Pub/Sub Project ID retrieval
-# Check secrets first, then fall back to env vars.
-# NOTE: In a strict interpretation, even project IDs should be secrets.
-# However, get_firebase_project_id in env.py already handles this with get_secret fallbacks.
-# For consistency and clarity, explicitly use get_secret here.
-project_id_for_pubsub = get_secret("PUBSUB_PROJECT_ID", fail_if_missing=False)
-if not project_id_for_pubsub:
-    # Fallback using common project ID sources if PUBSUB_PROJECT_ID secret is missing.
-    project_id_for_pubsub = get_secret("FIRESTORE_PROJECT_ID", fail_if_missing=False) # Fallback if PUBSUB_PROJECT_ID secret is missing
-if not project_id_for_pubsub:
-    project_id_for_pubsub = get_secret("GCP_PROJECT", fail_if_missing=False) # Fallback to GCP_PROJECT secret
-if not project_id_for_pubsub:
-    project_id_for_pubsub = get_secret("GOOGLE_CLOUD_PROJECT", fail_if_missing=False) # Fallback to GOOGLE_CLOUD_PROJECT secret
-
-# If project ID is still missing after checking secrets, use env var as last resort config.
-if not project_id_for_pubsub:
-    project_id_for_pubsub = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or ""
+project_id_for_pubsub = pubsub_project_id
 
 if not project_id_for_pubsub:
     # Project ID is required for Pub/Sub operations.

@@ -49,8 +49,19 @@ import requests
 # Task requirements: contracts from trading base; snapshots from Alpaca data host.
 from backend.common.env import get_alpaca_api_base_url
 
-TRADING_BASE = get_alpaca_api_base_url(required=True)
+TRADING_BASE: str | None = None
 DATA_BASE = "https://data.alpaca.markets"
+
+
+def _get_trading_base() -> str:
+    """
+    Resolve trading base at runtime (never at import time).
+    """
+
+    global TRADING_BASE
+    if TRADING_BASE is None:
+        TRADING_BASE = get_alpaca_api_base_url(required=True)
+    return TRADING_BASE
 
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.agent_mode_guard import enforce_agent_mode_guard
@@ -549,9 +560,12 @@ def main() -> int:
         pass
 
     cfg = load_config()
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        logger.error("DATABASE_URL is required")
+    try:
+        from backend.common.secrets import get_secret
+
+        db_url = get_secret("DATABASE_URL", required=True)
+    except Exception:
+        logger.exception("DATABASE_URL is required")
         return 2
 
     alpaca = load_alpaca_env(require_keys=True)
@@ -598,7 +612,7 @@ def main() -> int:
             )
 
             contracts = fetch_option_contracts(
-                trading_host=TRADING_BASE,
+                trading_host=_get_trading_base(),
                 headers=hdrs,
                 underlying=underlying,
                 exp_gte=today,

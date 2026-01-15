@@ -1,4 +1,3 @@
-from backend.common.secrets import get_secret
 from backend.common.logging import init_structured_logging, log_standard_event
 from backend.common.timeutils import normalize_alpaca_timestamp
 from backend.common.pubsub_publisher import PubsubPublisher
@@ -27,10 +26,13 @@ logger = logging.getLogger(__name__)
 
 # Secrets and configuration
 mode = (os.getenv("EVENT_STORE") or "").strip().lower()
-project_id = get_secret("FIREBASE_PROJECT_ID", fail_if_missing=False) or get_secret("GOOGLE_CLOUD_PROJECT", fail_if_missing=False)
-if not project_id:
-    # Fallback to non-secret env vars if secrets are not found.
-    project_id = os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or None
+project_id = (
+    os.getenv("FIREBASE_PROJECT_ID")
+    or os.getenv("FIRESTORE_PROJECT_ID")
+    or os.getenv("GOOGLE_CLOUD_PROJECT")
+    or os.getenv("GCP_PROJECT")
+    or None
+)
 
 if not project_id:
     raise RuntimeError("Project ID is required but not found in secrets or environment.")

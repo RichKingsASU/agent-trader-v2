@@ -1,4 +1,3 @@
-from backend.common.secrets import get_secret
 from google.cloud import pubsub_v1
 import os
 import json
@@ -8,6 +7,7 @@ from typing import Any, Dict, Optional
 
 # Import necessary components from backend.common.logging
 from backend.common.logging import init_structured_logging, log_standard_event
+from backend.common.env import get_env
 
 # Shared constants
 SERVICE_NAME = os.getenv("SERVICE_NAME", "strategy-engine-heartbeat-subscriber")
@@ -17,16 +17,17 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 init_structured_logging(service=SERVICE_NAME, env=ENV, level=LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
-# Load configuration from environment variables, prioritizing Secret Manager
-PROJECT_ID = get_secret("PUBSUB_PROJECT_ID", fail_if_missing=True)
-SUBSCRIPTION_ID = get_secret("PUBSUB_SUBSCRIPTION_ID", fail_if_missing=True)
-
 HEARTBEAT_LOG_INTERVAL_S = float(os.getenv("OPS_HEARTBEAT_LOG_INTERVAL_S", "60"))
 # ─────────────────────────────────────────────────────────────
 # Pub/Sub Subscriber client initialization
 # ─────────────────────────────────────────────────────────────
 subscriber = pubsub_v1.SubscriberClient()
-subscription_path = subscriber.subscription_path(PROJECT_ID, SUBSCRIPTION_ID)
+
+
+def _subscription_path() -> str:
+    project_id = get_env("PUBSUB_PROJECT_ID", required=True)
+    subscription_id = get_env("PUBSUB_SUBSCRIPTION_ID", required=True)
+    return subscriber.subscription_path(project_id, subscription_id)
 
 def _process_message(message: Any, data: bytes) -> None:
     """Processes a single Pub/Sub message."""
@@ -54,6 +55,7 @@ def _process_message(message: Any, data: bytes) -> None:
 
 async def subscribe_heartbeats() -> None:
     """Subscribes to the Pub/Sub topic and processes heartbeat messages."""
+    subscription_path = _subscription_path()
     logger.info(f"Subscribing to subscription: {subscription_path}")
     try:
         streaming_pull_response = subscriber.subscribe(subscription_path, callback=_process_message)

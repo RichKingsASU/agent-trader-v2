@@ -8,9 +8,7 @@ import yfinance as yf
 from functions.utils.apca_env import assert_paper_alpaca_base_url
 
 # --- Configuration ---
-API_KEY = os.environ.get('APCA_API_KEY_ID')
-API_SECRET = os.environ.get('APCA_API_SECRET_KEY')
-BASE_URL = os.environ.get('APCA_API_BASE_URL') or "https://paper-api.alpaca.markets"
+api = None  # initialized at runtime in main()
 
 
 def _require_enable_dangerous_functions() -> None:
@@ -24,11 +22,6 @@ def _require_enable_dangerous_functions() -> None:
             "Set ENABLE_DANGEROUS_FUNCTIONS=true to proceed."
         )
 
-
-_require_enable_dangerous_functions()
-BASE_URL = assert_paper_alpaca_base_url(BASE_URL)
-# --- Initialize Alpaca API ---
-api = tradeapi.REST(API_KEY, API_SECRET, base_url=BASE_URL, api_version='v2')
 
 # --- Strategy Parameters ---
 DELTA_THRESHOLD = 0.15
@@ -100,6 +93,21 @@ def check_stop_loss():
 def main():
     """Main function for the Gamma Scalper strategy."""
     print("Starting 0DTE Gamma Scalper Strategy...")
+
+    from backend.common.secrets import get_secret
+
+    _require_enable_dangerous_functions()
+    base_url = assert_paper_alpaca_base_url(
+        get_secret("APCA_API_BASE_URL", required=False, default="https://paper-api.alpaca.markets")
+    )
+
+    global api
+    api = tradeapi.REST(
+        get_secret("APCA_API_KEY_ID", required=True),
+        get_secret("APCA_API_SECRET_KEY", required=True),
+        base_url=base_url,
+        api_version="v2",
+    )
 
     if not regime_filter():
         print("Regime filter not met (SPY is not above 200-day SMA). Exiting.")

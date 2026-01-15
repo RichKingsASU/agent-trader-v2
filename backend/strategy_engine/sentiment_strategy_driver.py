@@ -29,7 +29,7 @@ from datetime import date, datetime, timezone, timedelta
 from typing import List
 from uuid import uuid4
 
-from backend.strategy_engine.config import config
+from backend.strategy_engine.config import get_config
 from backend.strategy_engine.news_fetcher import (
     fetch_news_by_symbol,
     filter_news_by_relevance
@@ -405,7 +405,7 @@ Examples:
     if args.symbols:
         symbols = [s.strip() for s in args.symbols.split(",")]
     else:
-        symbols = config.STRATEGY_SYMBOLS
+        symbols = get_config().strategy_symbols
     
     if not symbols:
         logger.error("No symbols specified. Set STRATEGY_SYMBOLS env var or use --symbols")

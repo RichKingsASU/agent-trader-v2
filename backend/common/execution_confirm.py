@@ -16,11 +16,20 @@ from google.cloud import firestore
 from backend.common.logging import init_structured_logging, log_standard_event
 from backend.observability.correlation import bind_correlation_id, get_or_create_correlation_id
 
-# --- Shared constants ---
-# Used for confirming execution via token.
-expected = str(get_secret("EXECUTION_CONFIRM_TOKEN", default="")).strip()
+_expected_token: str | None = None
+
+
+def _get_expected_token() -> str:
+    """
+    Resolve the expected execution confirm token at runtime (never at import time).
+    """
+
+    global _expected_token
+    if _expected_token is None:
+        _expected_token = str(get_secret("EXECUTION_CONFIRM_TOKEN", required=False, default="")).strip()
+    return _expected_token
 
 
 def is_execution_confirmed(token: str) -> bool:
     """Checks if the provided token matches the expected token."""
-    return token == expected
+    return token == _get_expected_token()

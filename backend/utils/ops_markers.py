@@ -16,8 +16,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
-
-DATABASE_URL = os.getenv("DATABASE_URL")
 logger = logging.getLogger(__name__)
 
 _SHUTDOWN_EVENT = threading.Event()
@@ -81,7 +79,12 @@ class OpsDB:
     """
 
     def __init__(self, database_url: Optional[str] = None):
-        self.database_url = database_url or DATABASE_URL
+        if database_url is None:
+            from backend.common.secrets import get_secret
+
+            database_url = get_secret("DATABASE_URL", required=True)
+
+        self.database_url = database_url
         if not self.database_url:
             raise RuntimeError("DATABASE_URL is not set")
 

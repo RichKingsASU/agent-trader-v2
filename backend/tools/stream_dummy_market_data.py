@@ -12,9 +12,7 @@ import psycopg
 
 from backend.common.logging import init_structured_logging
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL env var is not set")
+from backend.common.secrets import get_secret
 
 SYMBOL = "SPY"
 logger = logging.getLogger(__name__)
@@ -47,7 +45,8 @@ def main() -> None:
             except Exception:
                 pass
 
-    with psycopg.connect(DATABASE_URL) as conn:
+    db_url = get_secret("DATABASE_URL", required=True)
+    with psycopg.connect(db_url) as conn:
         iteration = 0
         while not _SHUTDOWN_EVENT.is_set():
             iteration += 1

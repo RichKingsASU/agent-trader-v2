@@ -155,9 +155,11 @@ def run_backtest(req: https_fn.CallableRequest) -> Dict[str, Any]:
             slippage_bps=backtest_config_dict.get("slippage_bps", 1)
         )
         
-        # Get Alpaca credentials
-        alpaca_key = os.environ.get("APCA_API_KEY_ID")
-        alpaca_secret = os.environ.get("APCA_API_SECRET_KEY")
+        from backend.common.secrets import get_secret
+
+        # Get Alpaca credentials (secrets resolved via backend.common.secrets)
+        alpaca_key = get_secret("APCA_API_KEY_ID", required=True)
+        alpaca_secret = get_secret("APCA_API_SECRET_KEY", required=True)
         
         if not alpaca_key or not alpaca_secret:
             # Try to get user-specific keys from Firestore

@@ -1,4 +1,4 @@
-from backend.common.secrets import get_secret
+from backend.common.env import get_env
 import os
 import json
 import time
@@ -23,23 +23,35 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 init_structured_logging(service=SERVICE_NAME, env=ENV, level=LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
-# GCP Project ID, Pub/Sub Topic IDs, and other credentials are required.
-# These are configured via environment variables, but should be fetched from Secret Manager.
-config_module = Config(
-    gcp_project_id=get_secret("GCP_PROJECT", fail_if_missing=True),
-    system_events_topic_id=get_secret("SYSTEM_EVENTS_TOPIC", fail_if_missing=True),
-    market_ticks_topic_id=get_secret("MARKET_TICKS_TOPIC", fail_if_missing=True),
-    market_bars_1m_topic_id=get_secret("MARKET_BARS_1M_TOPIC", fail_if_missing=True),
-    trade_signals_topic_id=get_secret("TRADE_SIGNALS_TOPIC", fail_if_missing=True),
-    ingest_flag_secret_id=get_secret("INGEST_FLAG_SECRET_ID", fail_if_missing=True),
-)
+_config_module: Config | None = None
 
-# Enforcement logic for INGEST_FLAG_SECRET_ID (Task 2, Option A)
-ingest_flag_secret = config_module.ingest_flag_secret_id # Use the value obtained via get_secret
-if ingest_flag_secret.lower() != "enabled":
-    # If the flag is missing (handled by fail_if_missing=True in get_secret) or its value is not "enabled",
-    # hard fail at startup as per requirement.
-    raise RuntimeError(f"Ingestion is disabled: INGEST_FLAG_SECRET_ID is set to '{ingest_flag_secret}', but requires 'enabled'.")
+
+def get_config_module() -> Config:
+    """
+    Resolve Cloud Run ingestor runtime configuration at runtime (never at import time).
+    """
+
+    global _config_module
+    if _config_module is not None:
+        return _config_module
+
+    cfg = Config(
+        gcp_project_id=get_env("GCP_PROJECT", required=True),
+        system_events_topic_id=get_env("SYSTEM_EVENTS_TOPIC", required=True),
+        market_ticks_topic_id=get_env("MARKET_TICKS_TOPIC", required=True),
+        market_bars_1m_topic_id=get_env("MARKET_BARS_1M_TOPIC", required=True),
+        trade_signals_topic_id=get_env("TRADE_SIGNALS_TOPIC", required=True),
+        ingest_flag_secret_id=get_env("INGEST_FLAG_SECRET_ID", required=True),
+    )
+
+    # Enforcement logic for INGEST_FLAG_SECRET_ID: hard fail unless explicitly enabled.
+    if str(cfg.ingest_flag_secret_id).strip().lower() != "enabled":
+        raise RuntimeError(
+            f"Ingestion is disabled: INGEST_FLAG_SECRET_ID is set to {cfg.ingest_flag_secret_id!r}, requires 'enabled'."
+        )
+
+    _config_module = cfg
+    return cfg
 
 # These environment variables are used only for runtime configuration and not secrets.
 # They are not fetched from Secret Manager.

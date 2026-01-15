@@ -307,7 +307,9 @@ def state(request: Request) -> dict[str, Any]:
     - Other agents/services MUST NOT depend on it.
     - It is disabled unless `EXEC_AGENT_ADMIN_KEY` is explicitly configured.
     """
-    required = str(os.getenv("EXEC_AGENT_ADMIN_KEY") or "").strip()
+    from backend.common.secrets import get_secret
+
+    required = str(get_secret("EXEC_AGENT_ADMIN_KEY", required=False, default="") or "").strip()
     if not required:
         # Hide the endpoint unless explicitly enabled.
         raise HTTPException(status_code=404, detail="not_found")
@@ -372,7 +374,9 @@ def recover(request: Request) -> dict[str, Any]:
     If EXEC_AGENT_ADMIN_KEY is set, callers must provide matching header:
       X-Exec-Agent-Key: <key>
     """
-    required = str(os.getenv("EXEC_AGENT_ADMIN_KEY") or "").strip()
+    from backend.common.secrets import get_secret
+
+    required = str(get_secret("EXEC_AGENT_ADMIN_KEY", required=False, default="") or "").strip()
     if required:
         provided = str(request.headers.get("X-Exec-Agent-Key") or "").strip()
         if provided != required:

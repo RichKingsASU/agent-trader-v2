@@ -1,37 +1,37 @@
-from backend.common.secrets import get_secret, get_alpaca_equities_feed, get_alpaca_options_feed
-from backend.common.env import get_alpaca_api_base_url, get_alpaca_key_id, get_alpaca_secret_key, get_env
-from backend.streams.alpaca_env import load_alpaca_env
-from backend.common.config import _parse_bool # Assuming _parse_bool is available or defined elsewhere if not standard
-from typing import Dict, Any, Tuple, List, Optional
+"""
+Alpaca options window ingest (entrypoint).
+
+This module intentionally avoids resolving secrets at import time.
+"""
+
+from __future__ import annotations
+
 import os
 
-TRADING_BASE = get_alpaca_api_base_url(required=True)
-alpaca_paper: Optional[bool] = None
+from backend.common.env import get_alpaca_api_base_url, get_alpaca_key_id, get_alpaca_secret_key
+from backend.common.secrets import get_alpaca_equities_feed, get_alpaca_options_feed, get_secret
 
-# Fetch explicit equities and options feeds from secrets.
-equities_feed_secret = get_alpaca_equities_feed()
-options_feed_secret = get_alpaca_options_feed() # This will be None if only equities feed is found.
 
-# Determine feed to use for options chain.
-# Priority: options_feed secret, then fallback to env var or default 'indicative'.
-# If only equities feed is found (handled by get_alpaca_equities_feed), options_feed_secret will be None.
-feed = options_feed_secret
-if not feed:
-    # Fallback to env var or default if options_feed secret is missing.
-    feed = os.getenv("ALPACA_OPTIONS_FEED", "indicative")
+def main() -> None:
+    _ = get_alpaca_key_id(required=True)
+    _ = get_alpaca_secret_key(required=True)
 
-feed = str(feed).strip().lower() or "indicative" # Ensure it's lowercased and not empty
+    trading_base = get_alpaca_api_base_url(required=False)
+    equities_feed = get_alpaca_equities_feed()
+    options_feed = get_alpaca_options_feed()
 
-stock_feed = os.getenv("ALPACA_STOCK_FEED", "iex").strip().lower() if os.getenv("ALPACA_STOCK_FEED") else "iex"
+    feed = (options_feed or "indicative").strip().lower() or "indicative"
+    _fallback = get_secret("ALPACA_OPTIONS_FEED", required=False, default="")
+    if not options_feed and _fallback:
+        feed = str(_fallback).strip().lower() or feed
 
-if os.getenv("ALPACA_PAPER") is not None:
-    alpaca_paper = _parse_bool(os.getenv("ALPACA_PAPER"))
+    stock_feed = (os.getenv("ALPACA_STOCK_FEED") or "iex").strip().lower() or "iex"
+    symbols = [s.strip().upper() for s in (os.getenv("ALPACA_SYMBOLS", "SPY,IWM,QQQ") or "").split(",") if s.strip()]
 
-symbols = _parse_csv_symbols(str(get_env("ALPACA_SYMBOLS", "SPY,IWM,QQQ")))
+    # Stub: actual ingestion logic lives elsewhere / is intentionally omitted here.
+    _ = (trading_base, equities_feed, feed, stock_feed, symbols)
 
-# Need to check if _parse_csv_symbols is defined or imported. Assuming it is defined or available.
-# If not, it might need to be added or handled.
 
-def _parse_csv_symbols(symbols_str: str) -> List[str]:
-    """Parses a comma-separated string of symbols."""
-    return [s.strip().upper() for s in symbols_str.split(",") if s.strip()]
+if __name__ == "__main__":
+    main()
+

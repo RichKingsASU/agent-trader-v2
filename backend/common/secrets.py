@@ -1,162 +1,256 @@
+from __future__ import annotations
+
 import os
-from typing import Optional, Mapping
+from dataclasses import dataclass
+from typing import Optional
+
 from google.api_core import exceptions
 from google.cloud import secretmanager_v1
 
-# Default project_id inference:
-# We rely on GOOGLE_CLOUD_PROJECT or similar env vars to be available.
-# If a secret itself contains the project ID, that's a more complex recursive problem.
-# For now, assume project_id is available via common env vars.
 
-_secret_manager_client = None
+@dataclass(frozen=True)
+class SecretSpec:
+    """
+    Single contract for sensitive values.
+
+    Notes:
+    - Do not add alias env var names here. The contract is strict by design.
+    - Secrets are resolved at runtime (never at import time).
+    """
+
+    purpose: str
+    required: bool
+    default: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Canonical secret contract (authoritative)
+# ---------------------------------------------------------------------------
+SECRETS_CONTRACT: dict[str, SecretSpec] = {
+    # Credentials / tokens
+    "APCA_API_KEY_ID": SecretSpec(
+        purpose="Alpaca API key id (trading + data auth).",
+        required=True,
+    ),
+    "APCA_API_SECRET_KEY": SecretSpec(
+        purpose="Alpaca API secret key (trading + data auth).",
+        required=True,
+    ),
+    "EXEC_AGENT_ADMIN_KEY": SecretSpec(
+        purpose="Optional auth key for execution-service admin endpoints (X-Exec-Agent-Key).",
+        required=False,
+        default="",
+    ),
+    "EXECUTION_CONFIRM_TOKEN": SecretSpec(
+        purpose="Optional live-execution confirmation token (future/guardrail).",
+        required=False,
+        default="",
+    ),
+    "EXEC_IDEMPOTENCY_STORE_ID": SecretSpec(
+        purpose="Optional idempotency store id (if using external idempotency store).",
+        required=False,
+        default="",
+    ),
+    "EXEC_IDEMPOTENCY_STORE_KEY": SecretSpec(
+        purpose="Optional idempotency store auth key/secret (if using external idempotency store).",
+        required=False,
+        default="",
+    ),
+    "QUIVER_API_KEY": SecretSpec(
+        purpose="Optional Quiver Quantitative API key for congressional disclosures ingest.",
+        required=False,
+        default="",
+    ),
+    "FRED_API_KEY": SecretSpec(
+        purpose="Optional FRED API key for macro scraper enrichment.",
+        required=False,
+        default="",
+    ),
+    "NEWS_API_KEY": SecretSpec(
+        purpose="Optional API key for news-ingest stub/client (NEWS_API_KEY).",
+        required=False,
+        default="",
+    ),
+    "OPTIONS_FLOW_API_KEY": SecretSpec(
+        purpose="Optional API key for options flow stream source (stream-bridge).",
+        required=False,
+        default="",
+    ),
+    "NEWS_STREAM_API_KEY": SecretSpec(
+        purpose="Optional API key for news stream source (stream-bridge).",
+        required=False,
+        default="",
+    ),
+    "ACCOUNT_UPDATES_API_KEY": SecretSpec(
+        purpose="Optional API key for account updates stream source (stream-bridge).",
+        required=False,
+        default="",
+    ),
+    # Connection strings
+    "DATABASE_URL": SecretSpec(
+        purpose="Postgres connection string (includes credentials).",
+        required=True,
+    ),
+    # Not strictly secret, but treated as a controlled credential-like input
+    "APCA_API_BASE_URL": SecretSpec(
+        purpose="Alpaca trading base URL (paper/live host selector).",
+        required=False,
+        default="https://paper-api.alpaca.markets",
+    ),
+    "ALPACA_DATA_HOST": SecretSpec(
+        purpose="Optional Alpaca data host override (REST data base).",
+        required=False,
+        default="https://data.alpaca.markets",
+    ),
+    "ALPACA_DATA_FEED": SecretSpec(
+        purpose="Optional Alpaca data feed selector (e.g. iex/sip).",
+        required=False,
+        default="iex",
+    ),
+    "ALPACA_DATA_STREAM_WS_URL": SecretSpec(
+        purpose="Optional Alpaca data websocket URL override.",
+        required=False,
+        default="",
+    ),
+    "ALPACA_EQUITIES_FEED": SecretSpec(
+        purpose="Optional equities feed selector (canonical; avoids ALPACA_FEED ambiguity).",
+        required=False,
+        default="iex",
+    ),
+    "ALPACA_OPTIONS_FEED": SecretSpec(
+        purpose="Optional options feed selector (canonical; avoids ALPACA_FEED ambiguity).",
+        required=False,
+        default="",
+    ),
+}
+
+
+_secret_manager_client: secretmanager_v1.SecretManagerServiceClient | None = None
+
 
 def _get_secret_manager_client() -> secretmanager_v1.SecretManagerServiceClient:
-    """Initializes and returns the Secret Manager client."""
     global _secret_manager_client
     if _secret_manager_client is None:
         _secret_manager_client = secretmanager_v1.SecretManagerServiceClient()
     return _secret_manager_client
 
 
-_allow_env_secret_fallback: Optional[bool] = None
+def _infer_gcp_project_id() -> str | None:
+    """
+    Best-effort project id inference for Secret Manager lookups.
+    These are runtime configuration values (not secrets).
+    """
 
-def _should_allow_env_fallback() -> bool:
-    """Checks if environment fallback for secrets is enabled globally."""
-    global _allow_env_secret_fallback
-    if _allow_env_secret_fallback is None:
-        # ALLOW_ENV_SECRET_FALLBACK=1 enables fallback for non-DATABASE_URL secrets
-        _allow_env_secret_fallback = os.getenv("ALLOW_ENV_SECRET_FALLBACK", "0").strip().lower() == "1"
-    return _allow_env_secret_fallback
+    return (
+        (os.getenv("GCP_PROJECT") or "").strip()
+        or (os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
+        or (os.getenv("FIREBASE_PROJECT_ID") or "").strip()
+        or None
+    )
+
+
+def _invalid_secret_name_error(secret_name: str) -> ValueError:
+    allowed = ", ".join(sorted(SECRETS_CONTRACT.keys()))
+    return ValueError(
+        "Invalid secret name "
+        f"{secret_name!r}. Allowed secrets are: {allowed}. "
+        "If you intended to read non-secret runtime configuration, use os.getenv()/os.environ "
+        "or a dedicated env helper (and do not route it through backend.common.secrets)."
+    )
 
 
 def get_secret(
     secret_name: str,
+    *,
+    default: Optional[str] = None,
     project_id: Optional[str] = None,
     version: str = "latest",
-    fail_if_missing: bool = True,
+    required: Optional[bool] = None,
+    fail_if_missing: Optional[bool] = None,
 ) -> str:
     """
-    Retrieves a secret from Google Secret Manager.
+    Resolve a secret by canonical name (strict contract).
 
-    Args:
-        secret_name: The name of the secret.
-        project_id: The GCP project ID. If None, attempts to infer from environment
-                    (e.g., GOOGLE_CLOUD_PROJECT, FIREBASE_PROJECT_ID).
-        version: The secret version to access (e.g., 'latest', '1', '2').
-        fail_if_missing: If True, raises an error if the secret is not found
-                         and fallback is not possible/allowed. Defaults to True.
+    Resolution order:
+    - Environment variable with the same name (useful for local/CI)
+    - Google Secret Manager (projects/<project_id>/secrets/<name>)
 
-    Returns:
-        The secret value as a string.
-
-    Raises:
-        RuntimeError: If the secret is not found and fail_if_missing is True,
-                      or if project ID is missing and required.
-        google.api_core.exceptions.NotFound: If the secret or version does not exist.
-        google.api_core.exceptions.PermissionDenied: If permissions are insufficient.
+    Contract rules:
+    - Secret name must be declared in SECRETS_CONTRACT (invalid names hard-fail).
+    - Missing REQUIRED secrets hard-fail with an explicit message.
+    - No alias env var names are supported.
     """
-    # Explicitly forbidden fallback for DATABASE_URL
-    if secret_name == "DATABASE_URL" and _should_allow_env_fallback():
-        # This condition implies that if fallback is enabled, but secret is DATABASE_URL,
-        # we should still *not* fall back. This means only attempt SM access.
-        pass
-    elif not _should_allow_env_fallback():
-        # If fallback is not globally enabled, then it's not allowed for this secret.
-        allow_env_fallback_for_this_secret = False
+
+    if secret_name not in SECRETS_CONTRACT:
+        raise _invalid_secret_name_error(secret_name)
+
+    spec = SECRETS_CONTRACT[secret_name]
+
+    # Back-compat: callers historically used fail_if_missing; treat it as the required flag.
+    if fail_if_missing is not None:
+        required_final = bool(fail_if_missing)
+    elif required is not None:
+        required_final = bool(required)
     else:
-        # Fallback is globally enabled, check if this specific secret is excluded (e.g. DATABASE_URL)
-        allow_env_fallback_for_this_secret = True
+        required_final = bool(spec.required)
 
-    # Infer project_id if not provided
-    if not project_id:
-        project_id = os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
-
-    if not project_id and fail_if_missing:
-        raise RuntimeError(f"Project ID is required to retrieve secret '{secret_name}' and could not be inferred from environment.")
-
-    secret_retrieved = False
-    secret_value = ""
-    error_message_sm = ""
-
-    try:
-        client = _get_secret_manager_client()
-        name = f"projects/{project_id}/secrets/{secret_name}/versions/{version}"
-        response = client.access_secret_version(request={"name": name})
-        secret_value = response.payload.data.decode("UTF-8")
-        secret_retrieved = True
-    except exceptions.NotFound:
-        error_message_sm = f"Secret '{secret_name}' (version: {version}) not found in project '{project_id}'."
-    except exceptions.PermissionDenied:
-        error_message_sm = f"Permission denied when accessing secret '{secret_name}' in project '{project_id}'. Ensure the service account has 'Secret Manager Accessor' role."
-    except Exception as e:
-        error_message_sm = f"An unexpected error occurred while accessing secret '{secret_name}': {e}"
-
-    if secret_retrieved:
-        return secret_value
-
-    # If secret was not retrieved from Secret Manager
-    if fail_if_missing:
-        if allow_env_fallback_for_this_secret and secret_name != "DATABASE_URL":
-            env_val = os.getenv(secret_name)
-            if env_val is not None:
-                print(f"Secret '{secret_name}' not found/accessible in Secret Manager, falling back to environment variable.")
-                return str(env_val).strip()
-            else:
-                # Secret Manager failed, fallback to env failed too
-                raise RuntimeError(f"{error_message_sm} Environment variable also not found.")
-        else:
-            # Fallback not allowed or not possible for this secret, or fail_if_missing is True.
-            raise RuntimeError(f"{error_message_sm} Fallback to environment variable is not allowed/possible for this secret.")
+    default_final: Optional[str]
+    if default is not None:
+        default_final = default
     else:
-        # fail_if_missing is False. Try fallback if allowed and possible.
-        if allow_env_fallback_for_this_secret and secret_name != "DATABASE_URL":
-            env_val = os.getenv(secret_name)
-            if env_val is not None:
-                print(f"Secret '{secret_name}' not found/accessible in Secret Manager, falling back to environment variable.")
-                return str(env_val).strip()
-        # If we reach here, secret not found/accessible, fail_if_missing is False,
-        # and fallback didn't happen or wasn't allowed. Return empty string.
-        return ""
+        default_final = spec.default
 
-# --- Functions for Alpaca Feeds ---
+    # 1) Env var (same name only).
+    env_val = os.environ.get(secret_name)
+    if env_val is not None and str(env_val).strip() != "":
+        return str(env_val).strip()
+
+    # 2) Secret Manager.
+    pid = (project_id or "").strip() or _infer_gcp_project_id()
+    if pid:
+        try:
+            client = _get_secret_manager_client()
+            sm_name = f"projects/{pid}/secrets/{secret_name}/versions/{version}"
+            response = client.access_secret_version(request={"name": sm_name})
+            return response.payload.data.decode("UTF-8").strip()
+        except exceptions.NotFound:
+            # fall through to missing/default handling
+            pass
+        except exceptions.PermissionDenied as e:
+            raise RuntimeError(
+                f"Permission denied when accessing secret {secret_name!r} in project {pid!r}. "
+                "Ensure the runtime service account has 'Secret Manager Secret Accessor'."
+            ) from e
+        except Exception as e:
+            raise RuntimeError(
+                f"Unexpected error while accessing secret {secret_name!r} from Secret Manager: {e}"
+            ) from e
+
+    # Missing / default handling.
+    if not required_final:
+        return str(default_final or "")
+
+    project_hint = f"projects/{pid}/secrets/{secret_name}" if pid else f"<your-project>/secrets/{secret_name}"
+    raise RuntimeError(
+        f"Missing required secret {secret_name!r}. "
+        f"Set env var {secret_name} or create Secret Manager secret {project_hint}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Convenience helpers (still validated by the strict contract above)
+# ---------------------------------------------------------------------------
 def get_alpaca_equities_feed(*, default: str = "iex") -> str:
-    """
-    Fetches the Alpaca equities feed name.
-    Prioritizes ALPACA_EQUITIES_FEED secret.
-    If not found, checks ALPACA_OPTIONS_FEED secret and uses it for equities feed
-    (as per Task 1 requirement: "If only one feed secret exists: Treat it as ALPACA_EQUITIES_FEED").
-    Falls back to the default 'iex' if no secret is found.
-    """
-    equities_secret = get_secret("ALPACA_EQUITIES_FEED", fail_if_missing=False)
-    if equities_secret:
-        return str(equities_secret).strip().lower()
-
-    # If ALPACA_EQUITIES_FEED secret is missing, check for ALPACA_OPTIONS_FEED secret.
-    options_secret = get_secret("ALPACA_OPTIONS_FEED", fail_if_missing=False)
-    if options_secret:
-        # Treat options feed as equities feed if it's the only one found.
-        return str(options_secret).strip().lower()
-
-    # If neither secret is found, use the provided default.
-    return str(default).strip().lower()
+    v = str(get_secret("ALPACA_EQUITIES_FEED", required=False, default=default) or "").strip().lower()
+    if v:
+        return v
+    # If only one feed is configured and it's OPTIONS, treat it as EQUITIES.
+    v2 = str(get_secret("ALPACA_OPTIONS_FEED", required=False, default="") or "").strip().lower()
+    return v2 or str(default).strip().lower()
 
 
 def get_alpaca_options_feed(*, default: str | None = None) -> str | None:
-    """
-    Fetches the Alpaca options feed name from Secret Manager.
-    Prioritizes ALPACA_OPTIONS_FEED secret.
-    If only ALPACA_EQUITIES_FEED secret exists, it's treated as equities feed,
-    so this function returns None in that case.
-    If ALPACA_OPTIONS_FEED secret is missing, returns the provided default (or None).
-    """
-    options_secret = get_secret("ALPACA_OPTIONS_FEED", fail_if_missing=False)
-    if options_secret:
-        return str(options_secret).strip().lower()
-
-    # If only ALPACA_EQUITIES_FEED secret exists, it's treated as equities feed.
-    # This function should return None if the specific OPTIONS feed secret is not found.
-    return default # Return None or explicit default if needed.
-
-# --- Existing functions in secrets.py ---
-# Keep existing functions like get_secret, etc.
-# ... (rest of the existing secrets.py content) ...
+    v = str(get_secret("ALPACA_OPTIONS_FEED", required=False, default="") or "").strip().lower()
+    if v:
+        return v
+    return default

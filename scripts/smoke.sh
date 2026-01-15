@@ -53,7 +53,9 @@ import os
 from datetime import datetime, timedelta, timezone
 import psycopg
 
-db_url = os.environ["DATABASE_URL"]
+from backend.common.secrets import get_secret
+
+db_url = get_secret("DATABASE_URL", required=True)
 underlying = os.environ.get("UNDERLYING", "SPY")
 
 now = datetime.now(timezone.utc)

@@ -171,9 +171,9 @@ class FedEconomicCalendarScraper:
         
         Note: This requires FRED API key. If not available, returns empty list.
         """
-        import os
-        
-        fred_api_key = os.getenv("FRED_API_KEY")
+        from backend.common.secrets import get_secret
+
+        fred_api_key = get_secret("FRED_API_KEY", required=False, default="")
         if not fred_api_key:
             logger.warning("FRED_API_KEY not set. Skipping FRED data fetch.")
             return []

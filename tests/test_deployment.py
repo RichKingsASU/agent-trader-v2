@@ -45,11 +45,13 @@ def run_container():
     # Load secrets from your local environment or define dummies for smoke testing
     # NOTE: Ensure these vars are set in your terminal before running this script, 
     # or replace 'os.getenv' with actual test keys if safe.
+    from backend.common.secrets import get_secret
+
     env_vars = [
-        "-e", f"DATABASE_URL={os.getenv('DATABASE_URL', 'postgresql://user:pass@localhost:5432/db')}",
-        "-e", f"APCA_API_KEY_ID={os.getenv('APCA_API_KEY_ID', 'test_key')}",
-        "-e", f"APCA_API_SECRET_KEY={os.getenv('APCA_API_SECRET_KEY', 'test_secret')}",
-        "-e", f"APCA_API_BASE_URL={os.getenv('APCA_API_BASE_URL', 'https://paper-api.alpaca.markets')}",
+        "-e", f"DATABASE_URL={get_secret('DATABASE_URL', required=False, default='postgresql://user:pass@localhost:5432/db')}",
+        "-e", f"APCA_API_KEY_ID={get_secret('APCA_API_KEY_ID', required=False, default='test_key')}",
+        "-e", f"APCA_API_SECRET_KEY={get_secret('APCA_API_SECRET_KEY', required=False, default='test_secret')}",
+        "-e", f"APCA_API_BASE_URL={get_secret('APCA_API_BASE_URL', required=False, default='https://paper-api.alpaca.markets')}",
         "-e", "ALPACA_DATA_FEED=sip",
         "-e", "LOG_LEVEL=DEBUG",
         "-e", "PORT=8080",

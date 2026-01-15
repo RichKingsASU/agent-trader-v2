@@ -39,12 +39,14 @@ class WhaleConsolidator:
         """
         # --- API and DB Initialization ---
         try:
+            from backend.common.secrets import get_secret
+
             base_url = assert_paper_alpaca_base_url(
-                os.environ.get("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
+                get_secret("APCA_API_BASE_URL", required=False, default="https://paper-api.alpaca.markets")
             )
             self.api = tradeapi.REST(
-                key_id=os.environ.get('APCA_API_KEY_ID'),
-                secret_key=os.environ.get('APCA_API_SECRET_KEY'),
+                key_id=get_secret("APCA_API_KEY_ID", required=True),
+                secret_key=get_secret("APCA_API_SECRET_KEY", required=True),
                 base_url=base_url
             )
             
@@ -174,12 +176,14 @@ class WhaleConsolidator:
             return
 
         print("🚀 WHALE ENGINE LIVE: Connecting to options data stream...")
+        from backend.common.secrets import get_secret
+
         base_url = assert_paper_alpaca_base_url(
-            os.environ.get("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
+            get_secret("APCA_API_BASE_URL", required=False, default="https://paper-api.alpaca.markets")
         )
         stream = Stream(
-            key_id=os.environ.get('APCA_API_KEY_ID'),
-            secret_key=os.environ.get('APCA_API_SECRET_KEY'),
+            key_id=get_secret("APCA_API_KEY_ID", required=True),
+            secret_key=get_secret("APCA_API_SECRET_KEY", required=True),
             base_url=base_url,
             data_feed='opra' # OPRA feed for options
         )

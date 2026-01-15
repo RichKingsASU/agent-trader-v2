@@ -35,19 +35,12 @@ def main():
     print("=" * 80)
     print()
     
-    # Initialize Alpaca API client
-    key_id = os.getenv("APCA_API_KEY_ID")
-    secret_key = os.getenv("APCA_API_SECRET_KEY")
-    base_url = os.getenv("APCA_API_BASE_URL")
-    
-    if not key_id or not secret_key or not base_url:
-        print("ERROR: Please set APCA_API_KEY_ID, APCA_API_SECRET_KEY, and APCA_API_BASE_URL environment variables")
-        print()
-        print("Example:")
-        print("  export APCA_API_KEY_ID='your_key_id'")
-        print("  export APCA_API_SECRET_KEY='your_secret_key'")
-        print("  export APCA_API_BASE_URL='https://paper-api.alpaca.markets'")
-        sys.exit(1)
+    from backend.common.secrets import get_secret
+
+    # Initialize Alpaca API client (secrets resolved via backend.common.secrets)
+    key_id = get_secret("APCA_API_KEY_ID", required=True)
+    secret_key = get_secret("APCA_API_SECRET_KEY", required=True)
+    base_url = get_secret("APCA_API_BASE_URL", required=False, default="https://paper-api.alpaca.markets")
     
     base_url = assert_paper_alpaca_base_url(base_url)
     print(f"Connecting to Alpaca API: {base_url}")
