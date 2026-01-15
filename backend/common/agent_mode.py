@@ -17,6 +17,9 @@ class AgentMode(str, Enum):
 
     DISABLED = "DISABLED"
     WARMUP = "WARMUP"
+    # Back-compat aliases used by several modules/tests.
+    OBSERVE = "OBSERVE"
+    PAPER = "PAPER"
     LIVE = "LIVE"
     HALTED = "HALTED"
 
