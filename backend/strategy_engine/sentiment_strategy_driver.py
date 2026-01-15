@@ -62,6 +62,42 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return float(default)
+    try:
+        return float(str(raw).strip())
+    except Exception:
+        return float(default)
+
+
+def _filter_by_timestamp_safety(news_items, *, lookback_hours: int):
+    """
+    Enforce event timestamp safety on news events (fail-closed-ish):
+    - drop future-dated items beyond skew
+    - drop items older than lookback window
+    """
+    now = datetime.now(timezone.utc)
+    max_age_s = max(0.0, float(lookback_hours) * 3600.0)
+    max_future_skew_s = max(0.0, _env_float("STRATEGY_EVENT_MAX_FUTURE_SKEW_SECONDS", 5.0))
+    out = []
+    for it in news_items:
+        ts = getattr(it, "timestamp", None)
+        if not isinstance(ts, datetime):
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.astimezone(timezone.utc)
+        age_s = (now - ts).total_seconds()
+        if age_s < -max_future_skew_s:
+            continue
+        if age_s > max_age_s:
+            continue
+        out.append(it)
+    return out
+
+
 async def run_sentiment_strategy(
     symbols: List[str],
     execute: bool = False,
@@ -139,6 +175,15 @@ async def run_sentiment_strategy(
                 f"Found {len(news_items)} news items, "
                 f"{len(filtered_news)} after filtering"
             )
+
+            # Timestamp safety gate: drop stale/future news items.
+            safe_news = _filter_by_timestamp_safety(filtered_news, lookback_hours=news_lookback_hours)
+            if len(safe_news) != len(filtered_news):
+                logger.info(
+                    "Dropped %d news items due to timestamp safety (stale/future)",
+                    (len(filtered_news) - len(safe_news)),
+                )
+            filtered_news = safe_news
             
             if not filtered_news:
                 logger.warning(f"No relevant news for {symbol}")
