@@ -511,8 +511,23 @@ class FirestoreWriter:
         ref = self._db.collection(self._col(collection)).document(str(doc_id))
 
         def _txn(txn: Any) -> Tuple[bool, str]:
-            # Idempotency guard: no side-effects before message-level dedupe.
-            # This prevents duplicates from updating SERVER_TIMESTAMP fields.
+            snap = ref.get(transaction=txn)
+            existing = snap.to_dict() if snap.exists else {}
+
+            existing_max = None
+            if isinstance(existing, dict):
+                existing_max = _max_dt(
+                    _parse_rfc3339(existing.get("eventTime")),
+                    _parse_rfc3339(existing.get("producedAt")),
+                    _parse_rfc3339(existing.get("publishedAt")),
+                    _parse_rfc3339((existing.get("source") or {}).get("publishedAt")) if isinstance(existing.get("source"), dict) else None,
+                )
+
+            incoming = _as_utc(event_time)
+            if existing_max is not None and incoming < existing_max:
+                return False, "stale_event_ignored"
+
+            # Message-level dedupe: only write markers on non-stale paths.
             msg_id = str(getattr(source, "message_id", "") or "").strip()
             if msg_id:
                 dedupe_ref = self._db.collection(self._col("ops_dedupe")).document(msg_id)
@@ -553,22 +568,6 @@ class FirestoreWriter:
                 )
                 if not ok:
                     return False, why
-
-            snap = ref.get(transaction=txn)
-            existing = snap.to_dict() if snap.exists else {}
-
-            existing_max = None
-            if isinstance(existing, dict):
-                existing_max = _max_dt(
-                    _parse_rfc3339(existing.get("eventTime")),
-                    _parse_rfc3339(existing.get("producedAt")),
-                    _parse_rfc3339(existing.get("publishedAt")),
-                    _parse_rfc3339((existing.get("source") or {}).get("publishedAt")) if isinstance(existing.get("source"), dict) else None,
-                )
-
-            incoming = _as_utc(event_time)
-            if existing_max is not None and incoming < existing_max:
-                return False, "stale_event_ignored"
 
             txn.set(ref, doc)
             return True, "applied"
