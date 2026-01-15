@@ -1,0 +1,40 @@
+PDD Guardrails (Test-First + CI-Gated)
+
+These rules are mandatory for all future changes in this repository.
+If a request conflicts with these rules, stop and propose a smaller, test-first plan.
+
+1) Test-first is mandatory (RED → GREEN → REFACTOR)
+   - Any behavior change MUST begin with a failing test (or an updated existing test).
+   - No new/changed production code without accompanying tests in the same diff.
+   - Prefer unit tests over integration tests. Mock external services. No network calls.
+
+2) CI gates are mandatory
+   - All changes must pass:
+     - ruff lint (at least critical rules)
+     - pytest (green)
+     - ≥90% coverage gate
+   - Never “just ship” with failing tests, skipped tests, or reduced coverage.
+   - If you must temporarily skip a test, include a clear reason and a follow-up issue;
+     do not merge while coverage is below the gate.
+
+3) Block drift (requirements and contracts)
+   - Keep behavior, tests, and documentation aligned. If code changes a contract, update tests.
+   - Do not change public behavior without an explicit acceptance test that captures it.
+   - Do not introduce hidden config or implicit behavior changes (no dotenv usage patterns).
+
+4) Small, isolated diffs only
+   - Make the smallest change that satisfies the test.
+   - Avoid drive-by refactors, formatting-only churn, or “cleanup” mixed with behavior changes.
+   - One intent per diff/PR. If there are multiple intents, split them.
+   - Prefer additive changes. Avoid sweeping renames/moves unless explicitly required.
+
+5) No application logic changes in guardrail PRs
+   - When the task is “guardrails/CI/quality gates”, do not modify runtime logic.
+   - Only change configuration / workflow / testing scaffolding as required.
+
+Local verification (must match CI)
+  - Install: python3.11 -m pip install -r backend/requirements.txt -r base_requirements.txt
+            python3.11 -m pip install ruff pytest pytest-cov pytest-asyncio google-cloud-secret-manager google-cloud-aiplatform
+  - Lint:    ruff check . --select=E9,F63,F7,F82
+  - Tests:   PYTHONPATH=. pytest -q --cov=backend --cov-report=term-missing:skip-covered --cov-fail-under=90
+
