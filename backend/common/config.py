@@ -102,6 +102,12 @@ def validate_or_exit(service: str, *, env: Mapping[str, str] | None = None) -> N
     - If `config/preflight.yaml` exists and contains `required_env_vars`, enforce those.
     - Otherwise, no-op (do not break local dev/test imports).
     """
+    # Unit tests import service entrypoints; do not hard-exit the interpreter in that context.
+    if (os.getenv("PYTEST_CURRENT_TEST") or "").strip():
+        return
+    if (os.getenv("DISABLE_CONFIG_VALIDATION") or "").strip() in {"1", "true", "yes", "on"}:
+        return
+
     from backend.safety.startup_validation import validate_required_env_or_exit  # local import (keeps module lightweight)
 
     e = env or os.environ  # type: ignore[assignment]
