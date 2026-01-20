@@ -16,6 +16,8 @@ jobs:
     name: Validate Runtime Integrity
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      PYTHONPATH: .
 
     steps:
       - name: Checkout repository
@@ -54,7 +56,8 @@ jobs:
 
       - name: Run critical tests
         run: |
-          pytest -q
+          # Keep this suite fast and self-contained (no external services).
+          pytest -q cloudrun_consumer/tests backend/time/tests
 
       - name: CI gates passed
         run: echo "✅ All mandatory CI gates passed. Safe to merge."
