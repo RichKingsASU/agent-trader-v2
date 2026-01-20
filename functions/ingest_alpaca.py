@@ -9,7 +9,7 @@ cred = credentials.ApplicationDefault()
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-def-SECRET- add_trade_journal_entry(uid, ticker, price):
+def add_trade_journal_entry(uid, ticker, price):
     """Adds a new trade journal entry to Firestore."""
     trade_ref = db.collection('users').document(uid).collection('tradeJournal').document()
     trade_ref.set({

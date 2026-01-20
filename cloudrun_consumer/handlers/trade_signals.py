@@ -5,7 +5,7 @@ from typing import Any, Optional
 
 from cloudrun_consumer.event_utils import choose_doc_id, ordering_ts, parse_ts
 from cloudrun_consumer.firestore_writer import SourceInfo
-from cloudrun_consumer.replay_support import ReplayContext
+from cloudrun_consumer.replay_support import ReplayContext, ensure_event_not_applied
 
 
 def choose_trade_signal_dedupe_key(*, payload: dict[str, Any], message_id: str) -> str:
@@ -28,7 +28,7 @@ def choose_trade_signal_dedupe_key(*, payload: dict[str, Any], message_id: str) 
     return str(message_id or "").strip()
 
 
-def handle_trade_signal(
+def _extract_trade_signal_fields(
     *,
     payload: dict[str, Any],
     message_id: str,
@@ -36,7 +36,6 @@ def handle_trade_signal(
     source_topic: str,
 ) -> tuple[str, Optional[str], datetime, Optional[datetime], Optional[datetime], Optional[str], Optional[str], Optional[str], SourceInfo]:
     doc_id = choose_doc_id(payload=payload, message_id=message_id)
-    replay_dedupe_key = choose_trade_signal_dedupe_key(payload=payload, message_id=message_id)
     event_id = None
     if "eventId" in payload and payload.get("eventId") is not None:
         event_id = str(payload.get("eventId")).strip() or None
@@ -76,6 +75,7 @@ def _handle_trade_signal_impl(
         pubsub_published_at=pubsub_published_at,
         source_topic=source_topic,
     )
+    replay_dedupe_key = choose_trade_signal_dedupe_key(payload=payload, message_id=message_id)
     applied, reason = firestore_writer.upsert_trade_signal(
         doc_id=doc_id,
         event_id=event_id,
@@ -113,46 +113,48 @@ def handle_trade_signal(
     replay: ReplayContext | None = None,
 ) -> dict[str, Any]:
     """
-    Idempotency-gated wrapper around `_handle_trade_signal_impl`.
+    Replay-aware wrapper around `_handle_trade_signal_impl`.
 
-    CI gate requirement: the trade-signals handler path must call an idempotency guard
-    (`ensure_message_once` or `ensure_event_not_applied`) before executing handler logic.
+    Note:
+    - Pub/Sub messageId redelivery idempotency is enforced in `cloudrun_consumer.schema_router`.
+    - When `replay` is provided, we additionally gate on a stable dedupe key (signal_id/eventId).
     """
-    doc_id, event_id, event_time, _produced_at, _published_at, symbol, _strategy, _action, _source = _extract_trade_signal_fields(
-        payload=payload,
-        message_id=message_id,
-        pubsub_published_at=pubsub_published_at,
-        source_topic=source_topic,
-    )
+    if replay is not None:
+        doc_id, event_id, event_time, _produced_at, _published_at, symbol, _strategy, _action, _source = _extract_trade_signal_fields(
+            payload=payload,
+            message_id=message_id,
+            pubsub_published_at=pubsub_published_at,
+            source_topic=source_topic,
+        )
+        dedupe_key = choose_trade_signal_dedupe_key(payload=payload, message_id=message_id) or str(event_id or doc_id)
+        try:
+            db = getattr(firestore_writer, "_db")
+            fs_mod = getattr(firestore_writer, "_firestore")
 
-    ok = True
-    why = "ok"
-    try:
-        ensure_fn = getattr(firestore_writer, "ensure_trade_signals_idempotency", None)
-        if callable(ensure_fn):
-            ok, why = ensure_fn(
-                message_id=str(message_id),
-                doc_id=str(doc_id),
-                replay=replay,
-                replay_dedupe_key=str(event_id or doc_id),
-                event_time=event_time,
-            )
-        else:
-            # Defensive: production writer should always provide this method.
-            ok, why = False, "missing_idempotency_guard"
-    except Exception as e:
-        # Fail closed: do not execute handler logic if we can't guarantee idempotency.
-        ok, why = False, f"idempotency_guard_error:{type(e).__name__}"
+            def _txn(txn: Any) -> tuple[bool, str]:
+                return ensure_event_not_applied(
+                    txn=txn,
+                    db=db,
+                    replay=replay,
+                    dedupe_key=dedupe_key,
+                    event_time=event_time,
+                    message_id=str(message_id),
+                )
 
-    if not ok:
-        return {
-            "kind": "trade_signals",
-            "docId": str(doc_id),
-            "symbol": symbol,
-            "applied": False,
-            "reason": str(why),
-            "eventTime": event_time.isoformat(),
-        }
+            txn = db.transaction()
+            ok, why = fs_mod.transactional(_txn)(txn)
+        except Exception:
+            ok, why = True, "replay_idempotency_unavailable"
+
+        if not ok:
+            return {
+                "kind": "trade_signals",
+                "docId": str(doc_id),
+                "symbol": symbol,
+                "applied": False,
+                "reason": str(why),
+                "eventTime": event_time.isoformat(),
+            }
 
     return _handle_trade_signal_impl(
         payload=payload,
