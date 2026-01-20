@@ -155,13 +155,15 @@ class ExecutionEngineConfig:
         }
 
     def set_replay_context(self, *, agent_name: str | None = None):
-        if self.tenant_id and (os.getenv("AGENT_NAME") or "").strip():
-            self"agent_name": str(os.getenv("AGENT_NAME") or "execution-engine").strip() or "execution-engine",
-            "agent_id": self.tenant_id, # Legacy mapping from tenant_id to agent_id
-            "run_id": self.tenant_id, # Legacy mapping
-        )
-    else:
-        self.replay_context = None
+        resolved_name = str(agent_name or os.getenv("AGENT_NAME") or "execution-engine").strip() or "execution-engine"
+        if self.tenant_id and resolved_name:
+            self.replay_context = ReplayContext(
+                agent_name=resolved_name,
+                agent_id=self.tenant_id,  # Legacy mapping from tenant_id to agent_id
+                run_id=self.tenant_id,  # Legacy mapping
+            )
+        else:
+            self.replay_context = None
 
 def _as_int_or_none(v: str | None) -> int | None:
     try:
