@@ -9,6 +9,7 @@ import scripts.lib.exec_guard as exec_guard
 
 from backend.common.secrets import get_secret
 import os
+
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -22,34 +23,47 @@ def main():
     exec_guard.enforce_execution_policy(__file__, sys.argv)
     # Global kill-switch guard: never place even paper orders while halted.
     try:
-        from backend.common.kill_switch import get_kill_switch_state  # type: ignore
+        from backend.common.kill_switch import ExecutionHaltedError, require_live_mode  # type: ignore
 
-        enabled, source = get_kill_switch_state()
-        if enabled:
-            print(f"REFUSED: kill switch is active (source={source}). Set EXECUTION_HALTED=0 to proceed.")
-            exit(2)
-    except Exception:
-        # Best-effort safety: if we cannot evaluate the kill-switch module, do not block the script.
-        # (The runtime execution engine has its own defenses.)
-        pass
+        require_live_mode(operation="paper order placement")
+    except ExecutionHaltedError as e:
+        print(f"REFUSED: {e}")
+        raise SystemExit(2)
+    except Exception as e:
+        print(f"REFUSED: could not evaluate kill switch: {e}")
+        raise SystemExit(2)
 
     # dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env.local')
     # load_dotenv(dotenv_path=dotenv_path)
 
-    api_key = get_secret("APCA_API_KEY_ID", required=True)
-    secret_key = get_secret("APCA_API_SECRET_KEY", required=True)
+    # Execution is disabled-by-default unless explicitly enabled.
+    from backend.common.env import assert_paper_alpaca_base_url, is_execution_enabled  # type: ignore
+
+    if not is_execution_enabled():
+        print("REFUSED: execution is disabled (set EXECUTION_ENABLED=1 to allow paper order placement).")
+        raise SystemExit(2)
+
+    expected = (os.getenv("EXECUTION_CONFIRM_TOKEN") or "").strip()
+    if not expected:
+        print("REFUSED: missing EXECUTION_CONFIRM_TOKEN (required for any order placement).")
+        raise SystemExit(2)
+    if str(args.execution_confirm).strip() != expected:
+        print("REFUSED: EXECUTION_CONFIRM mismatch (token did not match EXECUTION_CONFIRM_TOKEN).")
+        raise SystemExit(2)
+
     # Safety: if a base URL is configured, it must be paper-only.
     try:
-        from backend.common.env import assert_paper_alpaca_base_url  # type: ignore
-
-        _ = assert_paper_alpaca_base_url(get_secret("APCA_API_BASE_URL", default="https://paper-api.alpaca.markets"))
+        _ = assert_paper_alpaca_base_url(os.getenv("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets")
     except Exception as e:
         print(f"REFUSED: invalid Alpaca trading base URL: {e}")
-        exit(2)
+        raise SystemExit(2)
+
+    api_key = (os.getenv("APCA_API_KEY_ID") or "").strip()
+    secret_key = (os.getenv("APCA_API_SECRET_KEY") or "").strip()
 
     if not api_key or not secret_key:
         print("ERROR: APCA_API_KEY_ID and APCA_API_SECRET_KEY must be set in .env.local.")
-        exit(1)
+        raise SystemExit(1)
 
     print("--> Placing test order: SPY BUY 1 Qty")
     try:
@@ -75,8 +89,12 @@ def main():
         if "market is closed" in str(e).lower():
             print("INFO: This is expected if the market is currently closed.")
             # Exit gracefully since this isn't a credentials/config error.
-            exit(0)
-        exit(1)
+            raise SystemExit(0)
+        raise SystemExit(1)
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
-        exit(1)
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()
