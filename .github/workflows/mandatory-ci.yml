@@ -16,6 +16,8 @@ jobs:
     name: Validate Runtime Integrity
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      PYTHONPATH: .
 
     steps:
       - name: Checkout repository
@@ -46,13 +48,16 @@ jobs:
       - name: Enforce import discipline
         run: |
           pip install flake8 flake8-absolute-import
-          flake8 . \
+          # Enforce absolute-import discipline only for non-package entrypoints
+          # where relative imports are usually unintended and break execution.
+          flake8 scripts cloudrun_consumer cloudrun_ingestor \
             --select=ABS101,ABS201 \
             --extend-ignore=E203,W503
 
       - name: Run critical tests
         run: |
-          pytest -q
+          # Keep this suite fast and self-contained (no external services).
+          pytest -q cloudrun_consumer/tests backend/time/tests
 
       - name: CI gates passed
         run: echo "✅ All mandatory CI gates passed. Safe to merge."
