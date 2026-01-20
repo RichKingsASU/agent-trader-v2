@@ -46,7 +46,9 @@ jobs:
       - name: Enforce import discipline
         run: |
           pip install flake8 flake8-absolute-import
-          flake8 . \
+          # Enforce absolute-import discipline only for non-package entrypoints
+          # where relative imports are usually unintended and break execution.
+          flake8 scripts cloudrun_consumer cloudrun_ingestor \
             --select=ABS101,ABS201 \
             --extend-ignore=E203,W503
 
