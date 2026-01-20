@@ -549,6 +549,11 @@ def render_blueprint_md(
 
     gaps_lines = "\n".join(f"- {g}" for g in known_gaps) if known_gaps else "- (none detected)"
 
+    unknown_block = "```bash\n# unknown\n```"
+    ops_readiness = ops_cmds[2] if len(ops_cmds) > 2 else unknown_block
+    ops_logs = os.linesep.join(ops_cmds[3:]) if len(ops_cmds) > 3 else unknown_block
+    docs_section = os.linesep.join(docs_lines) if docs_lines else "- `docs/` not found"
+
     md = f"""# AgentTrader v2 — Repo Blueprint
 
 **repo_id**: `{repo_id}`
@@ -599,11 +604,11 @@ AgentTrader v2 is a multi-component trading platform with explicit **safety-firs
 
 ### readiness
 
-{ops_cmds[2] if len(ops_cmds) > 2 else "```bash\n# unknown\n```"}
+{ops_readiness}
 
 ### logs
 
-{os.linesep.join(ops_cmds[3:]) if len(ops_cmds) > 3 else "```bash\n# unknown\n```"}
+{ops_logs}
 
 ## Known Gaps (automatically inferred)
 
@@ -611,7 +616,7 @@ AgentTrader v2 is a multi-component trading platform with explicit **safety-firs
 
 ## Links (docs index)
 
-{os.linesep.join(docs_lines) if docs_lines else "- `docs/` not found"}
+{docs_section}
 """
     return md
 
