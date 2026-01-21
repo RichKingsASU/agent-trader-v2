@@ -286,10 +286,11 @@ def test_execution_enabled_false_blocks_broker_calls(monkeypatch, mock_alpaca_en
 # --- Tests for functions/utils/apca_env.py ---
 
 def test_assert_paper_alpaca_base_url_with_paper_url_succeeds():
-    paper_url = "https://paper-api.alpaca.markets/v2"
-    assert assert_valid_alpaca_base_url(paper_url, AgentMode.DISABLED, "paper") == "https://paper-api.alpaca.markets/v2"
     paper_url_no_v2 = "https://paper-api.alpaca.markets"
     assert assert_valid_alpaca_base_url(paper_url_no_v2, AgentMode.DISABLED, "paper") == "https://paper-api.alpaca.markets"
+    paper_url_with_path = "https://paper-api.alpaca.markets/v2"
+    with pytest.raises(RuntimeError, match="requires Alpaca base URL to be 'https://paper-api\\.alpaca\\.markets'"):
+        assert_valid_alpaca_base_url(paper_url_with_path, AgentMode.DISABLED, "paper")
 
 def test_assert_paper_alpaca_base_url_with_live_url_fails():
     live_url = "https://api.alpaca.markets/v2"

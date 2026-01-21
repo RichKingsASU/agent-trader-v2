@@ -35,6 +35,8 @@ def get_apca_env() -> ApcaEnv:
     base_url = _get_required("APCA_API_BASE_URL")
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
     
+    agent_mode = get_agent_mode()
+    trading_mode = str(os.environ.get("TRADING_MODE", "paper")).strip().lower()
     base_url = assert_valid_alpaca_base_url(
         url=base_url,
         agent_mode=agent_mode,
@@ -74,7 +76,8 @@ def assert_valid_alpaca_base_url(url: str, agent_mode: AgentMode, trading_mode: 
     parsed = urlparse(raw)
     if parsed.scheme.lower() != "https":
         raise RuntimeError(f"REFUSED: Alpaca base URL must be https: {raw!r}")
-    if parsed.port not in (None, 443):
+    # Disallow any explicit port, even 443 (defense-in-depth).
+    if parsed.port is not None:
         raise RuntimeError(f"REFUSED: Alpaca base URL must not specify a port: {raw!r}")
     if parsed.username or parsed.password:
         raise RuntimeError(f"REFUSED: Alpaca base URL must not include credentials: {raw!r}")
@@ -86,15 +89,13 @@ def assert_valid_alpaca_base_url(url: str, agent_mode: AgentMode, trading_mode: 
 
     # Paper mode explicit check
     if trading_mode == "paper":
-        if hostname == "paper-api.alpaca.markets":
-            # Normalize (preserve any path; just strip trailing slash).
-            return raw[:-1] if raw.endswith("/") else raw
-        if hostname == "api.alpaca.markets":
-            raise RuntimeError(f"REFUSED: live Alpaca trading host is forbidden in paper mode: {raw!r}")
-        raise RuntimeError(
-            f"REFUSED: Alpaca base URL validation failed for mode '{agent_mode.value}' "
-            f"and trading_mode '{trading_mode}'. Got: {raw!r}"
-        )
+        # Strict allowlist: EXACT base URL only. No path, no trailing slash.
+        if raw != "https://paper-api.alpaca.markets":
+            raise RuntimeError(
+                "REFUSED: TRADING_MODE='paper' requires Alpaca base URL to be "
+                f"'https://paper-api.alpaca.markets' (got {raw!r})"
+            )
+        return raw
     
     # Live mode explicit check (only if AgentMode is LIVE)
     elif trading_mode == "live" and agent_mode == AgentMode.LIVE:
