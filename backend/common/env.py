@@ -186,70 +186,80 @@ def get_alpaca_key_id(*, required: bool = True) -> str:
         if s:
             os.environ.setdefault("APCA_API_KEY_ID", s)
             return s
-    if required:
-        raise RuntimeError("Missing required env var: APCA_API_KEY_ID")
-    return ""
+
+def get_alpaca_key_id(*, required: bool = True) -> str | None:
+    v = get_env("APCA_API_KEY_ID", None, required=required)
+    return str(v).strip() if v is not None else None
 
 
-def get_alpaca_api_key(*, required: bool = True) -> str:
+def get_alpaca_api_key(*, required: bool = True) -> str | None:
+    # Alias used in some modules.
     return get_alpaca_key_id(required=required)
 
 
-def get_alpaca_secret_key(*, required: bool = True) -> str:
-    v = get_env("APCA_API_SECRET_KEY", default=None)
-    v = v or get_env("ALPACA_SECRET_KEY", default=None)
-    v = v or get_env("ALPACA_API_SECRET_KEY", default=None)
-    v = v or get_env("APCA_API_SECRET", default=None)
+def get_alpaca_secret_key(*, required: bool = True) -> str | None:
+    v = get_env("APCA_API_SECRET_KEY", None, required=required)
+    return str(v).strip() if v is not None else None
+
+    Env contract (official Alpaca SDK):
+    - APCA_API_SECRET_KEY
+    """
+    # Canonical (official Alpaca SDK)
+    v = get_env("APCA_API_SECRET_KEY", default=None, required=False)
+    # Common historical/infra aliases (normalize to canonical so Alpaca SDKs can read them).
+    v = v or get_env("ALPACA_SECRET_KEY", default=None, required=False)
+    v = v or get_env("ALPACA_API_SECRET_KEY", default=None, required=False)
+    v = v or get_env("APCA_API_SECRET", default=None, required=False)  # legacy
     if v:
         s = str(v).strip()
         if s:
             os.environ.setdefault("APCA_API_SECRET_KEY", s)
             return s
-    if required:
-        raise RuntimeError("Missing required env var: APCA_API_SECRET_KEY")
-    return ""
+
+def get_alpaca_api_base_url(*, required: bool = True) -> str | None:
+    # Default to paper URL for safety if not explicitly set.
+    v = get_env("APCA_API_BASE_URL", "https://paper-api.alpaca.markets", required=False)
+    if required and (v is None or str(v).strip() == ""):
+        raise RuntimeError("Missing required env var: APCA_API_BASE_URL")
+    return str(v).strip()
 
 
 def assert_paper_alpaca_base_url(url: str) -> str:
     """
-    Absolute safety boundary: allow ONLY Alpaca paper trading API base URLs.
+    Hard safety check: paper trading must only use the paper Alpaca trading host.
     """
-    if url is None or str(url).strip() == "":
-        raise RuntimeError("Missing required Alpaca base URL (APCA_API_BASE_URL)")
-
     raw = str(url).strip()
-    # Normalize: keep path, strip trailing slash.
-    raw = raw[:-1] if raw.endswith("/") else raw
+    if not raw:
+        raise RuntimeError("Missing Alpaca base URL")
     parsed = urlparse(raw)
 
     if parsed.scheme.lower() != "https":
         raise RuntimeError(f"REFUSED: Alpaca base URL must be https: {raw!r}")
-    if parsed.port not in (None, 443):
-        raise RuntimeError(f"REFUSED: Alpaca base URL must not specify a port: {raw!r}")
     if parsed.username or parsed.password:
         raise RuntimeError(f"REFUSED: Alpaca base URL must not include credentials: {raw!r}")
     if parsed.query or parsed.fragment:
         raise RuntimeError(f"REFUSED: Alpaca base URL must not include query/fragment: {raw!r}")
-
+    if parsed.port not in (None, 443):
+        raise RuntimeError(f"REFUSED: Alpaca base URL must not specify a port: {raw!r}")
     host = (parsed.hostname or "").lower()
     if host != "paper-api.alpaca.markets":
-        raise RuntimeError(f"REFUSED: Alpaca base URL must be paper host: {raw!r}")
+        raise RuntimeError(f"REFUSED: paper trading requires https://paper-api.alpaca.markets (got {raw!r})")
+    return raw[:-1] if raw.endswith("/") else raw
 
-    return raw
 
-
-def get_alpaca_api_base_url(*, required: bool = True) -> str:
-    v = get_env("APCA_API_BASE_URL", default=None)
-    v = v or get_env("ALPACA_TRADING_HOST", default=None)
-    v = v or get_env("ALPACA_API_BASE_URL", default=None)
-    v = v or get_env("ALPACA_API_URL", default=None)
-    if v:
-        s = str(v).strip()
-        s = s[:-1] if s.endswith("/") else s
-        if s:
-            os.environ.setdefault("APCA_API_BASE_URL", s)
-            return assert_paper_alpaca_base_url(s)
-    if required:
-        raise RuntimeError("Missing required env var: APCA_API_BASE_URL")
-    return ""
+def assert_valid_alpaca_base_url(url: str, agent_mode: str, trading_mode: str) -> str:
+    """
+    Conservative validation helper (paper vs live). Used by a few scripts/tests.
+    """
+    raw = str(url or "").strip()
+    if not raw:
+        raise RuntimeError("Missing required Alpaca base URL (APCA_API_BASE_URL)")
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() != "https":
+        raise RuntimeError(f"REFUSED: Alpaca base URL must be https: {raw!r}")
+    host = (parsed.hostname or "").lower()
+    if trading_mode == "paper":
+        if host != "paper-api.alpaca.markets":
+            raise RuntimeError(f"REFUSED: live Alpaca trading host is forbidden in paper mode: {raw!r}")
+    return raw[:-1] if raw.endswith("/") else raw
 

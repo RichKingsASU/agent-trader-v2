@@ -5,6 +5,7 @@ import logging
 
 from backend.streams.alpaca_env import load_alpaca_env
 from backend.common.logging import init_structured_logging
+from backend.common.execution_enabled import require_execution_enabled
 
 init_structured_logging(service="alpaca-order-smoke-test")
 logger = logging.getLogger(__name__)
@@ -59,6 +60,10 @@ def place_test_order():
         )
 
     logger.warning("Placing test order...", extra={"event_type": "alpaca.place_test_order"})
+    require_execution_enabled(
+        operation="backend.streams.alpaca_order_smoke_test.place_test_order",
+        context={"symbol": "SPY", "side": "buy", "qty": 1},
+    )
     payload = {
         "symbol": "SPY",
         "qty": "1",
