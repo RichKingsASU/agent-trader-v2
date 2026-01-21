@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from backend.coordination.agent_latch import AGENT_INTENT_LATCH
+
 from .models import AgentIntent
 
 
@@ -94,38 +96,61 @@ def emit_agent_intent(intent: AgentIntent) -> None:
 
     Safety: this function never sizes or executes.
     """
-    _intent_log(
-        "agent_intent",
-        event="emitted",
-        intent_id=str(intent.intent_id),
-        strategy_name=intent.strategy_name,
-        symbol=intent.symbol,
-        side=intent.side.value,
-        kind=intent.kind.value,
-        confidence=intent.confidence,
-        valid_until_utc=intent.constraints.valid_until_utc.isoformat(),
-        requires_human_approval=bool(intent.constraints.requires_human_approval),
-    )
-
-    try:
-        audit_path = _intent_audit_path(intent.created_at_utc)
-        audit_path.parent.mkdir(parents=True, exist_ok=True)
-        raw = intent.model_dump(mode="json")  # type: ignore[attr-defined]
-
-        # Redact nested indicators before persistence.
-        raw_rationale = raw.get("rationale") or {}
-        if isinstance(raw_rationale, dict):
-            raw_rationale["indicators"] = _redact(raw_rationale.get("indicators") or {})
-            raw["rationale"] = raw_rationale
-
-        with audit_path.open("a", encoding="utf-8") as f:
-            f.write(_json_line(raw) + "\n")
-    except Exception as e:
+    ttl_s = float(os.getenv("AGENT_INTENT_LATCH_TTL_SECONDS") or "5")
+    requester = f"{intent.agent_name}:{intent.strategy_name}"
+    handle = AGENT_INTENT_LATCH.try_acquire(requester=requester, ttl_s=ttl_s, purpose="emit_agent_intent")
+    if handle is None:
+        snap = AGENT_INTENT_LATCH.snapshot()
         _intent_log(
             "agent_intent",
-            event="audit_write_failed",
+            event="blocked_by_latch",
             intent_id=str(intent.intent_id),
-            error=str(e),
+            strategy_name=intent.strategy_name,
+            symbol=intent.symbol,
+            side=intent.side.value,
+            kind=intent.kind.value,
+            requester=requester,
+            ttl_s=ttl_s,
+            latch=(snap.as_dict() if snap else None),
             severity="WARNING",
         )
+        return
+
+    try:
+        _intent_log(
+            "agent_intent",
+            event="emitted",
+            intent_id=str(intent.intent_id),
+            strategy_name=intent.strategy_name,
+            symbol=intent.symbol,
+            side=intent.side.value,
+            kind=intent.kind.value,
+            confidence=intent.confidence,
+            valid_until_utc=intent.constraints.valid_until_utc.isoformat(),
+            requires_human_approval=bool(intent.constraints.requires_human_approval),
+        )
+
+        try:
+            audit_path = _intent_audit_path(intent.created_at_utc)
+            audit_path.parent.mkdir(parents=True, exist_ok=True)
+            raw = intent.model_dump(mode="json")  # type: ignore[attr-defined]
+
+            # Redact nested indicators before persistence.
+            raw_rationale = raw.get("rationale") or {}
+            if isinstance(raw_rationale, dict):
+                raw_rationale["indicators"] = _redact(raw_rationale.get("indicators") or {})
+                raw["rationale"] = raw_rationale
+
+            with audit_path.open("a", encoding="utf-8") as f:
+                f.write(_json_line(raw) + "\n")
+        except Exception as e:
+            _intent_log(
+                "agent_intent",
+                event="audit_write_failed",
+                intent_id=str(intent.intent_id),
+                error=str(e),
+                severity="WARNING",
+            )
+    finally:
+        handle.release()
 
