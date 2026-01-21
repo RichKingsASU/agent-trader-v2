@@ -1,0 +1,268 @@
+{
+  "$defs": {
+    "AssetClass": {
+      "enum": [
+        "equity",
+        "option",
+        "future",
+        "fx",
+        "crypto",
+        "index",
+        "other"
+      ],
+      "title": "AssetClass",
+      "type": "string"
+    },
+    "Side": {
+      "enum": [
+        "buy",
+        "sell"
+      ],
+      "title": "Side",
+      "type": "string"
+    },
+    "SignalAction": {
+      "enum": [
+        "enter_long",
+        "enter_short",
+        "exit",
+        "increase",
+        "reduce",
+        "hold"
+      ],
+      "title": "SignalAction",
+      "type": "string"
+    }
+  },
+  "$id": "agenttrader.v2/trading_signal.v2.0.0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "A broker-agnostic trading signal emitted by a strategy/agent.",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/SignalAction"
+    },
+    "asset_class": {
+      "$ref": "#/$defs/AssetClass"
+    },
+    "confidence": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional confidence in [0,1].",
+      "title": "Confidence"
+    },
+    "correlation_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional correlation id for end-to-end tracing across services.",
+      "title": "Correlation Id"
+    },
+    "created_at": {
+      "description": "UTC timestamp when created.",
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "enum": [
+            "prod",
+            "staging",
+            "dev",
+            "local"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional environment hint (prod/staging/dev/local).",
+      "title": "Environment"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional UTC expiry timestamp.",
+      "title": "Expires At"
+    },
+    "features": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional strategy features/inputs snapshot (non-sensitive).",
+      "title": "Features"
+    },
+    "generated_at": {
+      "description": "UTC timestamp when computed.",
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "horizon": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional holding horizon label (e.g., 'intraday', 'swing').",
+      "title": "Horizon"
+    },
+    "meta": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional, producer-provided metadata (non-sensitive, non-broker-specific).",
+      "title": "Meta"
+    },
+    "options": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional non-broker-specific extension point for strategy/agent options.",
+      "title": "Options"
+    },
+    "rationale": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional human-readable rationale.",
+      "title": "Rationale"
+    },
+    "schema": {
+      "const": "agenttrader.v2.trading_signal",
+      "title": "Schema",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "2.0.0",
+      "description": "SemVer contract version for this schema.",
+      "examples": [
+        "2.0.0"
+      ],
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "side": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Side"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional explicit side. Some actions (e.g., exit/hold) may not map to buy/sell."
+    },
+    "signal_id": {
+      "format": "uuid",
+      "title": "Signal Id",
+      "type": "string"
+    },
+    "strategy_id": {
+      "description": "Stable strategy identifier (string, not necessarily UUID).",
+      "minLength": 1,
+      "title": "Strategy Id",
+      "type": "string"
+    },
+    "strength": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional unbounded signal strength score (strategy-defined).",
+      "title": "Strength"
+    },
+    "symbol": {
+      "minLength": 1,
+      "title": "Symbol",
+      "type": "string"
+    },
+    "tenant_id": {
+      "description": "Tenant / org identifier.",
+      "minLength": 1,
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "schema_version",
+    "tenant_id",
+    "created_at",
+    "signal_id",
+    "strategy_id",
+    "symbol",
+    "asset_class",
+    "action",
+    "generated_at"
+  ],
+  "title": "AgentTrader v2 - TradingSignal",
+  "type": "object"
+}
