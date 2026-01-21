@@ -13,6 +13,7 @@
 #
 # Categories:
 # - SAFE: read-only validation/reporting scripts suitable for automation.
+# - LOW: read-only local inspection/debug scripts (non-dangerous; safe to run).
 # - MUST_LOCK: scripts that touch external systems or write artifacts/config and should only run in controlled contexts.
 # - NEVER_AUTO: scripts that are interactive, long-running, mutate prod-like state, execute arbitrary commands, deploy/scale, or place orders.
 #
@@ -55,6 +56,9 @@ SAFE:
   - scripts/verify_saas_migration.sh
   - scripts/verify_service_discovery.sh
   - scripts/verify_zero_trust.py
+
+LOW:
+  - scripts/explain_scalper.py
 
 MUST_LOCK:
   - scripts/audit_cloudrun.sh

@@ -7,6 +7,21 @@
       "requires_exec_guard": false
     },
     {
+      "path": "scripts/__init__.py",
+      "category": "dev",
+      "requires_exec_guard": false
+    },
+    {
+      "path": "scripts/lib/__init__.py",
+      "category": "dev",
+      "requires_exec_guard": false
+    },
+    {
+      "path": "scripts/lib/exec_guard.py",
+      "category": "dev",
+      "requires_exec_guard": false
+    },
+    {
       "path": "scripts/audit_cloudrun.sh",
       "category": "ops",
       "requires_exec_guard": false
@@ -113,6 +128,11 @@
     },
     {
       "path": "scripts/demo_whale_flow_service.py",
+      "category": "dev",
+      "requires_exec_guard": false
+    },
+    {
+      "path": "scripts/explain_scalper.py",
       "category": "dev",
       "requires_exec_guard": false
     },
