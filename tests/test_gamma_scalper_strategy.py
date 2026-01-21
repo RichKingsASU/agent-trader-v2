@@ -111,8 +111,8 @@ class TestPortfolioDelta:
             "quantity": Decimal("10"),
             "price": Decimal("2.50"),
         }
-        # Net delta = 0.65 * 10 = 6.5
-        assert _get_net_portfolio_delta() == Decimal("6.5")
+        # Net delta (shares) = 0.65 * 10 * 100 = 650
+        assert _get_net_portfolio_delta() == Decimal("650.0")
     
     def test_single_short_position(self):
         _portfolio_positions["SPY_PUT"] = {
@@ -120,8 +120,8 @@ class TestPortfolioDelta:
             "quantity": Decimal("5"),
             "price": Decimal("1.75"),
         }
-        # Net delta = -0.35 * 5 = -1.75
-        assert _get_net_portfolio_delta() == Decimal("-1.75")
+        # Net delta (shares) = -0.35 * 5 * 100 = -175
+        assert _get_net_portfolio_delta() == Decimal("-175.00")
     
     def test_mixed_positions(self):
         _portfolio_positions["SPY_CALL"] = {
@@ -134,8 +134,8 @@ class TestPortfolioDelta:
             "quantity": Decimal("5"),
             "price": Decimal("1.75"),
         }
-        # Net delta = (0.65 * 10) + (-0.35 * 5) = 6.5 - 1.75 = 4.75
-        assert _get_net_portfolio_delta() == Decimal("4.75")
+        # Net delta (shares) = (0.65 * 10 * 100) + (-0.35 * 5 * 100) = 650 - 175 = 475
+        assert _get_net_portfolio_delta() == Decimal("475.00")
 
 
 class TestHedgingThreshold:
@@ -161,18 +161,18 @@ class TestHedgeQuantity:
     """Test hedge quantity calculation."""
     
     def test_positive_delta_requires_sell(self):
-        net_delta = Decimal("6.5")
+        net_delta = Decimal("650")
         underlying_price = Decimal("495.50")
         hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
         # Should be negative (sell) to offset positive delta
         assert hedge_qty == Decimal("-7")  # Rounded to nearest whole
     
     def test_negative_delta_requires_buy(self):
-        net_delta = Decimal("-5.3")
+        net_delta = Decimal("-530")
         underlying_price = Decimal("495.50")
         hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
         # Should be positive (buy) to offset negative delta
-        assert hedge_qty == Decimal("5")  # Rounded to nearest whole
+        assert hedge_qty == Decimal("530")  # Rounded to nearest whole share
     
     def test_zero_underlying_price(self):
         net_delta = Decimal("6.5")
@@ -181,7 +181,8 @@ class TestHedgeQuantity:
         assert hedge_qty == Decimal("0")
     
     def test_rounding_half_up(self):
-        net_delta = Decimal("6.5")
+        # 0.655 delta for 1 contract => 65.5 shares; hedge should round half-up.
+        net_delta = Decimal("65.5")
         underlying_price = Decimal("495.50")
         hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
         # -6.5 rounds to -7 with ROUND_HALF_UP
@@ -192,22 +193,25 @@ class TestShouldHedge:
     """Test hedging decision logic."""
     
     def test_below_threshold_no_hedge(self):
-        net_delta = Decimal("0.10")
+        # 0.10 contract-delta => 10 shares (with 100x multiplier)
+        net_delta = Decimal("10")
         current_time = datetime(2025, 12, 30, 19, 0, 0, tzinfo=ZoneInfo("UTC"))
         assert not _should_hedge(net_delta, current_time)
     
     def test_above_threshold_hedge(self):
-        net_delta = Decimal("0.20")
+        # 0.20 contract-delta => 20 shares
+        net_delta = Decimal("20")
         current_time = datetime(2025, 12, 30, 19, 0, 0, tzinfo=ZoneInfo("UTC"))
         assert _should_hedge(net_delta, current_time)
     
     def test_negative_delta_above_threshold(self):
-        net_delta = Decimal("-0.20")
+        net_delta = Decimal("-20")
         current_time = datetime(2025, 12, 30, 19, 0, 0, tzinfo=ZoneInfo("UTC"))
         assert _should_hedge(net_delta, current_time)
     
     def test_exactly_at_threshold_no_hedge(self):
-        net_delta = HEDGING_THRESHOLD
+        # 0.15 contract-delta => 15 shares
+        net_delta = Decimal("15")
         current_time = datetime(2025, 12, 30, 19, 0, 0, tzinfo=ZoneInfo("UTC"))
         assert not _should_hedge(net_delta, current_time)
 
@@ -269,13 +273,14 @@ class TestStrategyExecution:
         }
         orders = on_market_event(event)
         
-        # Should generate hedge order since net delta = 6.5 > 0.15
+        # Should generate hedge order since net delta = 650 shares (6.5 contract-delta) > 0.15
         assert orders is not None
         assert len(orders) > 0
         
         hedge_order = orders[0]
         assert hedge_order["symbol"] == "SPY"
         assert hedge_order["side"] == "sell"  # Selling to offset positive delta
+        assert hedge_order["qty"] == 650.0
         assert hedge_order["order_type"] == "market"
         assert hedge_order["client_tag"] == "0dte_gamma_scalper_hedge"
     
