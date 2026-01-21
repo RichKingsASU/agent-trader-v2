@@ -318,6 +318,55 @@ class TestStrategyExecution:
         # Portfolio should be cleared
         assert "SPY_CALL" not in _portfolio_positions
 
+    def test_halts_after_close_time_no_further_hedging_or_state_updates(self):
+        # Establish a position before close so there is something to exit.
+        _portfolio_positions["SPY_CALL"] = {
+            "delta": Decimal("0.65"),
+            "quantity": Decimal("10"),
+            "price": Decimal("2.50"),
+            "symbol": "SPY_CALL",
+        }
+
+        # First event at 3:45 PM ET: should emit exit order(s) and halt for the day.
+        close_event = {
+            "protocol": "v1",
+            "type": "market_event",
+            "event_id": "evt_close",
+            "ts": "2025-12-30T20:45:00Z",  # 3:45 PM ET
+            "symbol": "SPY_CALL",
+            "source": "alpaca",
+            "payload": {
+                "delta": 0.65,
+                "price": 2.50,
+                "underlying_price": 495.50,
+            },
+        }
+        orders = on_market_event(close_event)
+        assert orders is not None
+        assert len(orders) > 0
+        assert all(o["client_tag"] == "0dte_gamma_scalper_exit" for o in orders)
+        assert _portfolio_positions == {}
+
+        # Subsequent event after 15:45 ET with a huge delta would previously hedge.
+        # Now it must do nothing (no hedging, no position tracking updates).
+        post_close_event = {
+            "protocol": "v1",
+            "type": "market_event",
+            "event_id": "evt_after_close",
+            "ts": "2025-12-30T20:46:00Z",  # 3:46 PM ET
+            "symbol": "SPY_CALL",
+            "source": "alpaca",
+            "payload": {
+                "delta": 0.99,
+                "price": 3.00,
+                "quantity": 50,
+                "underlying_price": 495.50,
+            },
+        }
+        orders2 = on_market_event(post_close_event)
+        assert orders2 == [] or orders2 is None
+        assert _portfolio_positions == {}
+
 
 class TestGEXIntegration:
     """Test GEX-based adaptive hedging."""
