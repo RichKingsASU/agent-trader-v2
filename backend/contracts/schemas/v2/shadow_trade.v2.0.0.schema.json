@@ -1,0 +1,240 @@
+{
+  "$defs": {
+    "AssetClass": {
+      "enum": [
+        "equity",
+        "option",
+        "future",
+        "fx",
+        "crypto",
+        "index",
+        "other"
+      ],
+      "title": "AssetClass",
+      "type": "string"
+    },
+    "Side": {
+      "enum": [
+        "buy",
+        "sell"
+      ],
+      "title": "Side",
+      "type": "string"
+    }
+  },
+  "$id": "agenttrader.v2/shadow_trade.v2.0.0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "A broker-agnostic, non-executed (paper/shadow) trade used for attribution,\nmonitoring, and shadow PnL pipelines.",
+  "properties": {
+    "asset_class": {
+      "$ref": "#/$defs/AssetClass"
+    },
+    "correlation_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional correlation id for end-to-end tracing across services.",
+      "title": "Correlation Id"
+    },
+    "created_at": {
+      "description": "UTC timestamp when created.",
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "enum": [
+            "prod",
+            "staging",
+            "dev",
+            "local"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional environment hint (prod/staging/dev/local).",
+      "title": "Environment"
+    },
+    "fees": {
+      "anyOf": [
+        {
+          "description": "Base-10 decimal encoded as a JSON string.",
+          "examples": [
+            "0",
+            "1",
+            "10.5",
+            "-0.01"
+          ],
+          "pattern": "^-?\\d+(\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional fees in quote currency.",
+      "title": "Fees"
+    },
+    "intent_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional linkage to an OrderIntent.",
+      "title": "Intent Id"
+    },
+    "meta": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional, producer-provided metadata (non-sensitive, non-broker-specific).",
+      "title": "Meta"
+    },
+    "notes": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Notes"
+    },
+    "options": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional non-broker-specific extension point for shadow execution assumptions.",
+      "title": "Options"
+    },
+    "price": {
+      "description": "Base-10 decimal encoded as a JSON string.",
+      "examples": [
+        "0",
+        "1",
+        "10.5",
+        "-0.01"
+      ],
+      "pattern": "^-?\\d+(\\.\\d+)?$",
+      "title": "Price",
+      "type": "string"
+    },
+    "quantity": {
+      "description": "Base-10 decimal encoded as a JSON string.",
+      "examples": [
+        "0",
+        "1",
+        "10.5",
+        "-0.01"
+      ],
+      "pattern": "^-?\\d+(\\.\\d+)?$",
+      "title": "Quantity",
+      "type": "string"
+    },
+    "schema": {
+      "const": "agenttrader.v2.shadow_trade",
+      "title": "Schema",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "2.0.0",
+      "description": "SemVer contract version for this schema.",
+      "examples": [
+        "2.0.0"
+      ],
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "shadow_trade_id": {
+      "format": "uuid",
+      "title": "Shadow Trade Id",
+      "type": "string"
+    },
+    "side": {
+      "$ref": "#/$defs/Side"
+    },
+    "strategy_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Strategy Id"
+    },
+    "symbol": {
+      "minLength": 1,
+      "title": "Symbol",
+      "type": "string"
+    },
+    "tenant_id": {
+      "description": "Tenant / org identifier.",
+      "minLength": 1,
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "traded_at": {
+      "description": "UTC timestamp when recorded.",
+      "format": "date-time",
+      "title": "Traded At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "schema_version",
+    "tenant_id",
+    "created_at",
+    "shadow_trade_id",
+    "symbol",
+    "asset_class",
+    "side",
+    "quantity",
+    "price",
+    "traded_at"
+  ],
+  "title": "AgentTrader v2 - ShadowTrade",
+  "type": "object"
+}
