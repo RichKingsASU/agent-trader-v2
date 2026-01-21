@@ -166,7 +166,7 @@ def test_sentiment_analysis(news_items):
         return False
 
 
-def test_decision_logic(news_items):
+async def test_decision_logic(news_items):
     """Test the complete decision-making logic"""
     logger.info("\n" + "=" * 60)
     logger.info("TEST 5: Decision Logic")
@@ -184,7 +184,7 @@ def test_decision_logic(news_items):
         
         logger.info(f"Making decision for {symbol} with {len(test_items)} news items...")
         
-        decision = make_decision(
+        decision = await make_decision(
             news_items=test_items,
             symbol=symbol,
             sentiment_threshold=0.7,
@@ -288,7 +288,7 @@ async def run_all_tests():
     
     # Test 5: Decision Logic (requires news)
     if news_items:
-        results["decision_logic"] = test_decision_logic(news_items)
+        results["decision_logic"] = await test_decision_logic(news_items)
     else:
         logger.warning("\nSkipping decision logic (no news items)")
         results["decision_logic"] = None
