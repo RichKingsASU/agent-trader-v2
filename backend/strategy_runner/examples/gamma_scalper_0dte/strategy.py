@@ -32,6 +32,7 @@ from datetime import date as date_type
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 from backend.time.nyse_time import NYSE_TZ, is_trading_day, parse_ts, to_nyse, utc_now
+from backend.common.trading_config import get_options_contract_multiplier
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +157,8 @@ def _get_net_portfolio_delta() -> Decimal:
         delta = _to_decimal(position.get("delta", 0))
         qty = _to_decimal(position.get("quantity", 0))
         # ASSUMPTION (explicit): incoming option delta is PER-CONTRACT delta.
-        # Convert to underlying-share equivalents by applying the 100x contract multiplier once.
-        net_delta += delta * qty * Decimal("100")
+        # Convert to underlying-share equivalents by applying the standard contract multiplier once.
+        net_delta += delta * qty * contract_multiplier
     
     return net_delta
 
