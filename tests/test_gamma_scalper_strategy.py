@@ -165,7 +165,7 @@ class TestHedgeQuantity:
         underlying_price = Decimal("495.50")
         hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
         # Should be negative (sell) to offset positive delta
-        assert hedge_qty == Decimal("-6")  # Rounded to nearest whole
+        assert hedge_qty == Decimal("-7")  # Rounded to nearest whole
     
     def test_negative_delta_requires_buy(self):
         net_delta = Decimal("-5.3")
@@ -184,8 +184,8 @@ class TestHedgeQuantity:
         net_delta = Decimal("6.5")
         underlying_price = Decimal("495.50")
         hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
-        # -6.5 should round to -6 (away from zero for .5)
-        assert hedge_qty == Decimal("-6")
+        # -6.5 rounds to -7 with ROUND_HALF_UP
+        assert hedge_qty == Decimal("-7")
 
 
 class TestShouldHedge:
@@ -279,44 +279,100 @@ class TestStrategyExecution:
         assert hedge_order["order_type"] == "market"
         assert hedge_order["client_tag"] == "0dte_gamma_scalper_hedge"
     
-    def test_exits_all_positions_at_close_time(self):
-        # Establish position
-        _portfolio_positions["SPY_CALL"] = {
-            "delta": Decimal("0.65"),
-            "quantity": Decimal("10"),
-            "price": Decimal("2.50"),
-            "symbol": "SPY_CALL",
-        }
-        
-        # Event at 3:45 PM ET (market close time)
-        event = {
+    def test_flattens_spy_once_at_close_time(self):
+        # First event: establish delta exposure and generate the single allowed SPY hedge entry
+        entry_event = {
             "protocol": "v1",
             "type": "market_event",
-            "event_id": "evt_close",
-            "ts": "2025-12-30T20:45:00Z",  # 3:45 PM ET
+            "event_id": "evt_001",
+            "ts": "2025-12-30T14:00:00Z",
             "symbol": "SPY_CALL",
             "source": "alpaca",
             "payload": {
                 "delta": 0.65,
                 "price": 2.50,
+                "quantity": 10,
                 "underlying_price": 495.50,
             },
         }
-        
-        orders = on_market_event(event)
-        
-        # Should generate exit order
+        entry_orders = on_market_event(entry_event)
+        assert entry_orders is not None and len(entry_orders) == 1
+        assert entry_orders[0]["symbol"] == "SPY"
+
+        # Event at 3:45 PM ET (market close time) should flatten SPY once
+        close_event = {
+            "protocol": "v1",
+            "type": "market_event",
+            "event_id": "evt_close",
+            "ts": "2025-12-30T20:45:00Z",  # 3:45 PM ET
+            "symbol": "SPY",
+            "source": "alpaca",
+            "payload": {"price": 495.50},
+        }
+        orders = on_market_event(close_event)
         assert orders is not None
-        assert len(orders) > 0
-        
+        assert len(orders) == 1
+
         exit_order = orders[0]
-        assert exit_order["symbol"] == "SPY_CALL"
-        assert exit_order["side"] == "sell"
+        assert exit_order["symbol"] == "SPY"
+        assert exit_order["side"] == "buy"  # offset the initial sell hedge
         assert exit_order["client_tag"] == "0dte_gamma_scalper_exit"
-        assert "market_close_exit" in exit_order["metadata"]["reason"]
-        
-        # Portfolio should be cleared
-        assert "SPY_CALL" not in _portfolio_positions
+        assert exit_order["metadata"]["reason"] == "daily_flatten"
+
+        # Calling again at/after close should not emit a second flatten
+        orders2 = on_market_event(close_event)
+        assert orders2 == [] or orders2 is None
+
+    def test_entry_cap_blocks_second_entry_same_trading_day(self):
+        event1 = {
+            "protocol": "v1",
+            "type": "market_event",
+            "event_id": "evt_001",
+            "ts": "2025-12-30T14:00:00Z",
+            "symbol": "SPY_CALL",
+            "source": "alpaca",
+            "payload": {
+                "delta": 0.65,
+                "price": 2.50,
+                "quantity": 10,
+                "underlying_price": 495.50,
+            },
+        }
+        orders1 = on_market_event(event1)
+        assert orders1 is not None and len(orders1) == 1
+
+        # Second event more than 60s later with same exposure would normally hedge again,
+        # but should be blocked by the daily entry cap.
+        event2 = dict(event1)
+        event2["event_id"] = "evt_002"
+        event2["ts"] = "2025-12-30T14:02:00Z"
+        orders2 = on_market_event(event2)
+        assert orders2 == [] or orders2 is None
+
+    def test_entry_cap_resets_next_trading_day(self):
+        event1 = {
+            "protocol": "v1",
+            "type": "market_event",
+            "event_id": "evt_001",
+            "ts": "2025-12-30T14:00:00Z",
+            "symbol": "SPY_CALL",
+            "source": "alpaca",
+            "payload": {
+                "delta": 0.65,
+                "price": 2.50,
+                "quantity": 10,
+                "underlying_price": 495.50,
+            },
+        }
+        orders1 = on_market_event(event1)
+        assert orders1 is not None and len(orders1) == 1
+
+        # Next trading day should allow a new single entry.
+        event_next_day = dict(event1)
+        event_next_day["event_id"] = "evt_101"
+        event_next_day["ts"] = "2025-12-31T14:00:00Z"
+        orders2 = on_market_event(event_next_day)
+        assert orders2 is not None and len(orders2) == 1
 
 
 class TestGEXIntegration:
@@ -325,10 +381,11 @@ class TestGEXIntegration:
     def test_negative_gex_uses_tighter_threshold(self):
         os.environ["GEX_VALUE"] = "-15000.0"
         
-        # Net delta = 0.12 (between tighter and standard thresholds)
+        # Use a position large enough to produce a non-zero share hedge,
+        # while still validating that the tighter (negative-GEX) threshold is used.
         _portfolio_positions["SPY_CALL"] = {
             "delta": Decimal("0.12"),
-            "quantity": Decimal("1"),
+            "quantity": Decimal("10"),
             "price": Decimal("2.50"),
         }
         
@@ -342,17 +399,16 @@ class TestGEXIntegration:
             "payload": {
                 "delta": 0.12,
                 "price": 2.50,
-                "quantity": 1,
+                "quantity": 10,
                 "underlying_price": 495.50,
             },
         }
         
         orders = on_market_event(event)
         
-        # Should hedge because 0.12 > 0.10 (negative GEX threshold)
-        # but would NOT hedge if threshold was 0.15
         assert orders is not None
         assert len(orders) > 0
+        assert orders[0]["metadata"]["hedging_threshold"] == str(HEDGING_THRESHOLD_NEGATIVE_GEX)
 
 
 if __name__ == "__main__":
