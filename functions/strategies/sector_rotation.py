@@ -96,6 +96,7 @@ class SectorRotationStrategy(BaseStrategy):
             if not self._should_rebalance(current_time):
                 return TradingSignal(
                     signal_type=SignalType.HOLD,
+                    symbol=self.market_index,
                     confidence=1.0,
                     reasoning="Not time to rebalance yet",
                     metadata={}
@@ -131,6 +132,7 @@ class SectorRotationStrategy(BaseStrategy):
             logger.exception(f"Error in SectorRotationStrategy.evaluate: {e}")
             return TradingSignal(
                 signal_type=SignalType.HOLD,
+                symbol=self.market_index,
                 confidence=0.0,
                 reasoning=f"Strategy error: {str(e)}",
                 metadata={"error": str(e)}
@@ -216,6 +218,7 @@ class SectorRotationStrategy(BaseStrategy):
         """Generate signal to move to cash during crash."""
         return TradingSignal(
             signal_type=SignalType.CLOSE_ALL,
+            symbol=self.market_index,
             confidence=1.0,
             reasoning=(
                 f"Market crash detected (SPY decline > {self.crash_threshold:.1%}). "
@@ -321,6 +324,7 @@ class SectorRotationStrategy(BaseStrategy):
         if num_sectors == 0:
             return TradingSignal(
                 signal_type=SignalType.HOLD,
+                symbol=self.market_index,
                 confidence=0.0,
                 reasoning="No sectors selected",
                 metadata={}
@@ -356,6 +360,7 @@ class SectorRotationStrategy(BaseStrategy):
         
         return TradingSignal(
             signal_type=signal_type,
+            symbol=self.market_index,
             confidence=confidence,
             reasoning=reasoning,
             metadata={
