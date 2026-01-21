@@ -18,7 +18,7 @@ from backend.observability.correlation import bind_correlation_id, get_or_create
 
 # --- Shared constants ---
 # Used for confirming execution via token.
-expected = str(get_secret("EXECUTION_CONFIRM_TOKEN", default="")).strip()
+expected = str(get_secret("EXECUTION_CONFIRM_TOKEN", fail_if_missing=False)).strip()
 
 
 def is_execution_confirmed(token: str) -> bool:
