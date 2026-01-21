@@ -104,7 +104,7 @@ class ExecutionEngineConfig:
         # --- Alpaca ---
         self.alpaca_api_key = get_secret("APCA_API_KEY_ID")
         self.alpaca_secret_key = get_secret("APCA_API_SECRET_KEY")
-        self.alpaca_base_url = get_secret("APCA_API_BASE_URL", default="https://paper-api.alpaca.markets")
+        self.alpaca_base_url = get_secret("APCA_API_BASE_URL", fail_if_missing=False) or "https://paper-api.alpaca.markets"
 
         # --- Check for contradictory settings ---
         if self.trading_mode == "live" and self.alpaca_base_url == "https://paper-api.alpaca.markets":
@@ -339,7 +339,7 @@ def get_all_secrets_for_config(app_state: Any) -> Dict[str, str]:
     # Alpaca credentials and base URL
     all_secrets["APCA_API_KEY_ID"] = get_secret("APCA_API_KEY_ID", fail_if_missing=False)
     all_secrets["APCA_API_SECRET_KEY"] = get_secret("APCA_API_SECRET_KEY", fail_if_missing=False)
-    all_secrets["APCA_API_BASE_URL"] = get_secret("APCA_API_BASE_URL", default="https://paper-api.alpaca.markets")
+    all_secrets["APCA_API_BASE_URL"] = get_secret("APCA_API_BASE_URL", fail_if_missing=False) or "https://paper-api.alpaca.markets"
 
     # Other potential secrets
     all_secrets["TENANT_ID"] = get_secret("TENANT_ID", fail_if_missing=False)
