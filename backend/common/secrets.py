@@ -1,7 +1,28 @@
+from __future__ import annotations
+
 import os
-from typing import Optional, Mapping
-from google.api_core import exceptions
-from google.cloud import secretmanager_v1
+from typing import Any, Optional
+
+# NOTE: `google-*` libs are optional in some test environments. Import lazily and
+# fail closed if Secret Manager access is attempted without the deps.
+try:  # pragma: no cover
+    from google.api_core import exceptions as _google_exceptions
+    from google.cloud import secretmanager_v1 as _secretmanager_v1
+except Exception:  # pragma: no cover
+    _google_exceptions = None
+    _secretmanager_v1 = None
+
+
+class _FallbackGoogleExceptions:
+    class NotFound(Exception):
+        pass
+
+    class PermissionDenied(Exception):
+        pass
+
+
+exceptions = _google_exceptions or _FallbackGoogleExceptions
+secretmanager_v1 = _secretmanager_v1
 
 # Default project_id inference:
 # We rely on GOOGLE_CLOUD_PROJECT or similar env vars to be available.
@@ -10,8 +31,10 @@ from google.cloud import secretmanager_v1
 
 _secret_manager_client = None
 
-def _get_secret_manager_client() -> secretmanager_v1.SecretManagerServiceClient:
+def _get_secret_manager_client() -> Any:
     """Initializes and returns the Secret Manager client."""
+    if secretmanager_v1 is None:
+        raise RuntimeError("Secret Manager client unavailable (missing google-cloud-secret-manager dependency).")
     global _secret_manager_client
     if _secret_manager_client is None:
         _secret_manager_client = secretmanager_v1.SecretManagerServiceClient()
