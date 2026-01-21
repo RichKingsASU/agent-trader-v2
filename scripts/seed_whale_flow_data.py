@@ -11,9 +11,17 @@ Usage:
 
 import argparse
 import random
+import sys
 from datetime import datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from google.cloud import firestore
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+import scripts.lib.exec_guard as exec_guard
 
 from backend.time.nyse_time import utc_now
 
@@ -299,4 +307,5 @@ def main():
 
 
 if __name__ == "__main__":
+    exec_guard.enforce_execution_policy(__file__, sys.argv)
     main()

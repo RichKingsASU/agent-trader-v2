@@ -20,6 +20,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Enforce script risk policy (fail-fast)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python ./scripts/ci/enforce_script_risk_policy.py
+
       - name: Install yamllint
         run: |
           python -m pip install --upgrade pip

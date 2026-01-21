@@ -109,6 +109,17 @@ main() {
   echo "Running AgentTrader v2 CI Safety Guard..."
   echo "Repo root: ${REPO_ROOT}"
 
+  # Script inventory/risk policy must run first (fast fail).
+  PY_BIN=""
+  if command -v python3 >/dev/null 2>&1; then
+    PY_BIN="python3"
+  elif command -v python >/dev/null 2>&1; then
+    PY_BIN="python"
+  else
+    fail "python is required to run scripts/ci/enforce_script_risk_policy.py"
+  fi
+  "${PY_BIN}" "${REPO_ROOT}/scripts/ci/enforce_script_risk_policy.py"
+
   # 1) No ':latest' image tags in YAML (exclude cloudbuild yamls)
   local -a yaml_files=()
   mapfile -d '' -t yaml_files < <(
