@@ -81,6 +81,11 @@ def _is_market_close_time(current_time: datetime) -> bool:
     return et_time.time() >= EXIT_TIME_ET
 
 
+def _et_trading_day(current_time: datetime) -> date:
+    """Return the NYSE (ET) trading day date for a timestamp."""
+    return to_nyse(current_time).date()
+
+
 def _get_net_portfolio_delta() -> Decimal:
     """
     Calculate Net Portfolio Delta from all open positions.
@@ -301,8 +306,16 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
             f"hedge_qty adjusted to {hedge_qty}"
         )
     
-    # Round to nearest whole share
-    return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    # Convert to whole shares.
+    #
+    # If delta threshold is exceeded but the computed hedge is < 1 share,
+    # we still need to trade a minimum of 1 share to actually reduce risk.
+    if abs(hedge_qty) < Decimal("1") and hedge_qty != Decimal("0"):
+        return Decimal("1") if hedge_qty > 0 else Decimal("-1")
+
+    # Otherwise round to nearest whole share.
+    # Use HALF_DOWN to avoid systematically over-hedging on .5 ties (e.g. 6.5 -> 6).
+    return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_DOWN)
 
 
 def _should_hedge(net_delta: Decimal, current_time: datetime, threshold: Decimal) -> bool:
