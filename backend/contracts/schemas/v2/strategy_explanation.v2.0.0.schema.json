@@ -1,0 +1,292 @@
+{
+  "$defs": {
+    "ExplanationSubjectType": {
+      "enum": [
+        "trading_signal",
+        "order_intent",
+        "shadow_trade",
+        "execution_result",
+        "risk_decision"
+      ],
+      "title": "ExplanationSubjectType",
+      "type": "string"
+    },
+    "KeyFactor": {
+      "additionalProperties": true,
+      "description": "A single factor used in a strategy explanation.",
+      "properties": {
+        "direction": {
+          "anyOf": [
+            {
+              "maxLength": 16,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional direction label (e.g., 'bullish', 'bearish', 'neutral').",
+          "title": "Direction"
+        },
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional relative importance score.",
+          "title": "Weight"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "KeyFactor",
+      "type": "object"
+    },
+    "ModelInfo": {
+      "additionalProperties": true,
+      "description": "Optional model/LLM metadata without vendor-specific fields.",
+      "properties": {
+        "model_name": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Name"
+        },
+        "model_version": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Version"
+        },
+        "prompt_hash": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional stable prompt/template hash.",
+          "title": "Prompt Hash"
+        }
+      },
+      "title": "ModelInfo",
+      "type": "object"
+    }
+  },
+  "$id": "agenttrader.v2/strategy_explanation.v2.0.0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "Human + machine-readable explanation for a strategy decision.",
+  "properties": {
+    "correlation_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional correlation id for end-to-end tracing across services.",
+      "title": "Correlation Id"
+    },
+    "created_at": {
+      "description": "UTC timestamp when created.",
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "enum": [
+            "prod",
+            "staging",
+            "dev",
+            "local"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional environment hint (prod/staging/dev/local).",
+      "title": "Environment"
+    },
+    "explanation_id": {
+      "format": "uuid",
+      "title": "Explanation Id",
+      "type": "string"
+    },
+    "key_factors": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/KeyFactor"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Key Factors"
+    },
+    "meta": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional, producer-provided metadata (non-sensitive, non-broker-specific).",
+      "title": "Meta"
+    },
+    "model_info": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModelInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "narrative": {
+      "anyOf": [
+        {
+          "maxLength": 16384,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional longer narrative.",
+      "title": "Narrative"
+    },
+    "options": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional non-broker-specific explainability extensions (safe to share).",
+      "title": "Options"
+    },
+    "schema": {
+      "const": "agenttrader.v2.strategy_explanation",
+      "title": "Schema",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "2.0.0",
+      "description": "SemVer contract version for this schema.",
+      "examples": [
+        "2.0.0"
+      ],
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "strategy_id": {
+      "minLength": 1,
+      "title": "Strategy Id",
+      "type": "string"
+    },
+    "subject_id": {
+      "description": "ID of the object being explained (e.g., signal_id, intent_id).",
+      "format": "uuid",
+      "title": "Subject Id",
+      "type": "string"
+    },
+    "subject_type": {
+      "$ref": "#/$defs/ExplanationSubjectType"
+    },
+    "summary": {
+      "description": "Short summary suitable for dashboards.",
+      "maxLength": 2048,
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    },
+    "tenant_id": {
+      "description": "Tenant / org identifier.",
+      "minLength": 1,
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "schema_version",
+    "tenant_id",
+    "created_at",
+    "explanation_id",
+    "strategy_id",
+    "subject_type",
+    "subject_id",
+    "summary"
+  ],
+  "title": "AgentTrader v2 - StrategyExplanation",
+  "type": "object"
+}
