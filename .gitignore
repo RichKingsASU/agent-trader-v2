@@ -20,6 +20,7 @@ service-account-key.json
 !firebase.json
 !.firebaserc
 !scripts/ci/script_risk_policy_manifest.json
+!backend/contracts/schemas/**/*.json
 !package.json
 !package-lock.json
 !npm-shrinkwrap.json
