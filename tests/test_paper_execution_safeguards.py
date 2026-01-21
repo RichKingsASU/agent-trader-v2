@@ -91,11 +91,20 @@ def sample_intent():
 def test_alpaca_broker_place_order_paper_mode_allowed(monkeypatch, mock_alpaca_env, sample_intent):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     broker = AlpacaBroker(request_timeout_s=10.0)
     broker._alpaca = mock_alpaca_env  # Inject mock env
     
     with patch("backend.common.runtime_execution_prevention.fatal_if_execution_reached") as mock_fatal:
-        broker.place_order(intent=sample_intent)
+        # Patch network call so the unit test is hermetic.
+        with patch("requests.post") as post:
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {"id": "mock_order_id", "status": "new", "filled_qty": "0"}
+            post.return_value = resp
+            # AlpacaBroker also enforces AGENT_MODE=LIVE for broker actions.
+            monkeypatch.setenv("AGENT_MODE", "LIVE")
+            broker.place_order(intent=sample_intent)
         mock_fatal.assert_not_called()
         # Assert that the underlying HTTP call would have been made (mocked away in real test)
         # For this test, we just confirm fatal_if_execution_reached was not called.
@@ -103,6 +112,7 @@ def test_alpaca_broker_place_order_paper_mode_allowed(monkeypatch, mock_alpaca_e
 def test_alpaca_broker_place_order_live_url_blocked_in_paper_mode(monkeypatch, mock_live_alpaca_env, sample_intent):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     broker = AlpacaBroker(request_timeout_s=10.0)
     broker._alpaca = mock_live_alpaca_env # Inject mock live env
     
@@ -112,6 +122,7 @@ def test_alpaca_broker_place_order_live_url_blocked_in_paper_mode(monkeypatch, m
 def test_alpaca_broker_place_order_non_paper_mode_blocked_even_if_url_is_paper(monkeypatch, mock_alpaca_env, sample_intent):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "live") # Not paper
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     broker = AlpacaBroker(request_timeout_s=10.0)
     broker._alpaca = mock_alpaca_env # Inject mock paper env
     
@@ -122,15 +133,23 @@ def test_alpaca_broker_place_order_non_paper_mode_blocked_even_if_url_is_paper(m
 def test_alpaca_broker_cancel_order_paper_mode_allowed(monkeypatch, mock_alpaca_env):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     broker = AlpacaBroker(request_timeout_s=10.0)
     broker._alpaca = mock_alpaca_env
     with patch("backend.common.runtime_execution_prevention.fatal_if_execution_reached") as mock_fatal:
-        broker.cancel_order(broker_order_id="test_id")
+        with patch("requests.delete") as delete:
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {"id": "test_id", "status": "canceled"}
+            delete.return_value = resp
+            monkeypatch.setenv("AGENT_MODE", "LIVE")
+            broker.cancel_order(broker_order_id="test_id")
         mock_fatal.assert_not_called()
 
 def test_alpaca_broker_cancel_order_live_url_blocked_in_paper_mode(monkeypatch, mock_live_alpaca_env):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     broker = AlpacaBroker(request_timeout_s=10.0)
     broker._alpaca = mock_live_alpaca_env
     with pytest.raises(FatalExecutionPathError):
@@ -139,6 +158,7 @@ def test_alpaca_broker_cancel_order_live_url_blocked_in_paper_mode(monkeypatch, 
 def test_alpaca_broker_cancel_order_non_paper_mode_blocked_even_if_url_is_paper(monkeypatch, mock_alpaca_env):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "live")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     broker = AlpacaBroker(request_timeout_s=10.0)
     broker._alpaca = mock_alpaca_env
     with pytest.raises(FatalExecutionPathError):
@@ -148,15 +168,23 @@ def test_alpaca_broker_cancel_order_non_paper_mode_blocked_even_if_url_is_paper(
 def test_alpaca_broker_get_order_status_paper_mode_allowed(monkeypatch, mock_alpaca_env):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     broker = AlpacaBroker(request_timeout_s=10.0)
     broker._alpaca = mock_alpaca_env
     with patch("backend.common.runtime_execution_prevention.fatal_if_execution_reached") as mock_fatal:
-        broker.get_order_status(broker_order_id="test_id")
+        with patch("requests.get") as get:
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {"id": "test_id", "status": "new", "filled_qty": "0"}
+            get.return_value = resp
+            monkeypatch.setenv("AGENT_MODE", "LIVE")
+            broker.get_order_status(broker_order_id="test_id")
         mock_fatal.assert_not_called()
 
 def test_alpaca_broker_get_order_status_live_url_blocked_in_paper_mode(monkeypatch, mock_live_alpaca_env):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     broker = AlpacaBroker(request_timeout_s=10.0)
     broker._alpaca = mock_live_alpaca_env
     with pytest.raises(FatalExecutionPathError):
@@ -165,6 +193,7 @@ def test_alpaca_broker_get_order_status_live_url_blocked_in_paper_mode(monkeypat
 def test_alpaca_broker_get_order_status_non_paper_mode_blocked_even_if_url_is_paper(monkeypatch, mock_alpaca_env):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "live")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     broker = AlpacaBroker(request_timeout_s=10.0)
     broker._alpaca = mock_alpaca_env
     with pytest.raises(FatalExecutionPathError):
@@ -176,8 +205,13 @@ def test_alpaca_broker_get_order_status_non_paper_mode_blocked_even_if_url_is_pa
 def test_execution_engine_cancel_paper_mode_allowed(monkeypatch, mock_execution_engine):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     # Simulate internal broker instance being paper-configured
-    mock_execution_engine._broker._alpaca.api_base_url = "https://paper-api.alpaca.markets"
+    mock_execution_engine._broker._alpaca = ApcaEnv(
+        api_key_id=mock_execution_engine._broker._alpaca.api_key_id,
+        api_secret_key=mock_execution_engine._broker._alpaca.api_secret_key,
+        api_base_url="https://paper-api.alpaca.markets",
+    )
     with patch("backend.common.runtime_execution_prevention.fatal_if_execution_reached") as mock_fatal:
         mock_execution_engine.cancel(broker_order_id="test_id")
         mock_fatal.assert_not_called()
@@ -185,14 +219,20 @@ def test_execution_engine_cancel_paper_mode_allowed(monkeypatch, mock_execution_
 def test_execution_engine_cancel_live_url_blocked_in_paper_mode(monkeypatch, mock_execution_engine_live_url):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     with pytest.raises(FatalExecutionPathError):
         mock_execution_engine_live_url.cancel(broker_order_id="test_id")
 
 def test_execution_engine_cancel_non_paper_mode_blocked_even_if_url_is_paper(monkeypatch, mock_execution_engine):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "live")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     # Simulate internal broker instance being paper-configured
-    mock_execution_engine._broker._alpaca.api_base_url = "https://paper-api.alpaca.markets"
+    mock_execution_engine._broker._alpaca = ApcaEnv(
+        api_key_id=mock_execution_engine._broker._alpaca.api_key_id,
+        api_secret_key=mock_execution_engine._broker._alpaca.api_secret_key,
+        api_base_url="https://paper-api.alpaca.markets",
+    )
     with pytest.raises(FatalExecutionPathError):
         mock_execution_engine.cancel(broker_order_id="test_id")
 
@@ -200,8 +240,13 @@ def test_execution_engine_cancel_non_paper_mode_blocked_even_if_url_is_paper(mon
 def test_execution_engine_sync_and_ledger_if_filled_paper_mode_allowed(monkeypatch, mock_execution_engine):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     # Simulate internal broker instance being paper-configured
-    mock_execution_engine._broker._alpaca.api_base_url = "https://paper-api.alpaca.markets"
+    mock_execution_engine._broker._alpaca = ApcaEnv(
+        api_key_id=mock_execution_engine._broker._alpaca.api_key_id,
+        api_secret_key=mock_execution_engine._broker._alpaca.api_secret_key,
+        api_base_url="https://paper-api.alpaca.markets",
+    )
     with patch("backend.common.runtime_execution_prevention.fatal_if_execution_reached") as mock_fatal:
         mock_execution_engine.sync_and_ledger_if_filled(broker_order_id="test_id")
         mock_fatal.assert_not_called()
@@ -210,16 +255,32 @@ def test_execution_engine_sync_and_ledger_if_filled_paper_mode_allowed(monkeypat
 def test_execution_engine_sync_and_ledger_if_filled_live_url_blocked_in_paper_mode(monkeypatch, mock_execution_engine_live_url):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     with pytest.raises(FatalExecutionPathError):
         mock_execution_engine_live_url.sync_and_ledger_if_filled(broker_order_id="test_id")
 
 def test_execution_engine_sync_and_ledger_if_filled_non_paper_mode_blocked_even_if_url_is_paper(monkeypatch, mock_execution_engine):
     _require_engine()
     monkeypatch.setenv("TRADING_MODE", "live")
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
     # Simulate internal broker instance being paper-configured
-    mock_execution_engine._broker._alpaca.api_base_url = "https://paper-api.alpaca.markets"
+    mock_execution_engine._broker._alpaca = ApcaEnv(
+        api_key_id=mock_execution_engine._broker._alpaca.api_key_id,
+        api_secret_key=mock_execution_engine._broker._alpaca.api_secret_key,
+        api_base_url="https://paper-api.alpaca.markets",
+    )
     with pytest.raises(FatalExecutionPathError):
         mock_execution_engine.sync_and_ledger_if_filled(broker_order_id="test_id")
+
+
+def test_execution_enabled_false_blocks_broker_calls(monkeypatch, mock_alpaca_env, sample_intent):
+    monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("EXECUTION_ENABLED", "false")
+    monkeypatch.setenv("AGENT_MODE", "LIVE")
+    broker = AlpacaBroker(request_timeout_s=10.0)
+    broker._alpaca = mock_alpaca_env
+    with pytest.raises(RuntimeError, match="Execution disabled"):
+        broker.place_order(intent=sample_intent)
 
 
 # --- Tests for functions/utils/apca_env.py ---

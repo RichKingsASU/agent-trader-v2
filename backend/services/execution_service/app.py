@@ -256,7 +256,7 @@ def ops_status() -> dict[str, Any]:
     hb = check_market_ingest_heartbeat(tenant_id=tenant_id, stale_threshold_seconds=stale_s)
 
     # Execution can be intentionally disabled / scaled to 0.
-    execution_enabled = _bool_env("EXECUTION_ENABLED", True)
+    execution_enabled = _bool_env("EXECUTION_ENABLED", False)
     execution_replicas = None
     try:
         execution_replicas = int(os.getenv("EXECUTION_REPLICAS") or "") if os.getenv("EXECUTION_REPLICAS") else None

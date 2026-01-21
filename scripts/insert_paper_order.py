@@ -13,7 +13,6 @@ from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.common.exceptions import APIError
 
-# Import get_secret for DATABASE_URL retrieval
 from backend.common.secrets import get_secret
 
 def main():
@@ -47,25 +46,14 @@ def main():
         print("ERROR: DATABASE_URL is missing and essential for operation.")
         exit(1)
 
-    api_key = os.getenv("APCA_API_KEY_ID")
-    secret_key = os.getenv("APCA_API_SECRET_KEY")
-    from backend.common.env import assert_paper_alpaca_base_url, is_execution_enabled  # type: ignore
+    from backend.common.execution_enabled import require_execution_enabled
+    from backend.common.env import assert_paper_alpaca_base_url
 
-    if not is_execution_enabled():
-        print("REFUSED: execution is disabled (set EXECUTION_ENABLED=1 to allow paper order placement).")
-        raise SystemExit(2)
-
-    expected = (os.getenv("EXECUTION_CONFIRM_TOKEN") or "").strip()
-    if not expected:
-        print("REFUSED: missing EXECUTION_CONFIRM_TOKEN (required for any order placement).")
-        raise SystemExit(2)
-    if str(args.execution_confirm).strip() != expected:
-        print("REFUSED: EXECUTION_CONFIRM mismatch (token did not match EXECUTION_CONFIRM_TOKEN).")
-        raise SystemExit(2)
-
-    # Safety: if a base URL is configured, it must be paper-only.
+    api_key = (get_secret("APCA_API_KEY_ID", fail_if_missing=False) or os.getenv("APCA_API_KEY_ID") or "").strip()
+    secret_key = (get_secret("APCA_API_SECRET_KEY", fail_if_missing=False) or os.getenv("APCA_API_SECRET_KEY") or "").strip()
+    base_url = (get_secret("APCA_API_BASE_URL", fail_if_missing=False) or os.getenv("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets").strip()
     try:
-        _ = assert_paper_alpaca_base_url(os.getenv("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets")
+        _ = assert_paper_alpaca_base_url(base_url)
     except Exception as e:
         print(f"REFUSED: invalid Alpaca trading base URL: {e}")
         raise SystemExit(2)
@@ -76,6 +64,7 @@ def main():
 
     print("--> Inserting test order into DB: SPY BUY 1 Qty")
     try:
+        require_execution_enabled(operation="scripts.insert_paper_order.submit_order", context={"symbol": "SPY", "side": "buy", "qty": 1})
         trading_client = TradingClient(api_key, secret_key, paper=True)
         market_order_data = MarketOrderRequest(
             symbol="SPY",

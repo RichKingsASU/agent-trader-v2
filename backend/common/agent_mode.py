@@ -11,12 +11,14 @@ class AgentMode(str, Enum):
     Values:
     - DISABLED: trading fully disabled (default)
     - WARMUP: strategies may run, but MUST NOT trade
+    - PAPER: paper-trading runtime (MUST NOT place broker orders unless other explicit gates allow)
     - LIVE: trading allowed (only execution-capable runtime should ever set this)
     - HALTED: emergency stop; MUST refuse trading regardless of other flags
     """
 
     DISABLED = "DISABLED"
     WARMUP = "WARMUP"
+    PAPER = "PAPER"
     LIVE = "LIVE"
     HALTED = "HALTED"
 
