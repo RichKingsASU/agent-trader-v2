@@ -22,6 +22,7 @@ cd "${REPO_ROOT}"
 echo "Running CI guardrails..."
 echo "Repo root: ${REPO_ROOT}"
 
+python3 "${REPO_ROOT}/scripts/ci/enforce_script_risk_policy.py"
 python3 "${REPO_ROOT}/scripts/ci/validate_yaml_syntax.py"
 bash "${REPO_ROOT}/scripts/ci/check_bash_guardrails.sh"
 python3 "${REPO_ROOT}/scripts/ci/check_no_latest_tags.py"

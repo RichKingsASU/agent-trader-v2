@@ -122,6 +122,21 @@ CI hard-codes these paths. Moving/renaming them is a breaking change unless CI i
 
 These invariants are **non-negotiable**. They are enforced via guard scripts and/or operational “production lock” policy, and should never be weakened casually.
 
+### Script risk policy (`scripts/ci/enforce_script_risk_policy.py`)
+
+CI enforces an explicit inventory of runnable scripts under `scripts/**` via:
+
+- **Policy**: `scripts/ci/enforce_script_risk_policy.py` (read-only scanner)
+- **Manifest**: `scripts/ci/script_risk_policy_manifest.json`
+
+If CI fails this check:
+
+- **Missing scripts in manifest**: add the new `scripts/...(.sh|.py)` path to the manifest with an appropriate `category`.
+- **Extra manifest entries**: remove entries for scripts that were deleted or renamed.
+- **Duplicate entries**: deduplicate the manifest so each script path appears once.
+- **Invalid categories**: set `category` to one of: `ci`, `ops`, `deploy`, `dev`, `execution`.
+- **Missing exec guard invocation (only when `requires_exec_guard: true`)**: ensure the script contains a kill-switch guard (e.g., `get_kill_switch_state` / `EXECUTION_HALTED`) or change the manifest entry to not require the guard if the script is not execution-capable.
+
 ### CI safety guard (`scripts/ci_safety_guard.sh`)
 
 The guard is intended to be **read-only** and **fail-fast** if it detects:

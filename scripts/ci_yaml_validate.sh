@@ -4,6 +4,18 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "${REPO_ROOT}"
 
+# Script inventory/risk policy must run first (fast fail).
+PY_BIN=""
+if command -v python3 >/dev/null 2>&1; then
+  PY_BIN="python3"
+elif command -v python >/dev/null 2>&1; then
+  PY_BIN="python"
+else
+  echo "ERROR: python is required to run scripts/ci/enforce_script_risk_policy.py" >&2
+  exit 2
+fi
+"${PY_BIN}" "${REPO_ROOT}/scripts/ci/enforce_script_risk_policy.py"
+
 mapfile -t YAML_FILES < <(git ls-files '*.yaml' '*.yml')
 
 if [[ ${#YAML_FILES[@]} -eq 0 ]]; then
