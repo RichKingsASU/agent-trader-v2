@@ -226,3 +226,71 @@ Suggested fields:
 | `deliveryAttempt` | number | ⛔ | If available. |
 | `expiresAt` | timestamp | ✅ | TTL field. |
 
+---
+
+## 5) `ops_agents/{agentId}` (Agent Registry)
+
+Represents a **centralized agent registry entry** with:
+
+- **metadata** (identity/ownership/runtime coordinates)
+- **capabilities**
+- **lifecycle mode/state** (observe/shadow/paper + disabled/emergency stop)
+- **health status** (heartbeat-driven)
+
+This is intended as a **server-written read model** (similar to `ops_services`) for an ops dashboard and control plane.
+
+### Document ID strategy
+
+- **Recommended**: `{environment}.{agentName}`
+  - Examples: `prod.strategy-engine`, `prod.execution-service`, `prod.marketdata-mcp-server`
+
+### Fields
+
+| Field | Type | Required | Notes |
+|---|---:|:---:|---|
+| `agentId` | string | ✅ | Must equal document ID. |
+| `displayName` | string | ✅ | UI-friendly. |
+| `kind` | string | ✅ | Enum: `service`, `strategy`, `execution`, `worker`, `cron`. |
+| `environment` | string | ✅ | `dev`, `staging`, `prod`. |
+| `capabilities` | map | ✅ | Boolean flags (e.g. `can_execute_paper`, `can_publish_heartbeats`). |
+| `lifecycle` | map | ✅ | Contains desired/observed/effective lifecycle states + audit fields. |
+| `health` | map | ✅ | Health enum + heartbeat timestamps. |
+| `owner` | map | ⛔ | `{ team, oncall, runbookUrl }`. |
+| `runtime` | map | ⛔ | `{ platform, region, namespace, workload, instanceId }`. |
+| `version` | map | ⛔ | `{ gitSha, imageTag, buildTime }`. |
+| `labels` | map | ⛔ | Low-cardinality tags. |
+| `meta` | map | ⛔ | Free-form server metadata. |
+| `createdAt` | timestamp | ✅ | Server timestamp. |
+| `updatedAt` | timestamp | ✅ | Server write time for latest material change. |
+
+Recommended `lifecycle` fields:
+
+- `desiredState`: enum `registered`, `observing`, `shadow_active`, `paper_active`, `disabled`, `emergency_stop`
+- `observedState`: same enum (best-effort from heartbeats)
+- `effectiveState`: computed enum after kill-switch/safety overlay
+- `lastTransitionAt`, `lastDesiredChangeAt`: timestamps
+- `changedBy`: `{ actorType, actorId, actorEmail, ticket }`
+
+Recommended `health` fields:
+
+- `status`: enum `healthy`, `degraded`, `down`, `unknown`
+- `lastHeartbeatAt`: timestamp
+- `reasonCodes`: array of strings (bounded)
+- `links`: `{ logs, metrics, runbook }`
+
+### Indexed fields
+
+- **Composite**: `lifecycle.effectiveState`, `updatedAt`
+- **Composite**: `health.status`, `health.lastHeartbeatAt`
+- **Single-field (default)**: `updatedAt`, `environment`, `kind`
+
+### Optional subcollections (recommended)
+
+#### `ops_agents/{agentId}/events/{eventId}` (collection group: `events`)
+
+Append-only transition/audit history (bounded via TTL).
+
+Suggested fields:
+
+- `at` (timestamp), `type` (string), `fromState` (string), `toState` (string), `actor` (map), `reason` (string), `meta` (map), `expiresAt` (timestamp)
+
