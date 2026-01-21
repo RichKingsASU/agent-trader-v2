@@ -1,0 +1,361 @@
+{
+  "$defs": {
+    "ExecutionFill": {
+      "additionalProperties": true,
+      "description": "Broker-agnostic fill representation.",
+      "properties": {
+        "fee": {
+          "anyOf": [
+            {
+              "description": "Base-10 decimal encoded as a JSON string.",
+              "examples": [
+                "0",
+                "1",
+                "10.5",
+                "-0.01"
+              ],
+              "pattern": "^-?\\d+(\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional fee in quote currency.",
+          "title": "Fee"
+        },
+        "fee_currency": {
+          "anyOf": [
+            {
+              "maxLength": 3,
+              "minLength": 3,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fee Currency"
+        },
+        "fill_id": {
+          "description": "Stable fill id assigned by our system.",
+          "format": "uuid",
+          "title": "Fill Id",
+          "type": "string"
+        },
+        "filled_at": {
+          "format": "date-time",
+          "title": "Filled At",
+          "type": "string"
+        },
+        "price": {
+          "description": "Base-10 decimal encoded as a JSON string.",
+          "examples": [
+            "0",
+            "1",
+            "10.5",
+            "-0.01"
+          ],
+          "pattern": "^-?\\d+(\\.\\d+)?$",
+          "title": "Price",
+          "type": "string"
+        },
+        "quantity": {
+          "description": "Base-10 decimal encoded as a JSON string.",
+          "examples": [
+            "0",
+            "1",
+            "10.5",
+            "-0.01"
+          ],
+          "pattern": "^-?\\d+(\\.\\d+)?$",
+          "title": "Quantity",
+          "type": "string"
+        },
+        "side": {
+          "$ref": "#/$defs/Side"
+        }
+      },
+      "required": [
+        "fill_id",
+        "filled_at",
+        "side",
+        "quantity",
+        "price"
+      ],
+      "title": "ExecutionFill",
+      "type": "object"
+    },
+    "ExecutionStatus": {
+      "enum": [
+        "accepted",
+        "rejected",
+        "partially_filled",
+        "filled",
+        "cancelled",
+        "expired",
+        "failed"
+      ],
+      "title": "ExecutionStatus",
+      "type": "string"
+    },
+    "Side": {
+      "enum": [
+        "buy",
+        "sell"
+      ],
+      "title": "Side",
+      "type": "string"
+    }
+  },
+  "$id": "agenttrader.v2/execution_result.v2.0.0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "Result of an ExecutionAttempt.",
+  "properties": {
+    "attempt_id": {
+      "format": "uuid",
+      "title": "Attempt Id",
+      "type": "string"
+    },
+    "average_fill_price": {
+      "anyOf": [
+        {
+          "description": "Base-10 decimal encoded as a JSON string.",
+          "examples": [
+            "0",
+            "1",
+            "10.5",
+            "-0.01"
+          ],
+          "pattern": "^-?\\d+(\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Average Fill Price"
+    },
+    "correlation_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional correlation id for end-to-end tracing across services.",
+      "title": "Correlation Id"
+    },
+    "created_at": {
+      "description": "UTC timestamp when created.",
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "enum": [
+            "prod",
+            "staging",
+            "dev",
+            "local"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional environment hint (prod/staging/dev/local).",
+      "title": "Environment"
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Code"
+    },
+    "error_message": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Message"
+    },
+    "external_ids": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional external system references (no broker-specific fields in core contract).",
+      "title": "External Ids"
+    },
+    "filled_quantity": {
+      "anyOf": [
+        {
+          "description": "Base-10 decimal encoded as a JSON string.",
+          "examples": [
+            "0",
+            "1",
+            "10.5",
+            "-0.01"
+          ],
+          "pattern": "^-?\\d+(\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Filled Quantity"
+    },
+    "fills": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/ExecutionFill"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional fill breakdown (broker-agnostic).",
+      "title": "Fills"
+    },
+    "intent_id": {
+      "format": "uuid",
+      "title": "Intent Id",
+      "type": "string"
+    },
+    "meta": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional, producer-provided metadata (non-sensitive, non-broker-specific).",
+      "title": "Meta"
+    },
+    "options": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional non-broker-specific diagnostics (safe to share across services).",
+      "title": "Options"
+    },
+    "recorded_at": {
+      "description": "UTC timestamp when recorded.",
+      "format": "date-time",
+      "title": "Recorded At",
+      "type": "string"
+    },
+    "remaining_quantity": {
+      "anyOf": [
+        {
+          "description": "Base-10 decimal encoded as a JSON string.",
+          "examples": [
+            "0",
+            "1",
+            "10.5",
+            "-0.01"
+          ],
+          "pattern": "^-?\\d+(\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Remaining Quantity"
+    },
+    "result_id": {
+      "format": "uuid",
+      "title": "Result Id",
+      "type": "string"
+    },
+    "schema": {
+      "const": "agenttrader.v2.execution_result",
+      "title": "Schema",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "2.0.0",
+      "description": "SemVer contract version for this schema.",
+      "examples": [
+        "2.0.0"
+      ],
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/ExecutionStatus"
+    },
+    "tenant_id": {
+      "description": "Tenant / org identifier.",
+      "minLength": 1,
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "schema_version",
+    "tenant_id",
+    "created_at",
+    "result_id",
+    "attempt_id",
+    "intent_id",
+    "recorded_at",
+    "status"
+  ],
+  "title": "AgentTrader v2 - ExecutionResult",
+  "type": "object"
+}
