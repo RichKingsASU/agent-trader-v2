@@ -31,6 +31,7 @@ from datetime import date, datetime, time
 from decimal import Decimal, ROUND_HALF_DOWN, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 from backend.time.nyse_time import NYSE_TZ, parse_ts, to_nyse, utc_now
+from backend.common.trading_config import get_options_contract_multiplier
 
 logger = logging.getLogger(__name__)
 
@@ -89,16 +90,16 @@ def _get_net_portfolio_delta() -> Decimal:
     Calculate Net Portfolio Delta from all open positions.
     
     Returns:
-        Decimal: Sum of (position_delta * quantity) for all positions
+        Decimal: Sum of share-equivalent deltas for all option positions.
     """
     net_delta = Decimal("0")
+    contract_multiplier = Decimal(str(get_options_contract_multiplier()))
     
     for symbol, position in _portfolio_positions.items():
         delta = _to_decimal(position.get("delta", 0))
         qty = _to_decimal(position.get("quantity", 0))
-        # For options: net_delta += delta * qty * 100 (contract multiplier)
-        # For simplicity, assuming delta already accounts for position size
-        net_delta += delta * qty
+        # Options delta is per-share for 1 contract; convert to shares.
+        net_delta += delta * qty * contract_multiplier
     
     return net_delta
 
@@ -327,7 +328,10 @@ def _should_hedge(net_delta: Decimal, current_time: datetime) -> bool:
         bool: True if hedging is needed
     """
     threshold = _get_hedging_threshold()
-    abs_delta = abs(net_delta)
+    # Thresholds are specified in "contract-delta" units (e.g. 0.15),
+    # while net_delta is computed in share-equivalent units. Normalize.
+    contract_multiplier = Decimal(str(get_options_contract_multiplier()))
+    abs_delta = abs(net_delta) / contract_multiplier if contract_multiplier != Decimal("0") else abs(net_delta)
     
     # Check if delta exceeds threshold
     if abs_delta <= threshold:
