@@ -1,0 +1,339 @@
+{
+  "$defs": {
+    "RiskDecisionType": {
+      "enum": [
+        "allow",
+        "deny",
+        "modify"
+      ],
+      "title": "RiskDecisionType",
+      "type": "string"
+    },
+    "RiskModification": {
+      "additionalProperties": true,
+      "description": "Suggested modifications when decision=modify (e.g., reduce size).",
+      "properties": {
+        "max_notional": {
+          "anyOf": [
+            {
+              "description": "Base-10 decimal encoded as a JSON string.",
+              "examples": [
+                "0",
+                "1",
+                "10.5",
+                "-0.01"
+              ],
+              "pattern": "^-?\\d+(\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Notional"
+        },
+        "max_slippage_bps": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Slippage Bps"
+        },
+        "notional": {
+          "anyOf": [
+            {
+              "description": "Base-10 decimal encoded as a JSON string.",
+              "examples": [
+                "0",
+                "1",
+                "10.5",
+                "-0.01"
+              ],
+              "pattern": "^-?\\d+(\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notional"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Options"
+        },
+        "quantity": {
+          "anyOf": [
+            {
+              "description": "Base-10 decimal encoded as a JSON string.",
+              "examples": [
+                "0",
+                "1",
+                "10.5",
+                "-0.01"
+              ],
+              "pattern": "^-?\\d+(\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quantity"
+        }
+      },
+      "title": "RiskModification",
+      "type": "object"
+    },
+    "RiskReason": {
+      "additionalProperties": true,
+      "properties": {
+        "code": {
+          "description": "Stable machine-readable reason code.",
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional human-readable detail.",
+          "title": "Message"
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional severity label (e.g., 'warn', 'error').",
+          "title": "Severity"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "title": "RiskReason",
+      "type": "object"
+    }
+  },
+  "$id": "agenttrader.v2/risk_decision.v2.0.0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "Result of evaluating an OrderIntent (or related action) against risk policy.",
+  "properties": {
+    "account_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional tenant-level account/portfolio id (not broker account id).",
+      "title": "Account Id"
+    },
+    "allowed": {
+      "description": "Convenience boolean (typically decision==allow). Consumers should primarily use `decision`.",
+      "title": "Allowed",
+      "type": "boolean"
+    },
+    "correlation_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional correlation id for end-to-end tracing across services.",
+      "title": "Correlation Id"
+    },
+    "created_at": {
+      "description": "UTC timestamp when created.",
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "decision": {
+      "$ref": "#/$defs/RiskDecisionType"
+    },
+    "decision_id": {
+      "format": "uuid",
+      "title": "Decision Id",
+      "type": "string"
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "enum": [
+            "prod",
+            "staging",
+            "dev",
+            "local"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional environment hint (prod/staging/dev/local).",
+      "title": "Environment"
+    },
+    "evaluated_at": {
+      "description": "UTC evaluation timestamp.",
+      "format": "date-time",
+      "title": "Evaluated At",
+      "type": "string"
+    },
+    "intent_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional linkage to the evaluated OrderIntent.",
+      "title": "Intent Id"
+    },
+    "meta": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional, producer-provided metadata (non-sensitive, non-broker-specific).",
+      "title": "Meta"
+    },
+    "modification": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RiskModification"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Present when decision=modify to describe suggested changes."
+    },
+    "options": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional non-broker-specific policy evaluation details (redacted/approved for sharing).",
+      "title": "Options"
+    },
+    "reasons": {
+      "description": "Zero-or-more reasons. SHOULD be non-empty for deny/modify.",
+      "items": {
+        "$ref": "#/$defs/RiskReason"
+      },
+      "title": "Reasons",
+      "type": "array"
+    },
+    "schema": {
+      "const": "agenttrader.v2.risk_decision",
+      "title": "Schema",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "2.0.0",
+      "description": "SemVer contract version for this schema.",
+      "examples": [
+        "2.0.0"
+      ],
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "strategy_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Strategy Id"
+    },
+    "tenant_id": {
+      "description": "Tenant / org identifier.",
+      "minLength": 1,
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "schema_version",
+    "tenant_id",
+    "created_at",
+    "decision_id",
+    "evaluated_at",
+    "decision",
+    "allowed",
+    "reasons"
+  ],
+  "title": "AgentTrader v2 - RiskDecision",
+  "type": "object"
+}

@@ -1,0 +1,159 @@
+{
+  "$defs": {
+    "ExecutionMode": {
+      "enum": [
+        "live",
+        "paper",
+        "simulated"
+      ],
+      "title": "ExecutionMode",
+      "type": "string"
+    }
+  },
+  "$id": "agenttrader.v2/execution_attempt.v2.0.0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "An attempt to execute an OrderIntent (may be retried).",
+  "properties": {
+    "attempt_id": {
+      "format": "uuid",
+      "title": "Attempt Id",
+      "type": "string"
+    },
+    "attempt_number": {
+      "description": "1 for first attempt, increments on retries.",
+      "minimum": 1,
+      "title": "Attempt Number",
+      "type": "integer"
+    },
+    "correlation_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional correlation id for end-to-end tracing across services.",
+      "title": "Correlation Id"
+    },
+    "created_at": {
+      "description": "UTC timestamp when created.",
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "enum": [
+            "prod",
+            "staging",
+            "dev",
+            "local"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional environment hint (prod/staging/dev/local).",
+      "title": "Environment"
+    },
+    "execution_mode": {
+      "$ref": "#/$defs/ExecutionMode"
+    },
+    "idempotency_key": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional idempotency key to dedupe retries across services.",
+      "title": "Idempotency Key"
+    },
+    "intent_id": {
+      "description": "The OrderIntent being executed.",
+      "format": "uuid",
+      "title": "Intent Id",
+      "type": "string"
+    },
+    "meta": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional, producer-provided metadata (non-sensitive, non-broker-specific).",
+      "title": "Meta"
+    },
+    "options": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional non-broker-specific execution settings (e.g., internal routing hints).",
+      "title": "Options"
+    },
+    "requested_at": {
+      "description": "UTC timestamp when attempt started.",
+      "format": "date-time",
+      "title": "Requested At",
+      "type": "string"
+    },
+    "schema": {
+      "const": "agenttrader.v2.execution_attempt",
+      "title": "Schema",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "2.0.0",
+      "description": "SemVer contract version for this schema.",
+      "examples": [
+        "2.0.0"
+      ],
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "tenant_id": {
+      "description": "Tenant / org identifier.",
+      "minLength": 1,
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "schema_version",
+    "tenant_id",
+    "created_at",
+    "attempt_id",
+    "intent_id",
+    "attempt_number",
+    "requested_at",
+    "execution_mode"
+  ],
+  "title": "AgentTrader v2 - ExecutionAttempt",
+  "type": "object"
+}
