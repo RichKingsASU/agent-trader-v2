@@ -90,6 +90,48 @@ class MacroAnalysis:
     timestamp: datetime
 
 
+# Safety-critical allowlists:
+# This module is a REGIME MODIFIER. It must never output trade direction.
+# We therefore constrain any LLM-provided "recommended_action" to a strict allowlist
+# that only affects risk/threshold posture (or HOLD-equivalent pause).
+ALLOWED_RECOMMENDED_ACTIONS = {
+    "widen_stops",
+    "tighten_stops",
+    "reduce_size",
+    "pause_trading",
+    "normal",
+}
+
+ALLOWED_VOLATILITY_LEVELS = {"low", "medium", "high", "extreme"}
+ALLOWED_MARKET_IMPACTS = {"bullish", "bearish", "neutral"}  # advisory only; never persisted to regime doc
+
+
+def _sanitize_llm_action(value: Any) -> str:
+    """
+    Sanitize LLM-provided action into a strict, non-directional allowlist.
+
+    Any unknown/unsafe value becomes "pause_trading" (HOLD-equivalent posture).
+    """
+    v = str(value or "").strip().lower()
+    if v in ALLOWED_RECOMMENDED_ACTIONS:
+        return v
+    # Guard against common directional words even if not exact matches
+    if any(tok in v for tok in ("buy", "sell", "long", "short")):
+        return "pause_trading"
+    return "pause_trading"
+
+
+def _sanitize_llm_volatility(value: Any) -> str:
+    v = str(value or "").strip().lower()
+    return v if v in ALLOWED_VOLATILITY_LEVELS else "high"
+
+
+def _sanitize_llm_market_impact(value: Any) -> str:
+    # Advisory only; downstream must NOT use this to choose direction.
+    v = str(value or "").strip().lower()
+    return v if v in ALLOWED_MARKET_IMPACTS else "neutral"
+
+
 # Major economic indicators to monitor
 MAJOR_ECONOMIC_EVENTS = {
     "CPI": {
@@ -479,11 +521,13 @@ Respond in this EXACT JSON format:
             event_name=release.event_name,
             is_significant_surprise=bool(data["is_significant_surprise"]),
             surprise_magnitude=float(data["surprise_magnitude"]),
-            market_impact=str(data["market_impact"]),
-            volatility_expectation=str(data["volatility_expectation"]),
-            recommended_action=str(data["recommended_action"]),
-            confidence_score=float(data["confidence_score"]),
-            reasoning=str(data["reasoning"]),
+            # NOTE: market_impact is advisory only. We do NOT persist it to the regime doc.
+            market_impact=_sanitize_llm_market_impact(data.get("market_impact")),
+            volatility_expectation=_sanitize_llm_volatility(data.get("volatility_expectation")),
+            # Safety: constrain to non-directional, regime-only actions.
+            recommended_action=_sanitize_llm_action(data.get("recommended_action")),
+            confidence_score=float(data.get("confidence_score") or 0.0),
+            reasoning=str(data.get("reasoning") or ""),
             timestamp=datetime.now(timezone.utc)
         )
 
@@ -569,9 +613,12 @@ class MacroEventCoordinator:
                 analysis = self.analyzer.analyze_economic_release(release, related_news)
                 
                 if analysis and analysis.is_significant_surprise:
+                    # Safety: keep only regime-safe analysis fields (no directional guidance).
+                    analysis_dict = asdict(analysis)
+                    analysis_dict.pop("market_impact", None)  # advisory; never part of regime modifier contract
                     significant_events.append({
                         "release": asdict(release),
-                        "analysis": asdict(analysis),
+                        "analysis": analysis_dict,
                         "related_news_count": len(related_news)
                     })
                     
@@ -656,7 +703,8 @@ class MacroEventCoordinator:
             current_regime = regime_ref.get()
             regime_data = current_regime.to_dict() if current_regime.exists else {}
             
-            # Update with macro event status
+            # Update with macro event status (REGIME MODIFIER ONLY).
+            # Important: Do NOT store any directional fields (e.g., "bullish/bearish").
             regime_data.update({
                 "macro_event_status": status.value,
                 "macro_event_detected": True,
@@ -666,7 +714,7 @@ class MacroEventCoordinator:
                         "event_name": e["release"]["event_name"],
                         "surprise_magnitude": e["analysis"]["surprise_magnitude"],
                         "volatility_expectation": e["analysis"]["volatility_expectation"],
-                        "recommended_action": e["analysis"]["recommended_action"],
+                        "recommended_action": _sanitize_llm_action(e["analysis"].get("recommended_action")),
                         "confidence": e["analysis"]["confidence_score"],
                         "reasoning": e["analysis"]["reasoning"]
                     }
@@ -687,7 +735,8 @@ class MacroEventCoordinator:
                 f"Position size multiplier: {regime_data['position_size_multiplier']:.2f}x"
             )
             
-            # Also write to a dedicated macro_events subcollection for history
+            # Also write to a dedicated macro_events subcollection for history.
+            # Safety: archive only regime-safe fields (no directional "market_impact").
             self._archive_event(events)
             
         except Exception as e:
@@ -729,10 +778,28 @@ class MacroEventCoordinator:
         try:
             for event_data in events:
                 doc_ref = self.db.collection("systemStatus").document("market_regime").collection("macro_events").document()
-                doc_ref.set({
-                    **event_data,
-                    "archived_at": firestore.SERVER_TIMESTAMP
-                })
+                release = event_data.get("release") or {}
+                analysis = event_data.get("analysis") or {}
+                doc_ref.set(
+                    {
+                        "release": {
+                            # Keep only the minimal identifying fields (no PII / no direction).
+                            "event_name": release.get("event_name"),
+                            "release_time": release.get("release_time"),
+                            "source": release.get("source"),
+                        },
+                        "analysis": {
+                            "is_significant_surprise": bool(analysis.get("is_significant_surprise", True)),
+                            "surprise_magnitude": analysis.get("surprise_magnitude"),
+                            "volatility_expectation": _sanitize_llm_volatility(analysis.get("volatility_expectation")),
+                            "recommended_action": _sanitize_llm_action(analysis.get("recommended_action")),
+                            "confidence_score": analysis.get("confidence_score"),
+                            "reasoning": analysis.get("reasoning"),
+                        },
+                        "related_news_count": event_data.get("related_news_count", 0),
+                        "archived_at": firestore.SERVER_TIMESTAMP,
+                    }
+                )
         except Exception as e:
             logger.warning(f"Failed to archive macro events: {e}")
     

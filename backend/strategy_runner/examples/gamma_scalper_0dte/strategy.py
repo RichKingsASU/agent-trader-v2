@@ -50,6 +50,8 @@ _macro_event_active: bool = False
 _stop_loss_multiplier: Decimal = Decimal("1.0")
 _position_size_multiplier: Decimal = Decimal("1.0")
 _last_macro_check: Optional[datetime] = None
+_strategy_day_et: Optional[date] = None
+_halted_day_et: Optional[date] = None
 
 # Daily safety latch (NYSE trading day scoped)
 _latch_trading_day: Optional[date_type] = None
@@ -358,8 +360,16 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
             f"hedge_qty adjusted to {hedge_qty}"
         )
     
-    # Round to nearest whole share
-    return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    # Convert to whole shares.
+    #
+    # If delta threshold is exceeded but the computed hedge is < 1 share,
+    # we still need to trade a minimum of 1 share to actually reduce risk.
+    if abs(hedge_qty) < Decimal("1") and hedge_qty != Decimal("0"):
+        return Decimal("1") if hedge_qty > 0 else Decimal("-1")
+
+    # Otherwise round to nearest whole share.
+    # Use HALF_DOWN to avoid systematically over-hedging on .5 ties (e.g. 6.5 -> 6).
+    return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_DOWN)
 
 
 def _should_hedge(net_delta: Decimal, current_time: datetime) -> bool:
