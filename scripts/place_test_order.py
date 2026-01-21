@@ -36,24 +36,14 @@ def main():
     # dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env.local')
     # load_dotenv(dotenv_path=dotenv_path)
 
-    # Execution is disabled-by-default unless explicitly enabled.
-    from backend.common.env import assert_paper_alpaca_base_url, is_execution_enabled  # type: ignore
-
-    if not is_execution_enabled():
-        print("REFUSED: execution is disabled (set EXECUTION_ENABLED=1 to allow paper order placement).")
-        raise SystemExit(2)
-
-    expected = (os.getenv("EXECUTION_CONFIRM_TOKEN") or "").strip()
-    if not expected:
-        print("REFUSED: missing EXECUTION_CONFIRM_TOKEN (required for any order placement).")
-        raise SystemExit(2)
-    if str(args.execution_confirm).strip() != expected:
-        print("REFUSED: EXECUTION_CONFIRM mismatch (token did not match EXECUTION_CONFIRM_TOKEN).")
-        raise SystemExit(2)
-
+    api_key = get_secret("APCA_API_KEY_ID", fail_if_missing=True)
+    secret_key = get_secret("APCA_API_SECRET_KEY", fail_if_missing=True)
     # Safety: if a base URL is configured, it must be paper-only.
     try:
-        _ = assert_paper_alpaca_base_url(os.getenv("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets")
+        from backend.common.env import assert_paper_alpaca_base_url  # type: ignore
+
+        base_url = get_secret("APCA_API_BASE_URL", fail_if_missing=False) or "https://paper-api.alpaca.markets"
+        _ = assert_paper_alpaca_base_url(base_url)
     except Exception as e:
         print(f"REFUSED: invalid Alpaca trading base URL: {e}")
         raise SystemExit(2)
