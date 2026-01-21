@@ -94,6 +94,10 @@ def _policies() -> dict[str, Policy]:
             risk=ScriptRisk.MUST_LOCK,
             note="Places a broker order and/or writes trading artifacts.",
         ),
+        "scripts/run_gamma_scalper.py": Policy(
+            risk=ScriptRisk.MUST_LOCK,
+            note="Execution-capable strategy loop (can place/close broker orders even if paper).",
+        ),
         "backend/strategy_service/scripts/insert_paper_order.py": Policy(
             risk=ScriptRisk.MUST_LOCK,
             note="Writes paper order rows to the database.",

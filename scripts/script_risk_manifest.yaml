@@ -111,6 +111,7 @@ NEVER_AUTO:
   - scripts/run-ticker-service.sh
   - scripts/run_gemini_with_master_prompt.sh
   - scripts/run_sector_rotation_strategy.py
+  - scripts/run_gamma_scalper.py
   - scripts/run_sentiment_strategy.sh
   - scripts/run_stress_test.py
   - scripts/seed_sentiment_data.py

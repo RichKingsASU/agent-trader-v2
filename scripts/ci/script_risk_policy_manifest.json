@@ -7,6 +7,11 @@
       "requires_exec_guard": false
     },
     {
+      "path": "scripts/__init__.py",
+      "category": "ci",
+      "requires_exec_guard": false
+    },
+    {
       "path": "scripts/audit_cloudrun.sh",
       "category": "ops",
       "requires_exec_guard": false
@@ -184,6 +189,16 @@
     {
       "path": "scripts/import_runtime_modules.py",
       "category": "dev",
+      "requires_exec_guard": false
+    },
+    {
+      "path": "scripts/lib/__init__.py",
+      "category": "ci",
+      "requires_exec_guard": false
+    },
+    {
+      "path": "scripts/lib/exec_guard.py",
+      "category": "ci",
       "requires_exec_guard": false
     },
     {
@@ -380,6 +395,11 @@
       "path": "scripts/run_stress_test.py",
       "category": "dev",
       "requires_exec_guard": false
+    },
+    {
+      "path": "scripts/run_gamma_scalper.py",
+      "category": "execution",
+      "requires_exec_guard": true
     },
     {
       "path": "scripts/seed_sentiment_data.py",
