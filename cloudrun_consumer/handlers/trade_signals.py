@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from cloudrun_consumer.event_utils import choose_doc_id, ordering_ts, parse_ts
 from cloudrun_consumer.firestore_writer import SourceInfo
-from cloudrun_consumer.replay_support import ReplayContext
+from cloudrun_consumer.replay_support import ReplayContext, ensure_event_not_applied
 
 
 _logger = logging.getLogger("cloudrun_consumer")
@@ -233,6 +233,7 @@ def handle_trade_signal(
         pubsub_published_at=pubsub_published_at,
         source_topic=source_topic,
     )
+    replay_dedupe_key = choose_trade_signal_dedupe_key(payload=payload, message_id=message_id)
     applied, reason = firestore_writer.upsert_trade_signal(
         doc_id=doc_id,
         event_id=event_id,
