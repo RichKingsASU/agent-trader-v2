@@ -27,7 +27,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, time
+from datetime import datetime, time, date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 from backend.time.nyse_time import NYSE_TZ, parse_ts, to_nyse, utc_now
@@ -48,6 +48,9 @@ _macro_event_active: bool = False
 _stop_loss_multiplier: Decimal = Decimal("1.0")
 _position_size_multiplier: Decimal = Decimal("1.0")
 _last_macro_check: Optional[datetime] = None
+_last_hedge_trade_date: Optional[date] = None  # America/New_York date of last hedge intent
+_spy_hedge_qty: Decimal = Decimal("0")  # Running SPY hedge share exposure from emitted intents
+_halted: bool = False  # Hard halt latch after 15:45 ET exit logic
 
 
 def _to_decimal(value: Any) -> Decimal:
@@ -82,16 +85,16 @@ def _get_net_portfolio_delta() -> Decimal:
     Calculate Net Portfolio Delta from all open positions.
     
     Returns:
-        Decimal: Sum of (position_delta * quantity) for all positions
+        Decimal: Net delta in underlying-share equivalents
     """
     net_delta = Decimal("0")
     
     for symbol, position in _portfolio_positions.items():
         delta = _to_decimal(position.get("delta", 0))
         qty = _to_decimal(position.get("quantity", 0))
-        # For options: net_delta += delta * qty * 100 (contract multiplier)
-        # For simplicity, assuming delta already accounts for position size
-        net_delta += delta * qty
+        # ASSUMPTION (explicit): incoming option delta is PER-CONTRACT delta.
+        # Convert to underlying-share equivalents by applying the 100x contract multiplier once.
+        net_delta += delta * qty * Decimal("100")
     
     return net_delta
 
@@ -300,18 +303,18 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
     return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
 
-def _should_hedge(net_delta: Decimal, current_time: datetime) -> bool:
+def _should_hedge(net_delta: Decimal, current_time: datetime, threshold: Decimal) -> bool:
     """
     Determine if we should hedge based on delta threshold and timing.
     
     Args:
         net_delta: Current net portfolio delta
         current_time: Current timestamp
+        threshold: Current hedging threshold
     
     Returns:
         bool: True if hedging is needed
     """
-    threshold = _get_hedging_threshold()
     abs_delta = abs(net_delta)
     
     # Check if delta exceeds threshold
@@ -324,6 +327,10 @@ def _should_hedge(net_delta: Decimal, current_time: datetime) -> bool:
     if _last_hedge_time is not None:
         time_since_last_hedge = (current_time - _last_hedge_time).total_seconds()
         if time_since_last_hedge < 60:  # 60 seconds minimum between hedges
+            logger.info(
+                "Hedge rate-limit applied (min_interval_s=60, since_last_s=%.2f)",
+                time_since_last_hedge,
+            )
             return False
     
     return True
@@ -477,6 +484,8 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     Returns:
         List of order intents, or None/empty list if no action needed
     """
+    global _halted, _spy_hedge_qty, _last_hedge_trade_date
+
     # Extract event data
     event_id = event.get("event_id", "")
     ts = event.get("ts", "")
@@ -484,12 +493,59 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     payload = event.get("payload", {}) or {}
     
     current_time = _parse_timestamp(ts)
+    et_now = to_nyse(current_time)
+
+    # Hard halt: after exit at/after 15:45 ET, do not update state and emit NO_OP forever.
+    if _halted:
+        return []
     
     # Safety check: Exit all positions at 3:45 PM ET
     if _is_market_close_time(current_time):
-        exit_orders = _create_exit_orders(current_time, event_id, ts)
+        has_option_exposure = any(
+            _to_decimal(pos.get("quantity", 0)) != Decimal("0") for pos in _portfolio_positions.values()
+        )
+        has_spy_hedge = _spy_hedge_qty != Decimal("0")
+
+        exit_orders: List[Dict[str, Any]] = []
+        if has_option_exposure:
+            exit_orders.extend(_create_exit_orders(current_time, event_id, ts))
+
+        if has_spy_hedge:
+            # Close SPY hedge exposure tracked from emitted hedge intents.
+            side = "sell" if _spy_hedge_qty > Decimal("0") else "buy"
+            exit_orders.append(
+                {
+                    "protocol": "v1",
+                    "type": "order_intent",
+                    "intent_id": f"exit_SPY_{uuid.uuid4().hex[:12]}",
+                    "event_id": event_id,
+                    "ts": ts,
+                    "symbol": "SPY",
+                    "side": side,
+                    "qty": float(abs(_spy_hedge_qty)),
+                    "order_type": "market",
+                    "time_in_force": "day",
+                    "client_tag": "0dte_gamma_scalper_exit",
+                    "metadata": {
+                        "reason": "market_close_exit",
+                        "exit_time_et": et_now.isoformat(),
+                        "strategy": "0dte_gamma_scalper",
+                        "closes_spy_hedge_qty": str(_spy_hedge_qty),
+                    },
+                }
+            )
+
         if exit_orders:
-            return exit_orders
+            logger.info("Exit triggered at/after 15:45 ET (et_now=%s)", et_now.isoformat())
+
+        # After 15:45 ET we hard-halt regardless of exposure.
+        _halted = True
+        logger.info("Strategy halted (hard 15:45 ET halt engaged)")
+
+        # Reset internal exposure state after exit/halt.
+        _spy_hedge_qty = Decimal("0")
+        _last_hedge_trade_date = None
+        return exit_orders
     
     # Update position tracking
     # Check if this is an options contract or underlying
@@ -501,11 +557,33 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     
     # Calculate Net Portfolio Delta
     net_delta = _get_net_portfolio_delta()
+    threshold = _get_hedging_threshold()
+    gex = _last_gex_value
+    threshold_reason_parts: List[str] = []
+    if gex is not None and gex < Decimal("0"):
+        threshold_reason_parts.append("negative_gex")
+    else:
+        threshold_reason_parts.append("base")
+    if _macro_event_active:
+        threshold_reason_parts.append("macro")
+    threshold_reason = "+".join(threshold_reason_parts)
+    logger.info(
+        "Computed net_delta=%s (share-equiv), threshold=%s (reason=%s)",
+        str(net_delta),
+        str(threshold),
+        threshold_reason,
+    )
     
     # Check if hedging is needed
-    if not _should_hedge(net_delta, current_time):
+    if not _should_hedge(net_delta, current_time, threshold):
         return []
     
+    # One-trade-per-day latch (America/New_York date), exit logic is exempt.
+    today_et = et_now.date()
+    if _last_hedge_trade_date == today_et:
+        logger.info("One-trade-per-day latch triggered (date_et=%s)", today_et.isoformat())
+        return []
+
     # Determine underlying symbol for hedging
     # For options on SPY, hedge with SPY; for SPX options, use SPY as proxy
     underlying_symbol = "SPY"  # Default underlying
@@ -519,6 +597,7 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     
     # Calculate hedge quantity
     hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
+    logger.info("Computed hedge_qty=%s (SPY shares)", str(hedge_qty))
     
     if hedge_qty == Decimal("0"):
         return []
@@ -532,7 +611,10 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
         event_id=event_id,
         ts=ts,
     )
-    
+
+    # Track hedge exposure and apply one-trade-per-day latch on successful intent emission.
+    _spy_hedge_qty += hedge_qty
+    _last_hedge_trade_date = today_et
     return [hedge_order]
 
 
@@ -541,6 +623,7 @@ def reset_strategy_state() -> None:
     """Reset all strategy state (useful for testing)."""
     global _portfolio_positions, _last_gex_value, _last_gex_update, _last_hedge_time
     global _macro_event_active, _stop_loss_multiplier, _position_size_multiplier, _last_macro_check
+    global _last_hedge_trade_date, _spy_hedge_qty, _halted
     _portfolio_positions.clear()
     _last_gex_value = None
     _last_gex_update = None
@@ -549,3 +632,6 @@ def reset_strategy_state() -> None:
     _stop_loss_multiplier = Decimal("1.0")
     _position_size_multiplier = Decimal("1.0")
     _last_macro_check = None
+    _last_hedge_trade_date = None
+    _spy_hedge_qty = Decimal("0")
+    _halted = False
