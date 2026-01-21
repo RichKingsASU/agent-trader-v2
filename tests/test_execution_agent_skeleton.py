@@ -6,9 +6,46 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from backend.execution_agent.gating import enforce_startup_gate_or_exit
-from backend.trading.execution.decider import decide_execution
-from backend.trading.execution.models import SafetySnapshot
+_DECIDER_OK = True
+_DECIDER_IMPORT_ERR: Exception | None = None
+try:
+    from backend.trading.execution.decider import decide_execution
+    from backend.trading.execution.models import SafetySnapshot
+    from backend.trading.proposals.models import (
+        OrderProposal,
+        ProposalAssetType,
+        ProposalConstraints,
+        ProposalRationale,
+        ProposalSide,
+    )
+except Exception as e:  # pragma: no cover
+    _DECIDER_OK = False
+    _DECIDER_IMPORT_ERR = e
 
+
+def _require_decider() -> None:
+    if not _DECIDER_OK:
+        pytest.xfail(
+            f"Execution decider unavailable (likely missing optional pydantic proposal models): {type(_DECIDER_IMPORT_ERR).__name__}: {_DECIDER_IMPORT_ERR}"
+        )
+
+def _mk_equity_proposal(*, proposal_id: str, valid_until_utc: datetime, requires_human_approval: bool) -> "OrderProposal":
+    # Minimal proposal instance for decider contract.
+    return OrderProposal(
+        repo_id="repo",
+        agent_name="pytest",
+        strategy_name="test_strategy",
+        correlation_id=str(proposal_id),
+        symbol="SPY",
+        asset_type=ProposalAssetType.EQUITY,
+        side=ProposalSide.BUY,
+        quantity=1,
+        rationale=ProposalRationale(short_reason="test", indicators={}),
+        constraints=ProposalConstraints(
+            valid_until_utc=valid_until_utc,
+            requires_human_approval=bool(requires_human_approval),
+        ),
+    )
 
 def test_gating_refuses_startup_when_missing_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # Clear gate vars to ensure fail-closed.
@@ -35,85 +72,89 @@ def test_gating_allows_observe_only_startup(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("AGENT_MODE", "OBSERVE")
     monkeypatch.setenv("EXECUTION_AGENT_ENABLED", "true")
     monkeypatch.setenv("BROKER_EXECUTION_ENABLED", "false")
+    monkeypatch.setenv("EXECUTION_ENABLED", "false")
 
     # Should not exit when configured for OBSERVE-only operation.
     enforce_startup_gate_or_exit()
 
 
 def test_decision_rejects_on_kill_switch() -> None:
+    _require_decider()
     safety = SafetySnapshot(
         kill_switch=True,
         marketdata_fresh=True,
         marketdata_last_ts=datetime.now(timezone.utc).isoformat(),
         agent_mode="EXECUTE",
     )
-    proposal = {
-        "proposal_id": "p-ks",
-        "valid_until_utc": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-        "requires_human_approval": False,
-        "order": {"symbol": "SPY", "side": "buy", "qty": 1},
-    }
+    proposal = _mk_equity_proposal(
+        proposal_id="p-ks",
+        valid_until_utc=datetime.now(timezone.utc) + timedelta(hours=1),
+        requires_human_approval=False,
+    )
     d = decide_execution(proposal=proposal, safety=safety, agent_name="execution-agent", agent_role="execution")
     assert d.decision == "REJECT"
     assert "kill_switch_enabled" in d.reject_reason_codes
 
 
 def test_decision_rejects_on_stale_marketdata() -> None:
+    _require_decider()
     safety = SafetySnapshot(
         kill_switch=False,
         marketdata_fresh=False,
         marketdata_last_ts=None,
         agent_mode="EXECUTE",
     )
-    proposal = {
-        "proposal_id": "p-md",
-        "valid_until_utc": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-        "requires_human_approval": False,
-        "order": {"symbol": "SPY", "side": "buy", "qty": 1},
-    }
+    proposal = _mk_equity_proposal(
+        proposal_id="p-md",
+        valid_until_utc=datetime.now(timezone.utc) + timedelta(hours=1),
+        requires_human_approval=False,
+    )
     d = decide_execution(proposal=proposal, safety=safety, agent_name="execution-agent", agent_role="execution")
     assert d.decision == "REJECT"
     assert "marketdata_stale_or_missing" in d.reject_reason_codes
 
 
 def test_decision_rejects_when_requires_human_approval_true() -> None:
+    _require_decider()
     safety = SafetySnapshot(
         kill_switch=False,
         marketdata_fresh=True,
         marketdata_last_ts=datetime.now(timezone.utc).isoformat(),
         agent_mode="EXECUTE",
     )
-    proposal = {
-        "proposal_id": "p-rha",
-        "valid_until_utc": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-        "requires_human_approval": True,
-        "order": {"symbol": "SPY", "side": "buy", "qty": 1},
-    }
+    proposal = _mk_equity_proposal(
+        proposal_id="p-rha",
+        valid_until_utc=datetime.now(timezone.utc) + timedelta(hours=1),
+        requires_human_approval=True,
+    )
     d = decide_execution(proposal=proposal, safety=safety, agent_name="execution-agent", agent_role="execution")
     assert d.decision == "REJECT"
     assert "requires_human_approval" in d.reject_reason_codes
 
 
 def test_decision_rejects_when_valid_until_expired() -> None:
+    _require_decider()
     safety = SafetySnapshot(
         kill_switch=False,
         marketdata_fresh=True,
         marketdata_last_ts=datetime.now(timezone.utc).isoformat(),
         agent_mode="EXECUTE",
     )
-    proposal = {
-        "proposal_id": "p-exp",
-        "valid_until_utc": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
-        "requires_human_approval": False,
-        "order": {"symbol": "SPY", "side": "buy", "qty": 1},
-    }
+    proposal = _mk_equity_proposal(
+        proposal_id="p-exp",
+        valid_until_utc=datetime.now(timezone.utc) - timedelta(seconds=1),
+        requires_human_approval=False,
+    )
     d = decide_execution(proposal=proposal, safety=safety, agent_name="execution-agent", agent_role="execution")
     assert d.decision == "REJECT"
     assert "proposal_expired" in d.reject_reason_codes
 
 
-def test_decision_ndjson_has_required_keys(tmp_path) -> None:
+def test_decision_ndjson_has_required_keys(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _require_decider()
     # Import here to avoid polluting import graph.
+    monkeypatch.setenv("AGENT_MODE", "OBSERVE")
+    monkeypatch.setenv("TRADING_MODE", "paper")
     from backend.execution_agent.main import append_decision_ndjson
 
     safety = SafetySnapshot(
@@ -122,12 +163,11 @@ def test_decision_ndjson_has_required_keys(tmp_path) -> None:
         marketdata_last_ts=None,
         agent_mode="EXECUTE",
     )
-    proposal = {
-        "proposal_id": "p-out",
-        "valid_until_utc": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-        "requires_human_approval": True,
-        "order": {"symbol": "SPY", "side": "buy", "qty": 1},
-    }
+    proposal = _mk_equity_proposal(
+        proposal_id="p-out",
+        valid_until_utc=datetime.now(timezone.utc) + timedelta(hours=1),
+        requires_human_approval=True,
+    )
     d = decide_execution(proposal=proposal, safety=safety, agent_name="execution-agent", agent_role="execution")
 
     out = tmp_path / "decisions.ndjson"

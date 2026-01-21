@@ -52,6 +52,21 @@ def signals_subject(tenant_id: str, strategy_id: str, symbol: str) -> str:
     )
 
 
+def signals_v2_subject(tenant_id: str, strategy_id: str, symbol: str) -> str:
+    """
+    Canonical subject for v2 TradingSignal messages.
+
+    Intentionally separate from legacy `signals.*` subjects to avoid consumers
+    accidentally decoding the wrong schema version.
+    """
+
+    return (
+        f"signals_v2.{_token(tenant_id, name='tenant_id')}"
+        f".{_token(strategy_id, name='strategy_id')}"
+        f".{_token(symbol, name='symbol')}"
+    )
+
+
 def orders_subject(tenant_id: str, account_id: str) -> str:
     return f"orders.{_token(tenant_id, name='tenant_id')}.{_token(account_id, name='account_id')}"
 
