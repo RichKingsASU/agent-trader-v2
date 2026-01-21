@@ -16,6 +16,13 @@ from typing import List, Dict, Any
 strategy_dir = Path(__file__).parent
 sys.path.insert(0, str(strategy_dir))
 
+# Ensure repo root is importable so `import backend.*` works when running this file directly.
+repo_root = strategy_dir.resolve().parents[3]
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from backend.metrics.scalper_metrics import GammaScalperPrecisionMetrics
+
 from strategy import (
     on_market_event,
     reset_strategy_state,
@@ -89,6 +96,9 @@ def test_strategy_with_events(events_file: Path, set_negative_gex: bool = False)
     # Load events
     events = load_events(events_file)
     out(f"📥 Loaded {len(events)} market events\n")
+
+    # Precision metrics collector (prints at end of this simulation run)
+    metrics = GammaScalperPrecisionMetrics()
     
     # Process each event
     for i, event in enumerate(events, 1):
@@ -111,6 +121,7 @@ def test_strategy_with_events(events_file: Path, set_negative_gex: bool = False)
         # Process event
         out("\n⚙️  Processing event...")
         orders = on_market_event(event)
+        metrics.record_event(event, orders)
         
         # Display results
         if orders:
@@ -139,6 +150,10 @@ def test_strategy_with_events(events_file: Path, set_negative_gex: bool = False)
     print_separator()
     out("✅ Strategy test complete!")
     print_separator()
+
+    # Print precision metrics summary after the simulation run
+    out("")
+    metrics.print_summary()
 
 
 def main() -> None:
