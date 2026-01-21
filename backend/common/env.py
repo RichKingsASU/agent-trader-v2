@@ -58,9 +58,6 @@ def get_alpaca_api_base_url(*, required: bool = True) -> str | None:
         return None
     return v[:-1] if v.endswith("/") else v
 
-    Preferred:
-    - FIREBASE_PROJECT_ID
-
 def assert_paper_alpaca_base_url(url: str) -> str:
     """
     Safety boundary: refuse any non-paper Alpaca trading host.
@@ -110,6 +107,17 @@ def _should_allow_env_fallback() -> bool:
         _allow_env_secret_fallback = os.getenv("ALLOW_ENV_SECRET_FALLBACK", "0").strip().lower() == "1"
     return _allow_env_secret_fallback
 
+
+def _should_allow_env_fallback_for_name(name: str) -> bool:
+    """
+    Per-variable policy gate for env fallback.
+
+    Today this is a simple global flag; keeping it as a function allows tightening
+    later without changing call sites.
+    """
+    _ = name
+    return _should_allow_env_fallback()
+
 __all__ = [
     "get_env",
     "get_firebase_project_id",
@@ -144,6 +152,31 @@ def get_env(name: str, default: Any = None, *, required: bool = False) -> Any:
             return str(env_value).strip()
 
     # If still not found and required, raise error
+    if required:
+        raise RuntimeError(
+            "Missing required env var: FIREBASE_PROJECT_ID (or FIRESTORE_PROJECT_ID / GOOGLE_CLOUD_PROJECT / GCP_PROJECT)"
+        )
+    return ""
+
+
+def get_firebase_project_id(*, required: bool = False) -> str:
+    """
+    Preferred:
+    - FIREBASE_PROJECT_ID
+
+    Acceptable fallbacks:
+    - FIRESTORE_PROJECT_ID
+    - GOOGLE_CLOUD_PROJECT
+    - GCP_PROJECT
+    """
+    v = (
+        get_env("FIREBASE_PROJECT_ID", default=None)
+        or get_env("FIRESTORE_PROJECT_ID", default=None)
+        or get_env("GOOGLE_CLOUD_PROJECT", default=None)
+        or get_env("GCP_PROJECT", default=None)
+    )
+    if v:
+        return str(v).strip()
     if required:
         raise RuntimeError(
             "Missing required env var: FIREBASE_PROJECT_ID (or FIRESTORE_PROJECT_ID / GOOGLE_CLOUD_PROJECT / GCP_PROJECT)"
@@ -198,23 +231,21 @@ def get_alpaca_api_key(*, required: bool = True) -> str | None:
 
 
 def get_alpaca_secret_key(*, required: bool = True) -> str | None:
-    v = get_env("APCA_API_SECRET_KEY", None, required=required)
-    return str(v).strip() if v is not None else None
-
+    """
     Env contract (official Alpaca SDK):
     - APCA_API_SECRET_KEY
     """
-    # Canonical (official Alpaca SDK)
-    v = get_env("APCA_API_SECRET_KEY", default=None, required=False)
-    # Common historical/infra aliases (normalize to canonical so Alpaca SDKs can read them).
-    v = v or get_env("ALPACA_SECRET_KEY", default=None, required=False)
-    v = v or get_env("ALPACA_API_SECRET_KEY", default=None, required=False)
-    v = v or get_env("APCA_API_SECRET", default=None, required=False)  # legacy
-    if v:
-        s = str(v).strip()
-        if s:
+    v = get_env("APCA_API_SECRET_KEY", None, required=required)
+    if v is not None and str(v).strip():
+        return str(v).strip()
+    # Common aliases (best-effort).
+    for alias in ("ALPACA_SECRET_KEY", "ALPACA_API_SECRET_KEY", "APCA_API_SECRET"):
+        a = get_env(alias, None, required=False)
+        if a is not None and str(a).strip():
+            s = str(a).strip()
             os.environ.setdefault("APCA_API_SECRET_KEY", s)
             return s
+    return None
 
 def get_alpaca_api_base_url(*, required: bool = True) -> str | None:
     # Default to paper URL for safety if not explicitly set.
@@ -239,12 +270,16 @@ def assert_paper_alpaca_base_url(url: str) -> str:
         raise RuntimeError(f"REFUSED: Alpaca base URL must not include credentials: {raw!r}")
     if parsed.query or parsed.fragment:
         raise RuntimeError(f"REFUSED: Alpaca base URL must not include query/fragment: {raw!r}")
-    if parsed.port not in (None, 443):
+    # Disallow any explicit port, even 443 (defense-in-depth).
+    if parsed.port is not None:
         raise RuntimeError(f"REFUSED: Alpaca base URL must not specify a port: {raw!r}")
     host = (parsed.hostname or "").lower()
     if host != "paper-api.alpaca.markets":
         raise RuntimeError(f"REFUSED: paper trading requires https://paper-api.alpaca.markets (got {raw!r})")
-    return raw[:-1] if raw.endswith("/") else raw
+    # Strict: exact base URL only (no path, no trailing slash).
+    if raw != "https://paper-api.alpaca.markets":
+        raise RuntimeError(f"REFUSED: paper trading requires https://paper-api.alpaca.markets (got {raw!r})")
+    return raw
 
 
 def assert_valid_alpaca_base_url(url: str, agent_mode: str, trading_mode: str) -> str:
