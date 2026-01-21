@@ -232,12 +232,12 @@ def test_assert_paper_alpaca_base_url_with_paper_url_succeeds():
 
 def test_assert_paper_alpaca_base_url_with_live_url_fails():
     live_url = "https://api.alpaca.markets/v2"
-    with pytest.raises(RuntimeError, match="REFUSED: live Alpaca trading host is forbidden"):
+    with pytest.raises(RuntimeError, match="REFUSED: TRADING_MODE='paper' requires Alpaca base URL"):
         assert_valid_alpaca_base_url(live_url, AgentMode.DISABLED, "paper")
 
 def test_assert_paper_alpaca_base_url_with_non_alpaca_url_fails():
     non_alpaca_url = "https://some-other-api.com"
-    with pytest.raises(RuntimeError, match="REFUSED: Alpaca base URL validation failed for mode 'DISABLED' and trading_mode 'paper'. Got: 'https://some-other-api.com'"):
+    with pytest.raises(RuntimeError, match="REFUSED: TRADING_MODE='paper' requires Alpaca base URL"):
         assert_valid_alpaca_base_url(non_alpaca_url, AgentMode.DISABLED, "paper")
 
 def test_assert_paper_alpaca_base_url_with_http_scheme_fails():

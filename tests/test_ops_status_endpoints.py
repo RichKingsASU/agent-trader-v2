@@ -46,6 +46,7 @@ def test_marketdata_mcp_server_ops_status(monkeypatch):
     monkeypatch.setenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/testdb")
     monkeypatch.setenv("AGENT_MODE", "OBSERVE")
+    monkeypatch.setenv("TRADING_MODE", "paper")
     monkeypatch.setenv("GIT_SHA", "deadbeef")
 
     mod = _import_fresh("backend.app")
@@ -59,6 +60,7 @@ def test_strategy_engine_ops_status(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/testdb")
     monkeypatch.setenv("MARKETDATA_HEARTBEAT_URL", "http://127.0.0.1:8080/heartbeat")
     monkeypatch.setenv("AGENT_MODE", "OBSERVE")
+    monkeypatch.setenv("TRADING_MODE", "paper")
     monkeypatch.setenv("GIT_SHA", "deadbeef")
 
     mod = _import_fresh("backend.strategy_engine.service")

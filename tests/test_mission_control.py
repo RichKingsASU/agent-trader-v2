@@ -1,7 +1,11 @@
 import asyncio
 
 
-def test_agents_yaml_load_and_polling_with_mocked_http(tmp_path):
+def test_agents_yaml_load_and_polling_with_mocked_http(tmp_path, monkeypatch):
+    # mission_control has startup guards at import time.
+    monkeypatch.setenv("AGENT_MODE", "OBSERVE")
+    monkeypatch.setenv("TRADING_MODE", "paper")
+
     from backend.mission_control.main import AgentConfig, MissionControlState, load_agents_config
 
     agents_yaml = tmp_path / "agents.yaml"
