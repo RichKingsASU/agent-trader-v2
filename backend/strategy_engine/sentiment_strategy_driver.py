@@ -204,6 +204,7 @@ async def run_sentiment_strategy(
                 symbol=symbol,
                 sentiment_threshold=sentiment_threshold,
                 confidence_threshold=confidence_threshold,
+                news_lookback_hours=news_lookback_hours,
             )
             
             action = decision.get("action")

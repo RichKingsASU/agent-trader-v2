@@ -89,6 +89,14 @@ def write_trading_signal(
                 signal_doc["cash_flow_impact"] = signal_payload["cash_flow_impact"]
             if "model_id" in signal_payload:
                 signal_doc["model_id"] = signal_payload["model_id"]
+            # Optional explainability/safety fields (observer/shadow-friendly)
+            safety = signal_payload.get("safety") if isinstance(signal_payload, dict) else None
+            if isinstance(safety, dict) and "posture" in safety:
+                signal_doc["safety_posture"] = safety.get("posture")
+                signal_doc["safety_blocked"] = bool(safety.get("blocked"))
+            explanation = signal_payload.get("explanation") if isinstance(signal_payload, dict) else None
+            if isinstance(explanation, dict) and explanation.get("summary"):
+                signal_doc["explanation_summary"] = str(explanation.get("summary"))
         
         # Write to tradingSignals collection (explicit doc id for referential integrity)
         doc_ref.set(signal_doc, merge=False)
