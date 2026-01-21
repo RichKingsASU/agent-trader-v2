@@ -2,6 +2,11 @@
   "version": 1,
   "scripts": [
     {
+      "path": "scripts/__init__.py",
+      "category": "dev",
+      "requires_exec_guard": false
+    },
+    {
       "path": "scripts/agent_executor.py",
       "category": "dev",
       "requires_exec_guard": false
@@ -244,6 +249,16 @@
     {
       "path": "scripts/kubectl_status.sh",
       "category": "ops",
+      "requires_exec_guard": false
+    },
+    {
+      "path": "scripts/lib/__init__.py",
+      "category": "dev",
+      "requires_exec_guard": false
+    },
+    {
+      "path": "scripts/lib/exec_guard.py",
+      "category": "dev",
       "requires_exec_guard": false
     },
     {
