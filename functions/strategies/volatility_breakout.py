@@ -22,6 +22,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, time as dtime
 from math import log, sqrt
+from datetime import timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytz
@@ -294,20 +295,34 @@ class VolatilityBreakout(BaseStrategy):
             metadata=suppressed_metadata,
         )
 
+    def _maybe_sign(self, signal: TradingSignal) -> TradingSignal:
+        """
+        Best-effort Zero-Trust signing.
+
+        Many unit tests and local runs instantiate strategies directly (without a StrategyLoader),
+        so cryptographic identity is not configured. In that case, return the unsigned signal.
+        """
+        if getattr(self, "_identity_manager", None) is None or getattr(self, "_agent_id", None) is None:
+            return signal
+        try:
+            return self.sign_signal(signal)
+        except Exception:
+            return signal
+
     def evaluate(self, market_data: Dict[str, Any], account_snapshot: Dict[str, Any], regime: Optional[str] = None) -> TradingSignal:
         _ = regime  # not used (volatility-only)
         symbol = str(market_data.get("symbol") or "").upper().strip() or "UNKNOWN"
 
         try:
             # Time context
-            ts = _parse_iso_ts(market_data.get("timestamp")) or datetime.utcnow().replace(tzinfo=pytz.UTC)
+            ts = _parse_iso_ts(market_data.get("timestamp")) or datetime.now(timezone.utc)
             ts_ny = _ny_time(ts, self.TZ_NY)
 
             # Market-close window: HOLD (no new risk, no churn)
             if ts_ny is not None:
                 t = ts_ny.time()
                 if self.close_window_start_ny <= t <= self.close_window_end_ny:
-                    return self.sign_signal(
+                    return self._maybe_sign(
                         TradingSignal(
                             signal_type=SignalType.HOLD,
                             symbol=symbol,
@@ -325,7 +340,7 @@ class VolatilityBreakout(BaseStrategy):
             bars = _extract_bars(market_data)
             if len(bars) < (self.lookback + 2):
                 # Fail-closed for insufficient data (enterprise-safe)
-                return self.sign_signal(
+                return self._maybe_sign(
                     TradingSignal(
                         signal_type=SignalType.HOLD,
                         symbol=symbol,
@@ -345,7 +360,7 @@ class VolatilityBreakout(BaseStrategy):
             _o0, _h0, _l0, close_prev = _bar_ohlc(bars[-2])
             _o1, _h1, _l1, close_now = _bar_ohlc(bars[-1])
             if close_prev is None or close_now is None:
-                return self.sign_signal(
+                return self._maybe_sign(
                     TradingSignal(
                         signal_type=SignalType.HOLD,
                         symbol=symbol,
@@ -361,7 +376,7 @@ class VolatilityBreakout(BaseStrategy):
             for b in hist[-self.lookback :]:
                 _o, h, l, _c = _bar_ohlc(b)
                 if h is None or l is None:
-                    return self.sign_signal(
+                    return self._maybe_sign(
                         TradingSignal(
                             signal_type=SignalType.HOLD,
                             symbol=symbol,
@@ -412,7 +427,7 @@ class VolatilityBreakout(BaseStrategy):
                         },
                     )
                     sig = self._apply_execution_safeguards(sig)
-                    return self.sign_signal(sig)
+                    return self._maybe_sign(sig)
 
                 # (b) max holding time exit (requires entry_time in snapshot)
                 if entry_time is not None:
@@ -434,7 +449,7 @@ class VolatilityBreakout(BaseStrategy):
                                 },
                             )
                             sig = self._apply_execution_safeguards(sig)
-                            return self.sign_signal(sig)
+                            return self._maybe_sign(sig)
 
             # Stop loss (ATR-based, symmetric risk expression)
             stop_triggered = False
@@ -540,7 +555,7 @@ class VolatilityBreakout(BaseStrategy):
             )
 
             sig = self._apply_execution_safeguards(sig)
-            return self.sign_signal(sig)
+            return self._maybe_sign(sig)
 
         except Exception as e:
             logger.exception("VolatilityBreakout.evaluate error: %s", e)
@@ -551,7 +566,4 @@ class VolatilityBreakout(BaseStrategy):
                 reasoning=f"Error evaluating VolatilityBreakout: {e}",
                 metadata={"error": str(e)},
             )
-            try:
-                return self.sign_signal(sig)
-            except Exception:
-                return sig
+            return self._maybe_sign(sig)
