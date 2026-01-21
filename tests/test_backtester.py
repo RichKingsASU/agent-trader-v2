@@ -8,6 +8,14 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import Mock, patch, MagicMock
 
+try:  # pragma: no cover
+    import alpaca  # noqa: F401
+except Exception as e:  # pragma: no cover
+    pytestmark = pytest.mark.xfail(
+        reason=f"Backtester requires optional alpaca-py dependency for historical data client: {type(e).__name__}: {e}",
+        strict=False,
+    )
+
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../functions"))
 
