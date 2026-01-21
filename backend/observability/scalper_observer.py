@@ -351,6 +351,242 @@ def _build_human_explanation(*, decision: Decision, reason_codes: Sequence[str],
     return " ".join(p for p in parts if p)
 
 
+def _first_present(mapping: Mapping[str, Any], keys: Sequence[str]) -> Any:
+    for k in keys:
+        if k in mapping and mapping.get(k) is not None:
+            return mapping.get(k)
+    return None
+
+
+def _extract_option_context(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    """
+    Best-effort extraction of option identity fields from heterogeneous signal payloads.
+
+    Accepted shapes (examples):
+    - payload.option: {expiration,right,strike,contract_symbol}
+    - payload.data.option_symbol / root_symbol / strike / expiry / option_type
+    - payload.contract_symbol / option_symbol / expiration / right / strike
+    """
+    if not isinstance(payload, Mapping):
+        return None
+
+    # Preferred: structured option object (vnext intent/proposal shapes)
+    opt = payload.get("option")
+    if isinstance(opt, Mapping):
+        expiration = opt.get("expiration") or opt.get("expiry") or opt.get("expiration_date")
+        right = opt.get("right") or opt.get("option_type") or opt.get("type")
+        strike = opt.get("strike") or opt.get("strike_price")
+        contract_symbol = opt.get("contract_symbol") or opt.get("contractSymbol") or opt.get("symbol") or opt.get("option_symbol")
+        if any(v is not None for v in (expiration, right, strike, contract_symbol)):
+            return {
+                "underlying_symbol": payload.get("symbol") or payload.get("root_symbol") or payload.get("rootSymbol"),
+                "contract_symbol": contract_symbol,
+                "expiration": expiration,
+                "right": right,
+                "strike": strike,
+                "raw": dict(opt),
+            }
+
+    # Flat / legacy shapes (options-bot, stream bridge, misc)
+    contract_symbol = _first_present(payload, ("option_symbol", "optionSymbol", "contract_symbol", "contractSymbol", "occ_symbol", "occSymbol"))
+    expiration = _first_present(payload, ("expiration", "expiry", "expiration_date", "expirationDate"))
+    right = _first_present(payload, ("right", "option_type", "optionType", "type"))
+    strike = _first_present(payload, ("strike", "strike_price", "strikePrice"))
+    underlying = _first_present(payload, ("root_symbol", "rootSymbol", "underlying", "underlying_symbol", "underlyingSymbol", "symbol"))
+
+    if any(v is not None for v in (contract_symbol, expiration, right, strike)):
+        return {
+            "underlying_symbol": underlying,
+            "contract_symbol": contract_symbol,
+            "expiration": expiration,
+            "right": right,
+            "strike": strike,
+        }
+    return None
+
+
+def _format_option_contract(ctx: Mapping[str, Any]) -> str:
+    # Keep it compact, but include OCC if present.
+    underlying = str(ctx.get("underlying_symbol") or "").strip() or None
+    expiration = str(ctx.get("expiration") or "").strip() or None
+    right = str(ctx.get("right") or "").strip().upper() or None
+    strike = ctx.get("strike")
+    strike_s = str(strike).strip() if strike is not None else None
+    occ = str(ctx.get("contract_symbol") or "").strip().upper() or None
+
+    parts: list[str] = []
+    if underlying:
+        parts.append(underlying)
+    if expiration:
+        parts.append(expiration)
+    if right:
+        parts.append(right)
+    if strike_s:
+        parts.append(f"@{strike_s}")
+    base = " ".join(parts).strip()
+    if occ and (not base or occ not in base):
+        if base:
+            return f"{base} (contract={occ})"
+        return f"contract={occ}"
+    return base or "option contract"
+
+
+def _extract_risk_context(payload: Mapping[str, Any], attempt: dict[str, Any] | None, completed: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Extract recorded risk allow/deny state from payload or execution artifacts.
+    This module does not call risk services; it only interprets what was recorded.
+    """
+    allowed = None
+    reason = None
+    scope = None
+
+    # Common paper-order / strategy-service shapes
+    allowed = allowed if allowed is not None else _as_bool(payload.get("risk_allowed") or payload.get("riskAllowed"))
+    reason = reason if reason is not None else (payload.get("risk_reason") or payload.get("riskReason"))
+    scope = scope if scope is not None else (payload.get("risk_scope") or payload.get("riskScope"))
+
+    # Execution service shape: payload.risk = {allowed, reason, scope, checks}
+    risk = payload.get("risk")
+    if isinstance(risk, Mapping):
+        allowed = allowed if allowed is not None else _as_bool(risk.get("allowed"))
+        reason = reason if reason is not None else (risk.get("reason") or risk.get("message"))
+        scope = scope if scope is not None else risk.get("scope")
+
+    # Execution attempt/completed sometimes include denials (HTTP exceptions, reason codes)
+    for ev in (attempt or {}, completed or {}):
+        if allowed is None:
+            # If there is an explicit "allowed" field, respect it.
+            allowed = _as_bool(ev.get("allowed"))
+        if reason is None:
+            reason = ev.get("reason") or ev.get("reject_reason") or ev.get("rejectReason") or ev.get("message") or ev.get("error")
+
+    return {"allowed": allowed, "reason": (str(reason).strip() if reason is not None else None), "scope": scope}
+
+
+def _shadow_fill_price_explanation(
+    *,
+    payload: Mapping[str, Any],
+    attempt: dict[str, Any] | None,
+    completed: dict[str, Any] | None,
+    safety_state: Mapping[str, Any],
+) -> str | None:
+    """
+    Explain a shadow-mode fill price using recorded artifacts only.
+    """
+    # Determine if this was shadow mode based on recorded docs.
+    mode = None
+    for ev in (completed or {}, attempt or {}):
+        m = str(ev.get("mode") or "").strip().lower()
+        if m:
+            mode = m
+            break
+    shadow = bool(safety_state.get("shadow_mode") is True or mode == "shadow")
+    if not shadow:
+        return None
+
+    # Try to locate a recorded fill/entry price.
+    price = None
+    for src in (completed or {}, payload, attempt or {}):
+        if not isinstance(src, Mapping):
+            continue
+        price = _first_present(src, ("entry_price", "entryPrice", "fill_price", "fillPrice", "filled_avg_price", "filledAvgPrice", "price"))
+        if price is not None:
+            break
+
+    if price is None:
+        return (
+            "Shadow fill price was not recorded on the signal/execution artifacts. "
+            "In shadow mode, fills are simulated using the best available quote snapshot at the time "
+            "(typically mid-price from bid/ask when present, otherwise last/price)."
+        )
+
+    return (
+        f"Shadow fill price was recorded as {price}. "
+        "In shadow mode this is a simulated fill derived from the best available quote snapshot at the time "
+        "(typically mid-price from bid/ask when present, otherwise last/price)."
+    )
+
+
+def _option_choice_explanation(*, option_ctx: Mapping[str, Any], payload: Mapping[str, Any], event_time: datetime | None) -> str:
+    """
+    Explain why the option contract was chosen using recorded fields only.
+    """
+    contract = _format_option_contract(option_ctx)
+
+    # Pull common supporting fields if present.
+    greeks = payload.get("greeks") if isinstance(payload.get("greeks"), Mapping) else None
+    delta = _as_float((greeks or {}).get("delta")) if isinstance(greeks, Mapping) else _as_float(payload.get("delta"))
+    underlying_price = _as_float(payload.get("underlying_price") or payload.get("underlyingPrice") or payload.get("price") or payload.get("mid"))
+    strike = _as_float(option_ctx.get("strike"))
+    right = str(option_ctx.get("right") or "").strip().upper()
+    exp_dt = _coerce_dt(option_ctx.get("expiration"))
+
+    details: list[str] = [f"Contract selected: {contract}."]
+
+    # Moneyness (if we can compute it)
+    if underlying_price is not None and strike is not None and underlying_price > 0:
+        # For CALL: ITM if strike < underlying; PUT: ITM if strike > underlying
+        if right in {"CALL", "C"}:
+            m = "ITM" if strike < underlying_price else "OTM" if strike > underlying_price else "ATM"
+        elif right in {"PUT", "P"}:
+            m = "ITM" if strike > underlying_price else "OTM" if strike < underlying_price else "ATM"
+        else:
+            m = "ATM/ITM/OTM unknown (missing right)"
+        details.append(f"Moneyness at decision time: {m} (underlying≈{underlying_price}, strike={strike}).")
+
+    # Delta context
+    if delta is not None:
+        details.append(f"Recorded delta at decision time: {delta:.4f}.")
+
+    # DTE context
+    if exp_dt is not None and event_time is not None:
+        try:
+            dte = (exp_dt.date() - event_time.date()).days
+            details.append(f"Days-to-expiration at decision time: {dte}.")
+        except Exception:
+            pass
+
+    # If the signal includes a human reason, surface it as the primary "why".
+    reason = payload.get("reason") or payload.get("short_reason") or payload.get("shortReason")
+    if isinstance(reason, str) and reason.strip():
+        details.append(f"Recorded selection rationale: {reason.strip()}")
+    else:
+        details.append(
+            "No explicit contract-selection rationale was recorded; this contract appears to be the one embedded in the signal payload."
+        )
+
+    return " ".join(s for s in details if s)
+
+
+def _risk_explanation(*, risk: Mapping[str, Any], safety_state: Mapping[str, Any]) -> str:
+    """
+    Explain why risk allowed/denied using recorded fields only.
+    """
+    # Safety gates (kill switch / shadow) are distinct from risk, but operators often mentally group them.
+    if safety_state.get("kill_switch") is True:
+        return "Risk/execution was denied because the kill switch was active (global halt)."
+
+    allowed = risk.get("allowed")
+    reason = str(risk.get("reason") or "").strip() or None
+    scope = str(risk.get("scope") or "").strip() or None
+
+    if allowed is True:
+        if reason:
+            return f"Risk check allowed the trade: {reason}"
+        return "Risk check allowed the trade (no denial reason recorded)."
+    if allowed is False:
+        if scope and reason:
+            return f"Risk check denied the trade (scope={scope}): {reason}"
+        if reason:
+            return f"Risk check denied the trade: {reason}"
+        return "Risk check denied the trade (no denial reason recorded)."
+
+    # Unknown / not recorded
+    if safety_state.get("shadow_mode") is True:
+        return "Risk allow/deny was not explicitly recorded. Note: system was in shadow mode (simulation), which can bypass live execution even when risk would otherwise allow."
+    return "Risk allow/deny was not explicitly recorded on the signal/execution artifacts."
+
+
 def _read_doc(*, db: Any, collection: str, doc_id: str) -> Optional[_SignalRecord]:
     ref = db.collection(str(collection)).document(str(doc_id))
     snap = with_firestore_retry(lambda: ref.get())
@@ -452,7 +688,12 @@ def explain_scalper_decision(input: Mapping[str, Any]) -> dict[str, Any]:
             decision: BUY | SELL | HOLD | CLOSE_ALL | NO_OP,
             reason_codes: [...],
             human_explanation: "...",
-            safety_state: { shadow_mode, execution_enabled, kill_switch }
+            safety_state: { shadow_mode, execution_enabled, kill_switch },
+            option_explanations: {
+              contract_choice: str | None,
+              risk: str | None,
+              shadow_fill_price: str | None
+            }
           }
     """
     if not isinstance(input, Mapping):
@@ -501,6 +742,7 @@ def explain_scalper_decision(input: Mapping[str, Any]) -> dict[str, Any]:
         return (ts, prefer_new, r.doc_id)
 
     rec = sorted(records, key=_rk, reverse=True)[0]
+    event_time = rec.event_time()
     doc = rec.doc
     payload = _extract_payload(doc)
 
@@ -553,7 +795,24 @@ def explain_scalper_decision(input: Mapping[str, Any]) -> dict[str, Any]:
         or rec.doc_id
     )
 
+    # ---- Option-specific explanations (read-only, from recorded artifacts) ----
+    option_ctx = _extract_option_context(payload) or None
+    contract_choice_expl = _option_choice_explanation(option_ctx=option_ctx, payload=payload, event_time=event_time) if option_ctx else None
+    risk_ctx = _extract_risk_context(payload, attempt, completed)
+    risk_expl = _risk_explanation(risk=risk_ctx, safety_state=safety_state)
+    shadow_fill_expl = _shadow_fill_price_explanation(payload=payload, attempt=attempt, completed=completed, safety_state=safety_state)
+
     human = _build_human_explanation(decision=decision, reason_codes=reason_codes, payload=payload)
+    # Append high-signal option details when present (keep human_explanation readable).
+    extra_parts: list[str] = []
+    if contract_choice_expl:
+        extra_parts.append(contract_choice_expl)
+    if risk_expl:
+        extra_parts.append(risk_expl)
+    if shadow_fill_expl:
+        extra_parts.append(shadow_fill_expl)
+    if extra_parts:
+        human = human + " " + " ".join(extra_parts)
 
     return {
         "signal_id": resolved_signal_id,
@@ -564,6 +823,11 @@ def explain_scalper_decision(input: Mapping[str, Any]) -> dict[str, Any]:
             "shadow_mode": safety_state.get("shadow_mode"),
             "execution_enabled": safety_state.get("execution_enabled"),
             "kill_switch": safety_state.get("kill_switch"),
+        },
+        "option_explanations": {
+            "contract_choice": contract_choice_expl,
+            "risk": risk_expl,
+            "shadow_fill_price": shadow_fill_expl,
         },
     }
 

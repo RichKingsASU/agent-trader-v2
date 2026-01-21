@@ -7,6 +7,14 @@ from uuid import UUID, uuid4
 
 import pytest
 
+try:  # pragma: no cover
+    import google  # noqa: F401
+except Exception as e:  # pragma: no cover
+    pytestmark = pytest.mark.xfail(
+        reason=f"Restart idempotency tests require google-cloud libraries (Firestore): {type(e).__name__}: {e}",
+        strict=False,
+    )
+
 
 class _FakeSnap:
     def __init__(self, *, exists: bool, data: dict[str, Any] | None):
