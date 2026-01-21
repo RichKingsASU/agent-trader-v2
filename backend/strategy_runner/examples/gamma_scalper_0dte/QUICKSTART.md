@@ -4,7 +4,7 @@
 
 ```bash
 cd /workspace
-python3 backend/strategy_runner/examples/gamma_scalper_0dte/smoke_test.py
+python3 -m backend.strategy_runner.examples.gamma_scalper_0dte.smoke_test
 ```
 
 Expected output: ✅ All smoke tests passed!
@@ -73,10 +73,10 @@ Action: Exit ALL positions
 
 ```bash
 # Smoke test (quick)
-python3 backend/strategy_runner/examples/gamma_scalper_0dte/smoke_test.py
+python3 -m backend.strategy_runner.examples.gamma_scalper_0dte.smoke_test
 
 # Integration test (detailed)
-python3 backend/strategy_runner/examples/gamma_scalper_0dte/test_strategy.py
+python3 -m backend.strategy_runner.examples.gamma_scalper_0dte.test_strategy
 
 # Unit tests (requires pytest)
 pytest tests/test_gamma_scalper_strategy.py -v
@@ -190,7 +190,7 @@ Run this to verify everything works:
 
 ```bash
 cd /workspace
-python3 backend/strategy_runner/examples/gamma_scalper_0dte/smoke_test.py && \
+python3 -m backend.strategy_runner.examples.gamma_scalper_0dte.smoke_test && \
 echo "" && \
 echo "✅ Strategy is ready to use!"
 ```
