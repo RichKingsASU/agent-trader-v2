@@ -165,6 +165,7 @@ class GammaScalper(BaseStrategy):
                 if self._halted_day_et == current_day_et:
                     signal = TradingSignal(
                         signal_type=SignalType.HOLD,
+                        symbol=self.symbol,
                         confidence=0.0,
                         reasoning=(
                             f"Post-close halt: Current time {current_time.strftime('%H:%M:%S')} "
@@ -188,6 +189,7 @@ class GammaScalper(BaseStrategy):
                     self._close_emitted_day_et = current_day_et
                     signal = TradingSignal(
                         signal_type=SignalType.CLOSE_ALL,
+                        symbol=self.symbol,
                         confidence=1.0,
                         reasoning=(
                             f"Time-based exit: Current time {current_time.strftime('%H:%M:%S')} "
@@ -205,6 +207,7 @@ class GammaScalper(BaseStrategy):
                 # No positions to close: just halt.
                 signal = TradingSignal(
                     signal_type=SignalType.HOLD,
+                    symbol=self.symbol,
                     confidence=0.0,
                     reasoning=(
                         f"Time-based exit: Current time {current_time.strftime('%H:%M:%S')} "
@@ -235,6 +238,7 @@ class GammaScalper(BaseStrategy):
                 # Portfolio is delta neutral - no action needed
                 signal = TradingSignal(
                     signal_type=SignalType.HOLD,
+                    symbol=self.symbol,
                     confidence=0.7,
                     reasoning=(
                         f"Portfolio is delta neutral. Net delta ({net_delta:.4f}) "
@@ -281,6 +285,7 @@ class GammaScalper(BaseStrategy):
             
             signal = TradingSignal(
                 signal_type=base_signal,
+                symbol=self.symbol,
                 confidence=final_confidence,
                 reasoning=f"{reasoning_prefix} {gex_reasoning}",
                 metadata={
@@ -301,6 +306,7 @@ class GammaScalper(BaseStrategy):
             logger.exception(f"Error in GammaScalper.evaluate: {e}")
             signal = TradingSignal(
                 signal_type=SignalType.HOLD,
+                symbol=self.symbol,
                 confidence=0.0,
                 reasoning=f"Error evaluating strategy: {str(e)}",
                 metadata={"error": str(e)}
@@ -350,6 +356,7 @@ class GammaScalper(BaseStrategy):
 
         return TradingSignal(
             signal_type=SignalType.HOLD,
+            symbol=self.symbol,
             confidence=0.0,
             reasoning=(
                 "Execution intent suppressed by safety guardrails. "
