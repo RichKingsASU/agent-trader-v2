@@ -192,13 +192,15 @@ def _check_high_water_mark(
     current_equity: Any,
     high_water_mark: Optional[Any],
     *,
-    max_drawdown_pct: Decimal
+    max_drawdown_pct: Decimal | None = None
 ) -> Optional[str]:
     """
     Check if current equity is more than `max_drawdown_pct` below High Water Mark.
 
     Returns an error string containing "KILL-SWITCH" on breach; otherwise None.
     """
+    max_dd = _resolve_max_drawdown_pct(max_drawdown_pct)
+
     if high_water_mark is None:
         logger.warning("High Water Mark not set; skipping drawdown check")
         return None
@@ -213,12 +215,12 @@ def _check_high_water_mark(
     drawdown_pct = calculate_drawdown(current_dec, hwm_dec)
 
     # At exactly the threshold, allow. Breach only if strictly greater.
-    if drawdown_pct > max_drawdown_pct:
-        threshold_equity = (hwm_dec * (Decimal("100") - max_drawdown_pct) / Decimal("100")).quantize(Decimal("0.01"))
+    if drawdown_pct > max_dd:
+        threshold_equity = (hwm_dec * (Decimal("100") - max_dd) / Decimal("100")).quantize(Decimal("0.01"))
         return (
             "KILL-SWITCH: "
             f"Current equity ${current_dec:,.2f} is {drawdown_pct:,.2f}% below High Water Mark ${hwm_dec:,.2f} "
-            f"(threshold: ${threshold_equity:,.2f}, max allowed drawdown: {max_drawdown_pct}% )"
+            f"(threshold: ${threshold_equity:,.2f}, max allowed drawdown: {max_dd}%)"
         )
 
     return None
@@ -228,11 +230,13 @@ def _check_trade_size(
     trade_notional: float,
     buying_power: Any,
     *,
-    max_trade_bp_pct: Decimal
+    max_trade_bp_pct: Decimal | None = None
 ) -> Optional[str]:
     """
     Reject if trade notional exceeds `max_trade_bp_pct` of buying power.
     """
+    max_pct = _resolve_max_trade_bp_pct(max_trade_bp_pct)
+
     bp_dec = _as_decimal(buying_power)
     trade_dec = _as_decimal(trade_notional)
     
@@ -242,14 +246,14 @@ def _check_trade_size(
             "Cannot validate trade size."
         )
     
-    max_allowed = (bp_dec * max_trade_bp_pct / Decimal("100")).quantize(Decimal("0.01"))
+    max_allowed = (bp_dec * max_pct / Decimal("100")).quantize(Decimal("0.01"))
     
     if trade_dec > max_allowed:
         size_pct = ((trade_dec / bp_dec) * Decimal("100")).quantize(Decimal("0.01"))
         return (
             "KILL-SWITCH: "
             f"Trade size {trade_dec:,.2f} ({size_pct:,.2f}% of buying power) exceeds maximum allowed {max_allowed:,.2f} "
-            f"({max_trade_bp_pct}% of buying power {bp_dec:,.2f})"
+            f"({max_pct}% of buying power {bp_dec:,.2f})"
         )
     
     return None
