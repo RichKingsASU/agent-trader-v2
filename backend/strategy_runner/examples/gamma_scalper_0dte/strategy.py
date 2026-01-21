@@ -371,26 +371,34 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
         return Decimal("1") if hedge_qty > 0 else Decimal("-1")
 
     # Otherwise round to nearest whole share.
-    # Use HALF_DOWN to avoid systematically over-hedging on .5 ties (e.g. 6.5 -> 6).
-    return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_DOWN)
+    # Use HALF_UP so .5 ties hedge away from zero (risk-reducing).
+    return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
 
-def _should_hedge(net_delta: Decimal, current_time: datetime, threshold: Decimal) -> bool:
+def _should_hedge(net_delta: Decimal, current_time: datetime, threshold: Optional[Decimal] = None) -> bool:
     """
     Determine if we should hedge based on delta threshold and timing.
     
     Args:
         net_delta: Current net portfolio delta
         current_time: Current timestamp
-        threshold: Current hedging threshold
+        threshold: Hedging threshold in contract-delta units (defaults to current regime threshold)
     
     Returns:
         bool: True if hedging is needed
     """
+    if threshold is None:
+        threshold = _get_hedging_threshold()
+
+    # net_delta is tracked in underlying-share equivalents. Convert the contract-delta
+    # threshold into share-equivalent units using the standard contract multiplier.
+    contract_multiplier = Decimal(str(get_options_contract_multiplier()))
+    threshold_shares = threshold * contract_multiplier
+
     abs_delta = abs(net_delta)
     
     # Check if delta exceeds threshold
-    if abs_delta <= threshold:
+    if abs_delta <= threshold_shares:
         return False
     
     # Optional: Rate limiting to avoid over-hedging
