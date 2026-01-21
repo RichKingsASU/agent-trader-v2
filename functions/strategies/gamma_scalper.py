@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 import pytz
 
 from .base_strategy import BaseStrategy, SignalType, TradingSignal
+from backend.common.trading_config import get_options_contract_multiplier
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +170,10 @@ class GammaScalper(BaseStrategy):
             logger.info(f"Calculated net_delta: {net_delta}")
             
             # Step 3: Apply Delta Hedge Rule
-            abs_delta = abs(net_delta)
+            # Threshold is expressed in "contract-delta" units (e.g. 0.15),
+            # while net_delta is computed in share-equivalent units.
+            contract_multiplier = Decimal(str(get_options_contract_multiplier()))
+            abs_delta = abs(net_delta) / contract_multiplier if contract_multiplier != Decimal("0") else abs(net_delta)
             
             if abs_delta <= self.hedging_threshold:
                 # Portfolio is delta neutral - no action needed
@@ -322,6 +326,7 @@ class GammaScalper(BaseStrategy):
             return Decimal("0")
         
         net_delta = Decimal("0")
+        contract_multiplier = Decimal(str(get_options_contract_multiplier()))
         
         for position in positions:
             try:
@@ -342,7 +347,12 @@ class GammaScalper(BaseStrategy):
                     )
                     continue
                 
-                position_delta = qty * delta
+                # Options delta is per-share for 1 contract; convert to shares.
+                # If a caller passes equity positions here, treat them as 1x multiplier.
+                asset_type = str(position.get("asset_type") or position.get("asset_class") or "").strip().lower()
+                is_option = bool(position.get("greeks")) or ("option" in asset_type)
+                multiplier = contract_multiplier if is_option else Decimal("1")
+                position_delta = qty * delta * multiplier
                 net_delta += position_delta
                 
                 logger.debug(
