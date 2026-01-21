@@ -52,6 +52,12 @@ def get_vertex_ai_model_id(*, default: str = "gemini-2.5-flash") -> str:
     """
     return str(get_env("VERTEX_AI_MODEL_ID", default=default, required=False))
 
+def get_env(name: str, default: str | None = None) -> str | None:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    s = str(v).strip()
+    return s if s else default
 
 def get_vertex_ai_project_id(*, required: bool = False) -> str:
     """
@@ -82,6 +88,7 @@ def get_vertex_ai_location(*, default: str = "us-central1") -> str:
     """
     return str(get_env("VERTEX_AI_LOCATION", default=default, required=False))
 
+# --- Alpaca (paper-only safety boundary) ---
 
 def get_alpaca_key_id(*, required: bool = True) -> str:
     """
@@ -179,8 +186,9 @@ def assert_paper_alpaca_base_url(url: str) -> str:
     if url is None or str(url).strip() == "":
         raise RuntimeError("Missing required Alpaca base URL (APCA_API_BASE_URL)")
 
-    raw = str(url).strip()
-    lowered = raw.lower()
+def get_alpaca_api_key(*, required: bool = False) -> str:
+    # Back-compat name used in some modules.
+    return get_alpaca_key_id(required=required)
 
     # Explicit hard-fail: never allow live trading host.
     if "api.alpaca.markets" in lowered and "paper-api.alpaca.markets" not in lowered:
@@ -192,12 +200,9 @@ def assert_paper_alpaca_base_url(url: str) -> str:
     if (parsed.hostname or "").lower() != "paper-api.alpaca.markets":
         raise RuntimeError(f"REFUSED: Alpaca base URL must be paper host: {raw!r}")
     if parsed.port not in (None, 443):
-        raise RuntimeError(f"REFUSED: Alpaca base URL must not specify a port: {raw!r}")
+        raise RuntimeError(f"Alpaca base URL must not specify a port: {raw!r}")
     if parsed.username or parsed.password:
-        raise RuntimeError(f"REFUSED: Alpaca base URL must not include credentials: {raw!r}")
+        raise RuntimeError(f"Alpaca base URL must not include credentials: {raw!r}")
     if parsed.query or parsed.fragment:
-        raise RuntimeError(f"REFUSED: Alpaca base URL must not include query/fragment: {raw!r}")
-
-    normalized = raw[:-1] if raw.endswith("/") else raw
-    return normalized
+        raise RuntimeError(f"Alpaca base URL must not include query/fragment: {raw!r}")
 
