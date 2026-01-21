@@ -158,6 +158,39 @@ def _extract_ids(event: dict[str, Any]) -> dict[str, Optional[str]]:
     return {"signal_id": signal_id, "correlation_id": correlation_id, "client_intent_id": client_intent_id}
 
 
+def _is_scalper_related(event: dict[str, Any]) -> bool:
+    """
+    Best-effort classifier: keep --last-minutes output focused on scalper activity.
+    """
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    md = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    signal_payload = event.get("signal_payload") if isinstance(event.get("signal_payload"), dict) else {}
+
+    candidates = [
+        event.get("strategy_name"),
+        event.get("strategy"),
+        (payload or {}).get("strategy_name"),
+        (payload or {}).get("strategy"),
+        (signal_payload or {}).get("strategy_name"),
+        (signal_payload or {}).get("strategy"),
+        (md or {}).get("strategy_name"),
+        (md or {}).get("strategy"),
+        event.get("client_tag"),
+        (payload or {}).get("client_tag"),
+        (md or {}).get("client_tag"),
+    ]
+    for c in candidates:
+        s = str(c or "").strip().lower()
+        if not s:
+            continue
+        if "scalper" in s:
+            return True
+        # Common repo-specific tags
+        if "gamma_scalper" in s or "0dte_gamma_scalper" in s:
+            return True
+    return False
+
+
 # ----------------------------
 # Input events (JSONL)
 # ----------------------------
@@ -332,6 +365,8 @@ def _explain_from_events(events: list[dict[str, Any]], q: ExplainQuery) -> dict[
         since_utc = datetime.now(timezone.utc) - timedelta(minutes=int(q.last_minutes))
 
     matched = [e for e in events if _matches_query(e, q, since_utc=since_utc)]
+    if q.last_minutes is not None:
+        matched = [e for e in matched if _is_scalper_related(e)]
     # Prefer actual tradingSignals-like docs when present.
     signals = [e for e in matched if isinstance(e.get("action"), str) and isinstance(e.get("symbol"), str)]
     best_signal = _pick_latest(signals) or _pick_latest(matched)
@@ -374,6 +409,7 @@ def _explain_from_firestore(db: Any, q: ExplainQuery, *, tenant_id: Optional[str
     elif q.last_minutes is not None:
         since = datetime.now(timezone.utc) - timedelta(minutes=int(q.last_minutes))
         signals = _fs_query_trading_signals_since(db, since)
+        signals = [s for s in signals if _is_scalper_related(s)]
 
     # Related docs (best-effort): join on correlation_id or explicit client_intent_id.
     corr = q.correlation_id
