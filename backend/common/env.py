@@ -1,9 +1,30 @@
+"""
+Environment variable helpers.
+
+This module must stay dependency-light and safe to import during startup.
+It intentionally performs **no network I/O** and does not enable any broker
+connectivity by itself.
+"""
+
 from __future__ import annotations
 
 import os
 from typing import Any
 from urllib.parse import urlparse
 from typing import Any, Optional
+
+__all__ = [
+    "get_env",
+    "get_firebase_project_id",
+    "get_vertex_ai_model_id",
+    "get_vertex_ai_project_id",
+    "get_vertex_ai_location",
+    "get_alpaca_key_id",
+    "get_alpaca_api_key",
+    "get_alpaca_secret_key",
+    "get_alpaca_api_base_url",
+    "assert_paper_alpaca_base_url",
+]
 
 
 def get_env(name: str, default: Any = None, *, required: bool = False) -> Any:
@@ -26,7 +47,6 @@ def get_env(name: str, default: Any = None, *, required: bool = False) -> Any:
     if v:
         s = str(v).strip()
         if s:
-            # Ensure canonical env var is present for downstream libs (alpaca-py / alpaca-trade-api).
             os.environ.setdefault("APCA_API_KEY_ID", s)
             return s
 
@@ -75,10 +95,11 @@ def assert_paper_alpaca_base_url(url: str) -> str:
     if not raw:
         raise RuntimeError("Missing Alpaca base URL")
     parsed = urlparse(raw)
+
     if parsed.scheme.lower() != "https":
         raise RuntimeError(f"REFUSED: Alpaca base URL must be https: {raw!r}")
     if parsed.username or parsed.password:
-        raise RuntimeError(f"Alpaca base URL must not include credentials: {raw!r}")
+        raise RuntimeError(f"REFUSED: Alpaca base URL must not include credentials: {raw!r}")
     if parsed.query or parsed.fragment:
         raise RuntimeError(f"REFUSED: Alpaca base URL must not include query/fragment: {raw!r}")
     if parsed.port not in (None, 443):
