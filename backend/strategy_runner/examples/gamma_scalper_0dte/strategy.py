@@ -50,8 +50,9 @@ _macro_event_active: bool = False
 _stop_loss_multiplier: Decimal = Decimal("1.0")
 _position_size_multiplier: Decimal = Decimal("1.0")
 _last_macro_check: Optional[datetime] = None
-_strategy_day_et: Optional[date] = None
-_halted_day_et: Optional[date] = None
+_last_hedge_trade_date: Optional[date] = None  # America/New_York date of last hedge intent
+_spy_hedge_qty: Decimal = Decimal("0")  # Running SPY hedge share exposure from emitted intents
+_halted: bool = False  # Hard halt latch after 15:45 ET exit logic
 
 # Daily safety latch (NYSE trading day scoped)
 _latch_trading_day: Optional[date_type] = None
@@ -146,7 +147,7 @@ def _get_net_portfolio_delta() -> Decimal:
     Calculate Net Portfolio Delta from all open positions.
     
     Returns:
-        Decimal: Sum of share-equivalent deltas for all option positions.
+        Decimal: Net delta in underlying-share equivalents
     """
     net_delta = Decimal("0")
     contract_multiplier = Decimal(str(get_options_contract_multiplier()))
@@ -154,8 +155,9 @@ def _get_net_portfolio_delta() -> Decimal:
     for symbol, position in _portfolio_positions.items():
         delta = _to_decimal(position.get("delta", 0))
         qty = _to_decimal(position.get("quantity", 0))
-        # Options delta is per-share for 1 contract; convert to shares.
-        net_delta += delta * qty * contract_multiplier
+        # ASSUMPTION (explicit): incoming option delta is PER-CONTRACT delta.
+        # Convert to underlying-share equivalents by applying the 100x contract multiplier once.
+        net_delta += delta * qty * Decimal("100")
     
     return net_delta
 
@@ -372,22 +374,19 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
     return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_DOWN)
 
 
-def _should_hedge(net_delta: Decimal, current_time: datetime) -> bool:
+def _should_hedge(net_delta: Decimal, current_time: datetime, threshold: Decimal) -> bool:
     """
     Determine if we should hedge based on delta threshold and timing.
     
     Args:
         net_delta: Current net portfolio delta
         current_time: Current timestamp
+        threshold: Current hedging threshold
     
     Returns:
         bool: True if hedging is needed
     """
-    threshold = _get_hedging_threshold()
-    # Thresholds are specified in "contract-delta" units (e.g. 0.15),
-    # while net_delta is computed in share-equivalent units. Normalize.
-    contract_multiplier = Decimal(str(get_options_contract_multiplier()))
-    abs_delta = abs(net_delta) / contract_multiplier if contract_multiplier != Decimal("0") else abs(net_delta)
+    abs_delta = abs(net_delta)
     
     # Check if delta exceeds threshold
     if abs_delta <= threshold:
@@ -399,6 +398,10 @@ def _should_hedge(net_delta: Decimal, current_time: datetime) -> bool:
     if _last_hedge_time is not None:
         time_since_last_hedge = (current_time - _last_hedge_time).total_seconds()
         if time_since_last_hedge < 60:  # 60 seconds minimum between hedges
+            logger.info(
+                "Hedge rate-limit applied (min_interval_s=60, since_last_s=%.2f)",
+                time_since_last_hedge,
+            )
             return False
     
     return True
@@ -552,6 +555,8 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     Returns:
         List of order intents, or None/empty list if no action needed
     """
+    global _halted, _spy_hedge_qty, _last_hedge_trade_date
+
     # Extract event data
     event_id = event.get("event_id", "")
     ts = event.get("ts", "")
@@ -559,6 +564,7 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     payload = event.get("payload", {}) or {}
     
     current_time = _parse_timestamp(ts)
+    et_now = to_nyse(current_time)
 
     # Daily hard cap / latch reset (NYSE trading day)
     _reset_daily_latch_if_new_trading_day(current_time)
@@ -586,9 +592,25 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     
     # Calculate Net Portfolio Delta
     net_delta = _get_net_portfolio_delta()
+    threshold = _get_hedging_threshold()
+    gex = _last_gex_value
+    threshold_reason_parts: List[str] = []
+    if gex is not None and gex < Decimal("0"):
+        threshold_reason_parts.append("negative_gex")
+    else:
+        threshold_reason_parts.append("base")
+    if _macro_event_active:
+        threshold_reason_parts.append("macro")
+    threshold_reason = "+".join(threshold_reason_parts)
+    logger.info(
+        "Computed net_delta=%s (share-equiv), threshold=%s (reason=%s)",
+        str(net_delta),
+        str(threshold),
+        threshold_reason,
+    )
     
     # Check if hedging is needed
-    if not _should_hedge(net_delta, current_time):
+    if not _should_hedge(net_delta, current_time, threshold):
         return []
 
     # Hard cap: only one entry (SPY hedge) per NYSE trading day.
@@ -596,6 +618,12 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     if _latch_entry_used:
         return []
     
+    # One-trade-per-day latch (America/New_York date), exit logic is exempt.
+    today_et = et_now.date()
+    if _last_hedge_trade_date == today_et:
+        logger.info("One-trade-per-day latch triggered (date_et=%s)", today_et.isoformat())
+        return []
+
     # Determine underlying symbol for hedging
     # For options on SPY, hedge with SPY; for SPX options, use SPY as proxy
     underlying_symbol = ALLOWED_UNDERLYING_SYMBOL
@@ -609,6 +637,7 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     
     # Calculate hedge quantity
     hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
+    logger.info("Computed hedge_qty=%s (SPY shares)", str(hedge_qty))
     
     if hedge_qty == Decimal("0"):
         return []
