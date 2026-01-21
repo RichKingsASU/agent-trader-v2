@@ -8,6 +8,9 @@ import sys
 from pathlib import Path
 from decimal import Decimal
 
+# Ensure repo root is on sys.path so `backend.*` imports work when running directly.
+repo_root = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(repo_root))
 # Add strategy to path
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -68,15 +71,13 @@ def test_basic_functionality():
     out(f"✅ Hedge order generated: {orders[0]['side'].upper()} {orders[0]['qty']} {orders[0]['symbol']}")
     
     # Test 4: Market close exit
-    out("\nTest 4: Market Close Exit")
+    out("\nTest 4: Market Close Flatten (SPY hedge)")
     reset_strategy_state()
-    _portfolio_positions["SPY_CALL"] = {
-        "delta": Decimal("0.65"),
-        "quantity": Decimal("10"),
-        "price": Decimal("2.50"),
-        "symbol": "SPY_CALL",
-    }
-    
+
+    # Generate one hedge first
+    orders = on_market_event(event)
+    assert orders is not None and len(orders) > 0, "❌ No hedge orders generated"
+
     exit_event = {
         "protocol": "v1",
         "type": "market_event",
@@ -93,8 +94,8 @@ def test_basic_functionality():
     exit_orders = on_market_event(exit_event)
     assert exit_orders is not None and len(exit_orders) > 0, "❌ No exit orders generated"
     assert exit_orders[0]["client_tag"] == "0dte_gamma_scalper_exit", "❌ Wrong order tag"
-    assert "SPY_CALL" not in _portfolio_positions, "❌ Position not cleared"
-    out(f"✅ Exit order generated at market close: {exit_orders[0]['side'].upper()} {exit_orders[0]['qty']} {exit_orders[0]['symbol']}")
+    assert exit_orders[0]["symbol"] == "SPY", "❌ Exit/flatten must be SPY only"
+    out(f"✅ Flatten order generated at market close: {exit_orders[0]['side'].upper()} {exit_orders[0]['qty']} {exit_orders[0]['symbol']}")
     
     out("\n" + "="*60)
     out("✅ All smoke tests passed!")

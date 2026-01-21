@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 HEDGING_THRESHOLD = Decimal("0.15")  # Base delta threshold for hedging
 HEDGING_THRESHOLD_NEGATIVE_GEX = Decimal("0.10")  # Tighter threshold when GEX is negative
 EXIT_TIME_ET = time(15, 45, 0)  # 3:45 PM ET - exit time to avoid MOC volatility
+UNDERLYING_SYMBOL = "SPY"  # Day-1 shadow-mode safety: emit SPY intents only
 
 # Global state (persists across market events in the same run)
 _portfolio_positions: Dict[str, Dict[str, Any]] = {}
@@ -49,6 +50,16 @@ _stop_loss_multiplier: Decimal = Decimal("1.0")
 _position_size_multiplier: Decimal = Decimal("1.0")
 _last_macro_check: Optional[datetime] = None
 
+# --- Shadow-mode safety latches (minimal state) ---
+# Intent: prevent runaway behavior on Day-1 shadow runs.
+# - one hedge trade max per NYSE day
+# - after 15:45 ET: emit ONE flatten intent (SPY hedge) and halt for rest of day
+_active_day_key: Optional[str] = None  # NYSE date ISO string, e.g. "2026-01-21"
+_hedge_emitted_day_key: Optional[str] = None
+_flatten_emitted_day_key: Optional[str] = None
+_halted_day_key: Optional[str] = None
+_spy_hedge_position_shares: Decimal = Decimal("0")  # signed net SPY shares we *intend* to hold via hedges
+
 
 def _to_decimal(value: Any) -> Decimal:
     """Safely convert a value to Decimal with precision."""
@@ -59,6 +70,10 @@ def _to_decimal(value: Any) -> Decimal:
     if isinstance(value, (int, float, str)):
         return Decimal(str(value))
     return Decimal("0")
+
+
+# Option delta scaling: delta is per-share; contracts need a multiplier (default 100)
+OPTION_CONTRACT_MULTIPLIER = _to_decimal(os.getenv("OPTION_CONTRACT_MULTIPLIER", "100"))
 
 
 def _parse_timestamp(ts_str: str) -> datetime:
@@ -77,20 +92,50 @@ def _is_market_close_time(current_time: datetime) -> bool:
     return et_time.time() >= EXIT_TIME_ET
 
 
+def _day_key_et(current_time: datetime) -> str:
+    """Return NYSE date key for daily latches."""
+    return to_nyse(current_time).date().isoformat()
+
+
+def _roll_daily_latches(current_time: datetime) -> None:
+    """
+    Reset per-day latches when the NYSE day changes.
+
+    Safety intent: make the strategy stateless across days in a long-lived runner,
+    avoiding "yesterday's latch" preventing today's safety flatten, and ensuring
+    a clean 1-hedge-per-day rule.
+    """
+    global _active_day_key, _hedge_emitted_day_key, _flatten_emitted_day_key, _halted_day_key
+    global _spy_hedge_position_shares, _last_hedge_time
+
+    day_key = _day_key_et(current_time)
+    if _active_day_key == day_key:
+        return
+
+    _active_day_key = day_key
+    _hedge_emitted_day_key = None
+    _flatten_emitted_day_key = None
+    _halted_day_key = None
+    _spy_hedge_position_shares = Decimal("0")
+    _last_hedge_time = None
+
+
 def _get_net_portfolio_delta() -> Decimal:
     """
     Calculate Net Portfolio Delta from all open positions.
     
     Returns:
-        Decimal: Sum of (position_delta * quantity) for all positions
+        Decimal: Sum of (option_delta * contracts) across tracked positions.
+
+    Note:
+        This returns *unscaled* delta in "contracts-delta" units (i.e. shares delta / 100).
+        Hedge sizing converts this to shares using OPTION_CONTRACT_MULTIPLIER (default 100).
     """
     net_delta = Decimal("0")
     
     for symbol, position in _portfolio_positions.items():
         delta = _to_decimal(position.get("delta", 0))
         qty = _to_decimal(position.get("quantity", 0))
-        # For options: net_delta += delta * qty * 100 (contract multiplier)
-        # For simplicity, assuming delta already accounts for position size
         net_delta += delta * qty
     
     return net_delta
@@ -285,7 +330,11 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
     # To neutralize delta, we need to trade opposite to our delta exposure
     # If net_delta is positive (long delta), we sell shares (negative quantity)
     # If net_delta is negative (short delta), we buy shares (positive quantity)
-    hedge_qty = -net_delta
+    #
+    # Shadow-mode safety:
+    # net_delta is in "contracts-delta" units, so we convert to shares with the
+    # standard option contract multiplier (default 100).
+    hedge_qty = -(net_delta * OPTION_CONTRACT_MULTIPLIER)
     
     # Apply position size multiplier from macro event status
     # This reduces position sizes during high-volatility events
@@ -329,9 +378,9 @@ def _should_hedge(net_delta: Decimal, current_time: datetime) -> bool:
     return True
 
 
-def _create_exit_orders(current_time: datetime, event_id: str, ts: str) -> List[Dict[str, Any]]:
+def _create_flatten_order(current_time: datetime, event_id: str, ts: str) -> Optional[Dict[str, Any]]:
     """
-    Create exit orders for all open positions.
+    Create a single SPY flatten order for the hedge position.
     
     Args:
         current_time: Current timestamp
@@ -339,41 +388,45 @@ def _create_exit_orders(current_time: datetime, event_id: str, ts: str) -> List[
         ts: Timestamp string from market event
     
     Returns:
-        List of order intents to close all positions
+        A single SPY order intent to flatten, or None if no hedge position exists.
+
+    Safety intent:
+        Day-1 shadow-mode must emit intents for ONE symbol only (SPY). We therefore
+        do not emit option close intents here; we only flatten the SPY hedge that
+        this strategy itself created.
     """
-    orders = []
-    
-    for symbol, position in list(_portfolio_positions.items()):
-        qty = _to_decimal(position.get("quantity", 0))
-        if qty != Decimal("0"):
-            # Determine side: if we're long (positive qty), we sell to exit
-            side = "sell" if qty > Decimal("0") else "buy"
-            abs_qty = abs(qty)
-            
-            order = {
-                "protocol": "v1",
-                "type": "order_intent",
-                "intent_id": f"exit_{symbol}_{uuid.uuid4().hex[:12]}",
-                "event_id": event_id,
-                "ts": ts,
-                "symbol": symbol,
-                "side": side,
-                "qty": float(abs_qty),
-                "order_type": "market",
-                "time_in_force": "day",
-                "client_tag": "0dte_gamma_scalper_exit",
-                "metadata": {
-                    "reason": "market_close_exit",
-                    "exit_time_et": current_time.astimezone(NYSE_TZ).isoformat(),
-                    "strategy": "0dte_gamma_scalper",
-                },
-            }
-            orders.append(order)
-            
-            # Remove position from portfolio
-            _remove_position(symbol)
-    
-    return orders
+    global _spy_hedge_position_shares
+    if _spy_hedge_position_shares == Decimal("0"):
+        return None
+
+    # If we're long shares, we sell to flatten; if short, we buy to cover.
+    side = "sell" if _spy_hedge_position_shares > Decimal("0") else "buy"
+    abs_qty = abs(_spy_hedge_position_shares)
+
+    order = {
+        "protocol": "v1",
+        "type": "order_intent",
+        "intent_id": f"flatten_{UNDERLYING_SYMBOL}_{uuid.uuid4().hex[:12]}",
+        "event_id": event_id,
+        "ts": ts,
+        "symbol": UNDERLYING_SYMBOL,
+        "side": side,
+        "qty": float(abs_qty),
+        "order_type": "market",
+        "time_in_force": "day",
+        "client_tag": "0dte_gamma_scalper_exit",
+        "metadata": {
+            "reason": "market_close_flatten",
+            "exit_time_et": current_time.astimezone(NYSE_TZ).isoformat(),
+            "strategy": "0dte_gamma_scalper",
+            "spy_hedge_shares_before": str(_spy_hedge_position_shares),
+        },
+    }
+
+    # We intentionally reset the hedge position on flatten intent emission so we do not
+    # double-flatten if multiple events arrive after 15:45 ET.
+    _spy_hedge_position_shares = Decimal("0")
+    return order
 
 
 def _create_hedge_order(
@@ -477,6 +530,8 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     Returns:
         List of order intents, or None/empty list if no action needed
     """
+    global _flatten_emitted_day_key, _halted_day_key, _hedge_emitted_day_key, _spy_hedge_position_shares
+
     # Extract event data
     event_id = event.get("event_id", "")
     ts = event.get("ts", "")
@@ -484,12 +539,26 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     payload = event.get("payload", {}) or {}
     
     current_time = _parse_timestamp(ts)
+    _roll_daily_latches(current_time)
+    day_key = _day_key_et(current_time)
+
+    # Shadow-mode safety: once halted for the NYSE day, do nothing (no intents).
+    if _halted_day_key == day_key:
+        return []
     
     # Safety check: Exit all positions at 3:45 PM ET
     if _is_market_close_time(current_time):
-        exit_orders = _create_exit_orders(current_time, event_id, ts)
-        if exit_orders:
-            return exit_orders
+        # After 15:45 ET we emit flatten once and halt for the remainder of the day.
+        # This prevents noisy repeated exit batches if the runner continues to stream events.
+        if _flatten_emitted_day_key != day_key:
+            flatten = _create_flatten_order(current_time, event_id, ts)
+            _flatten_emitted_day_key = day_key
+            _halted_day_key = day_key
+            _portfolio_positions.clear()  # no stale option state after forced shutdown
+            return [flatten] if flatten else []
+
+        _halted_day_key = day_key
+        return []
     
     # Update position tracking
     # Check if this is an options contract or underlying
@@ -503,12 +572,15 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     net_delta = _get_net_portfolio_delta()
     
     # Check if hedging is needed
+    # Shadow-mode safety: 1 trade/day maximum (one hedge intent). Flatten at 15:45 is handled above.
+    if _hedge_emitted_day_key == day_key:
+        return []
     if not _should_hedge(net_delta, current_time):
         return []
     
     # Determine underlying symbol for hedging
     # For options on SPY, hedge with SPY; for SPX options, use SPY as proxy
-    underlying_symbol = "SPY"  # Default underlying
+    underlying_symbol = UNDERLYING_SYMBOL  # Day-1 shadow-mode: SPY only
     
     # Extract underlying price from payload or use current symbol price if it's the underlying
     underlying_price = _to_decimal(payload.get("underlying_price", payload.get("price", 0)))
@@ -532,7 +604,11 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
         event_id=event_id,
         ts=ts,
     )
-    
+    # Shadow-mode safety: latch one hedge intent per NYSE day.
+    _hedge_emitted_day_key = day_key
+    # Track intended SPY hedge position so we can flatten it at 15:45 ET.
+    _spy_hedge_position_shares += hedge_qty
+
     return [hedge_order]
 
 
@@ -541,6 +617,8 @@ def reset_strategy_state() -> None:
     """Reset all strategy state (useful for testing)."""
     global _portfolio_positions, _last_gex_value, _last_gex_update, _last_hedge_time
     global _macro_event_active, _stop_loss_multiplier, _position_size_multiplier, _last_macro_check
+    global _active_day_key, _hedge_emitted_day_key, _flatten_emitted_day_key, _halted_day_key
+    global _spy_hedge_position_shares
     _portfolio_positions.clear()
     _last_gex_value = None
     _last_gex_update = None
@@ -549,3 +627,8 @@ def reset_strategy_state() -> None:
     _stop_loss_multiplier = Decimal("1.0")
     _position_size_multiplier = Decimal("1.0")
     _last_macro_check = None
+    _active_day_key = None
+    _hedge_emitted_day_key = None
+    _flatten_emitted_day_key = None
+    _halted_day_key = None
+    _spy_hedge_position_shares = Decimal("0")

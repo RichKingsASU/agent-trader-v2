@@ -14,6 +14,8 @@ from typing import List, Dict, Any
 
 # Add strategy module to path
 strategy_dir = Path(__file__).parent
+repo_root = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(repo_root))
 sys.path.insert(0, str(strategy_dir))
 
 from strategy import (

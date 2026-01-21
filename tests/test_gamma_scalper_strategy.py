@@ -165,14 +165,14 @@ class TestHedgeQuantity:
         underlying_price = Decimal("495.50")
         hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
         # Should be negative (sell) to offset positive delta
-        assert hedge_qty == Decimal("-6")  # Rounded to nearest whole
+        assert hedge_qty == Decimal("-650")  # 6.5 contracts-delta * 100 = 650 shares
     
     def test_negative_delta_requires_buy(self):
         net_delta = Decimal("-5.3")
         underlying_price = Decimal("495.50")
         hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
         # Should be positive (buy) to offset negative delta
-        assert hedge_qty == Decimal("5")  # Rounded to nearest whole
+        assert hedge_qty == Decimal("530")  # 5.3 * 100 = 530 shares
     
     def test_zero_underlying_price(self):
         net_delta = Decimal("6.5")
@@ -181,11 +181,11 @@ class TestHedgeQuantity:
         assert hedge_qty == Decimal("0")
     
     def test_rounding_half_up(self):
-        net_delta = Decimal("6.5")
+        net_delta = Decimal("6.505")
         underlying_price = Decimal("495.50")
         hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
-        # -6.5 should round to -6 (away from zero for .5)
-        assert hedge_qty == Decimal("-6")
+        # -650.5 should round to -651 (half-up)
+        assert hedge_qty == Decimal("-651")
 
 
 class TestShouldHedge:
@@ -276,17 +276,28 @@ class TestStrategyExecution:
         hedge_order = orders[0]
         assert hedge_order["symbol"] == "SPY"
         assert hedge_order["side"] == "sell"  # Selling to offset positive delta
+        assert hedge_order["qty"] == 650.0  # 6.5 * 100 shares
         assert hedge_order["order_type"] == "market"
         assert hedge_order["client_tag"] == "0dte_gamma_scalper_hedge"
     
     def test_exits_all_positions_at_close_time(self):
-        # Establish position
-        _portfolio_positions["SPY_CALL"] = {
-            "delta": Decimal("0.65"),
-            "quantity": Decimal("10"),
-            "price": Decimal("2.50"),
+        # Establish an option position and generate ONE hedge intent first
+        entry_event = {
+            "protocol": "v1",
+            "type": "market_event",
+            "event_id": "evt_001",
+            "ts": "2025-12-30T14:00:00Z",
             "symbol": "SPY_CALL",
+            "source": "alpaca",
+            "payload": {
+                "delta": 0.65,
+                "price": 2.50,
+                "quantity": 10,
+                "underlying_price": 495.50,
+            },
         }
+        orders = on_market_event(entry_event)
+        assert orders is not None and len(orders) > 0
         
         # Event at 3:45 PM ET (market close time)
         event = {
@@ -305,18 +316,15 @@ class TestStrategyExecution:
         
         orders = on_market_event(event)
         
-        # Should generate exit order
+        # Should generate ONE SPY flatten order (shadow-mode safety: SPY intents only)
         assert orders is not None
-        assert len(orders) > 0
+        assert len(orders) == 1
         
         exit_order = orders[0]
-        assert exit_order["symbol"] == "SPY_CALL"
-        assert exit_order["side"] == "sell"
+        assert exit_order["symbol"] == "SPY"
+        assert exit_order["side"] == "buy"  # Buy to cover the earlier sell hedge
         assert exit_order["client_tag"] == "0dte_gamma_scalper_exit"
-        assert "market_close_exit" in exit_order["metadata"]["reason"]
-        
-        # Portfolio should be cleared
-        assert "SPY_CALL" not in _portfolio_positions
+        assert "market_close_flatten" in exit_order["metadata"]["reason"]
 
 
 class TestGEXIntegration:
