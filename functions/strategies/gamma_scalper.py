@@ -9,6 +9,7 @@ hedging flows. It implements:
 """
 
 import logging
+import os
 from datetime import datetime, time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -17,6 +18,60 @@ import pytz
 from .base_strategy import BaseStrategy, SignalType, TradingSignal
 
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# Safety Hardening (Execution Intent Suppression)
+# ============================================================================
+# This strategy file must remain safe to import and run in any environment.
+# It is used for *signal generation*, but downstream systems could treat BUY/SELL/
+# CLOSE_ALL as executable intent. The guard below ensures this module can NEVER be
+# misused to trigger broker actions unintentionally.
+#
+# Policy:
+# - Enforce TRADING_MODE == "paper" at runtime
+# - Enforce kill switch EXECUTION_HALTED (any truthy value halts)
+# - Require explicit dual unlock:
+#     ENABLE_DANGEROUS_FUNCTIONS == "true" AND EXEC_GUARD_UNLOCK == "1"
+# - If any check fails -> log and downgrade to HOLD (NO_OP)
+# ============================================================================
+
+
+def _execution_intent_allowed() -> tuple[bool, str, Dict[str, str]]:
+    """
+    Centralized execution guard for *any* actionable trading intent.
+
+    IMPORTANT: We intentionally do not accept "truthy" variants for the dual unlock.
+    Requirements demand strict values:
+      - ENABLE_DANGEROUS_FUNCTIONS == "true"
+      - EXEC_GUARD_UNLOCK == "1"
+    """
+    trading_mode = (os.getenv("TRADING_MODE") or "").strip()
+    execution_halted = (os.getenv("EXECUTION_HALTED") or "").strip()
+    enable_dangerous = (os.getenv("ENABLE_DANGEROUS_FUNCTIONS") or "").strip()
+    exec_guard_unlock = (os.getenv("EXEC_GUARD_UNLOCK") or "").strip()
+
+    env_snapshot = {
+        "TRADING_MODE": trading_mode,
+        "EXECUTION_HALTED": execution_halted,
+        "ENABLE_DANGEROUS_FUNCTIONS": enable_dangerous,
+        "EXEC_GUARD_UNLOCK": exec_guard_unlock,
+    }
+
+    # 1) Must be paper trading mode (strict)
+    if trading_mode.lower() != "paper":
+        return False, "TRADING_MODE must be 'paper'", env_snapshot
+
+    # 2) Kill switch must NOT be active (treat any common truthy value as halted)
+    if execution_halted.lower() in {"1", "true", "t", "yes", "y", "on"}:
+        return False, "EXECUTION_HALTED is active (kill switch)", env_snapshot
+
+    # 3) Dual unlock must be present (strict equality per requirements)
+    if enable_dangerous != "true":
+        return False, "ENABLE_DANGEROUS_FUNCTIONS must equal 'true'", env_snapshot
+    if exec_guard_unlock != "1":
+        return False, "EXEC_GUARD_UNLOCK must equal '1'", env_snapshot
+
+    return True, "ok", env_snapshot
 
 
 class GammaScalper(BaseStrategy):
@@ -83,6 +138,12 @@ class GammaScalper(BaseStrategy):
             TradingSignal with action, confidence, and reasoning
         """
         try:
+            # ----------------------------------------------------------------
+            # SAFETY: Never emit actionable intent unless explicit guard passes.
+            # We still compute signals normally (for analysis/audit), but any
+            # BUY/SELL/CLOSE_ALL is downgraded to HOLD when guardrails fail.
+            # ----------------------------------------------------------------
+
             # Step 1: Time-Based Exit Rule
             current_time = datetime.now(self.EST_TIMEZONE).time()
             if current_time >= self.MARKET_CLOSE_TIME:
@@ -100,6 +161,7 @@ class GammaScalper(BaseStrategy):
                     }
                 )
                 # Sign signal for Zero-Trust verification
+                signal = self._apply_execution_safeguards(signal)
                 return self.sign_signal(signal)
             
             # Step 2: Calculate Net Delta
@@ -172,6 +234,7 @@ class GammaScalper(BaseStrategy):
                     "target_allocation": final_confidence * 100  # As percentage
                 }
             )
+            signal = self._apply_execution_safeguards(signal)
             return self.sign_signal(signal)
             
         except Exception as e:
@@ -188,6 +251,52 @@ class GammaScalper(BaseStrategy):
             except Exception:
                 # If signing fails, return unsigned (last resort)
                 return signal
+
+    def _apply_execution_safeguards(self, signal: TradingSignal) -> TradingSignal:
+        """
+        Downgrade actionable intent to HOLD when runtime safety checks fail.
+
+        This is intentionally local to this strategy module to keep the diff
+        minimal and to avoid touching any execution services.
+        """
+        # Only suppress signals that could plausibly be acted on by an executor.
+        if signal.signal_type not in {SignalType.BUY, SignalType.SELL, SignalType.CLOSE_ALL}:
+            return signal
+
+        allowed, deny_reason, env_snapshot = _execution_intent_allowed()
+        if allowed:
+            return signal
+
+        # Log loudly: this should surface in any environment where someone tries
+        # to (mis)use this strategy to drive execution.
+        logger.error(
+            "EXECUTION SUPPRESSED by guardrails: intended_action=%s reason=%s env=%s",
+            getattr(signal.signal_type, "value", str(signal.signal_type)),
+            deny_reason,
+            env_snapshot,
+        )
+
+        # Return a safe NO_OP. Preserve the original intent in metadata for audit.
+        suppressed_metadata = dict(getattr(signal, "metadata", {}) or {})
+        suppressed_metadata.update(
+            {
+                "execution_suppressed": True,
+                "suppressed_reason": deny_reason,
+                "suppressed_env": env_snapshot,
+                "suppressed_intended_action": getattr(signal.signal_type, "value", str(signal.signal_type)),
+                "suppressed_intended_confidence": getattr(signal, "confidence", None),
+            }
+        )
+
+        return TradingSignal(
+            signal_type=SignalType.HOLD,
+            confidence=0.0,
+            reasoning=(
+                "Execution intent suppressed by safety guardrails. "
+                "Strategy remains available for signal generation only."
+            ),
+            metadata=suppressed_metadata,
+        )
     
     def _calculate_net_delta(
         self,
