@@ -1,0 +1,17 @@
+strategy_id: volatility_breakout
+strategy_name: Volatility / Breakout (ATR-normalized Donchian)
+capabilities:
+  - GENERATE_SIGNALS
+required_features:
+  - OHLCV
+  - QUOTES
+allowed_agent_modes:
+  - WARMUP
+  - LIVE
+owner: risk-engineering
+notes: >
+  Enterprise-normalized volatility/breakout strategy.
+  Guardrails are enforced in the strategy implementation:
+  - time-based exit (defaults before close window)
+  - max notional per signal (confidence/allocation clamp)
+  - HOLD during market-close window

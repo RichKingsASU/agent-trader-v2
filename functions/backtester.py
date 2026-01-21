@@ -174,6 +174,10 @@ class BacktestAccount:
                     "symbol": pos.symbol,
                     "qty": float(pos.quantity),
                     "entry_price": float(pos.entry_price),
+                    # Enterprise normalization: include entry_time so strategies can enforce
+                    # time-based exits deterministically in backtests.
+                    "entry_time": pos.entry_time.isoformat(),
+                    "side": pos.side,
                     "greeks": {}  # Simplified for now
                 }
                 for pos in self.positions
