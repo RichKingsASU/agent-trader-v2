@@ -1,19 +1,26 @@
 import asyncio
+import json
 import os
 import time
 import logging
 import signal
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any, Deque, Dict, Optional
+import uuid
 from nats.aio.client import Client as NATS
 
-from backend.common.nats.subjects import market_wildcard_subject, signals_subject
-from backend.common.schemas.codec import decode_message, encode_message
-from backend.common.schemas.models import MarketEventV1, SignalEventV1
+from backend.common.nats.subjects import market_wildcard_subject, signals_v2_subject
+from backend.common.schemas.codec import decode_message
+from backend.common.schemas.models import MarketEventV1
 from backend.common.freshness import check_freshness
 from backend.risk_allocator.warm_cache import get_warm_cache_buying_power_usd
 from backend.common.logging import init_structured_logging
 from backend.common.kill_switch import get_kill_switch_state
+
+from backend.contracts.v2.trading import TradingSignal
+from backend.contracts.v2.types import AssetClass, CONTRACT_VERSION_V2, SignalAction, Side
 
 init_structured_logging(service="options-bot")
 logger = logging.getLogger(__name__)
@@ -51,6 +58,58 @@ def _validate_event_ts(ts: datetime) -> tuple[bool, str]:
     return True, "ok"
 
 
+@dataclass
+class _PerSymbolRateLimiter:
+    """
+    In-memory, fail-closed rate limiter for emitted signals (per symbol).
+
+    Controls:
+    - `cooldown_s`: minimum seconds between emits for the same symbol
+    - `max_per_window`: maximum emits per rolling `window_s` per symbol
+
+    Note: This is process-local (resets on restart), which is acceptable for
+    shadow execution safety and to avoid accidental flooding.
+    """
+
+    cooldown_s: float
+    window_s: float
+    max_per_window: int
+    _last_emit_mono: Dict[str, float] = field(default_factory=dict)
+    _emit_times_mono: Dict[str, Deque[float]] = field(default_factory=dict)
+
+    def allow(self, symbol: str) -> tuple[bool, str]:
+        sym = str(symbol or "").strip().upper()
+        if not sym:
+            return False, "invalid_symbol"
+
+        now = time.monotonic()
+        last = self._last_emit_mono.get(sym)
+        if last is not None and self.cooldown_s > 0 and (now - last) < self.cooldown_s:
+            return False, "cooldown"
+
+        if self.max_per_window <= 0 or self.window_s <= 0:
+            # Treat as "disabled" (but still enforce cooldown above).
+            self._last_emit_mono[sym] = now
+            return True, "ok"
+
+        q = self._emit_times_mono.get(sym)
+        if q is None:
+            q = deque()
+            self._emit_times_mono[sym] = q
+
+        # Drop timestamps outside the rolling window
+        cutoff = now - self.window_s
+        while q and q[0] < cutoff:
+            q.popleft()
+
+        if len(q) >= self.max_per_window:
+            return False, "max_rate"
+
+        q.append(now)
+        self._last_emit_mono[sym] = now
+        return True, "ok"
+
+
 async def main():
     nc = NATS()
     await nc.connect("nats://localhost:4222")
@@ -84,6 +143,17 @@ async def main():
     delta_threshold = float(os.getenv("DELTA_THRESHOLD", "0.55"))
     snapshot_refresh_s = float(os.getenv("ALPACA_SNAPSHOT_REFRESH_S", "5"))
 
+    # Shadow-safety: per-symbol emit controls.
+    # Defaults are conservative to prevent flooding downstream systems.
+    cooldown_s = float(os.getenv("SIGNAL_COOLDOWN_SECONDS", "120"))
+    max_per_window = int(os.getenv("MAX_SIGNALS_PER_SYMBOL_PER_WINDOW", "3"))
+    window_s = float(os.getenv("SIGNALS_PER_SYMBOL_WINDOW_SECONDS", "900"))  # 15 minutes
+    limiter = _PerSymbolRateLimiter(
+        cooldown_s=max(0.0, cooldown_s),
+        window_s=max(0.0, window_s),
+        max_per_window=max(0, max_per_window),
+    )
+
     cached_buying_power: float = 0.0
     cached_at_mono: float = 0.0
 
@@ -94,7 +164,7 @@ async def main():
             return cached_buying_power
 
         # Firestore client is synchronous; offload to a thread so we don't block the event loop.
-        buying_power, _ = await asyncio.to_thread(get_warm_cache_available_capital_usd)
+        buying_power = await asyncio.to_thread(get_warm_cache_buying_power_usd)
         cached_buying_power = float(buying_power or 0.0)
         cached_at_mono = now
         return cached_buying_power
@@ -127,16 +197,47 @@ async def main():
         root = str(data.get("root") or evt.symbol).strip()
         greeks = data.get("greeks") or {}
         
-        # QUANT STRATEGY: "Delta Momentum"
-        # Only buy if Delta > 0.55 (Strong momentum) 
+        # QUANT STRATEGY: "Delta Momentum" (options)
+        # Indicator set: delta threshold only (no RSI/MACD/returns).
         try:
             delta = float(greeks.get("delta"))
         except Exception:
             delta = None
 
-        if delta is not None and delta > delta_threshold:
+        # Enforce HOLD on insufficient inputs (shadow-safe, fail-closed).
+        if not root or delta is None:
+            try:
+                logger.info(
+                    "Insufficient market inputs; holding",
+                    extra={
+                        "event_type": "options_bot.hold_insufficient_inputs",
+                        "root": root,
+                        "has_delta": delta is not None,
+                    },
+                )
+            except Exception:
+                pass
+            return
+
+        # Signal frequency controls (per symbol).
+        ok_rate, rate_reason = limiter.allow(root)
+        if not ok_rate:
+            try:
+                logger.info(
+                    "Rate limited; skipping signal emit",
+                    extra={
+                        "event_type": "options_bot.rate_limited",
+                        "root": root,
+                        "reason": rate_reason,
+                    },
+                )
+            except Exception:
+                pass
+            return
+
+        if delta > delta_threshold:
             logger.warning(
-                "High delta detected; emitting buy_call signal",
+                "High delta detected; emitting TradingSignal enter_long",
                 extra={"event_type": "options_bot.signal_detected", "root": root, "delta": delta},
             )
             
@@ -161,27 +262,55 @@ async def main():
                 )
                 return
 
-            signal_evt = SignalEventV1(
+            now_utc = datetime.now(timezone.utc)
+            sig = TradingSignal(
+                schema="agenttrader.v2.trading_signal",
+                schema_version=CONTRACT_VERSION_V2,
                 tenant_id=evt.tenant_id,
+                created_at=now_utc,
+                signal_id=uuid.uuid4(),
                 strategy_id=strategy_id,
                 symbol=root,
-                signal_type="buy_call",
+                asset_class=AssetClass.option,
+                action=SignalAction.enter_long,
+                side=Side.buy,
+                generated_at=now_utc,
+                expires_at=None,
                 confidence=None,
-                data={
+                strength=float(delta),
+                horizon="intraday",
+                rationale=f"Delta {float(delta):.4f} > threshold {float(delta_threshold):.4f}",
+                features={
+                    "delta": float(delta),
+                    "delta_threshold": float(delta_threshold),
+                    "est_notional": est_notional,
+                    "buying_power": buying_power,
+                },
+                options={
+                    # Non-broker-specific instrument/context (safe for shadow).
                     "root_symbol": root,
                     "option_symbol": data.get("option_symbol"),
                     "option_type": data.get("type"),
                     "strike": data.get("strike"),
                     "expiry": data.get("expiry"),
                     "price": data.get("price"),
-                    "quantity": 1,
+                    "quantity": qty,
                     "greeks": greeks,
+                    "event_ts": getattr(evt, "ts", None).isoformat() if getattr(evt, "ts", None) else None,
+                },
+                meta={
+                    "source": "backend/strategies/options_bot.py",
+                    "rate_limit": {
+                        "cooldown_s": float(limiter.cooldown_s),
+                        "window_s": float(limiter.window_s),
+                        "max_per_window": int(limiter.max_per_window),
+                    },
                 },
             )
 
             await nc.publish(
-                signals_subject(evt.tenant_id, strategy_id, root),
-                encode_message(signal_evt),
+                signals_v2_subject(evt.tenant_id, strategy_id, root),
+                json.dumps(sig.model_dump(by_alias=True), default=str).encode("utf-8"),
             )
 
     # Listen to options chains for SPY, IWM, QQQ
@@ -189,7 +318,15 @@ async def main():
     await nc.subscribe(subject, cb=options_handler)
     logger.info(
         "Options bot active",
-        extra={"event_type": "options_bot.subscribed", "subject": subject, "delta_threshold": delta_threshold},
+        extra={
+            "event_type": "options_bot.subscribed",
+            "subject": subject,
+            "delta_threshold": delta_threshold,
+            "signals_subject": signals_v2_subject(tenant_id, strategy_id, "SYMBOL"),
+            "cooldown_s": limiter.cooldown_s,
+            "window_s": limiter.window_s,
+            "max_per_window": limiter.max_per_window,
+        },
     )
 
     loop_iter = 0
