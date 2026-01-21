@@ -16,6 +16,8 @@ from datetime import datetime
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import scripts.lib.exec_guard as exec_guard
+
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -221,4 +223,5 @@ def main():
 
 
 if __name__ == "__main__":
+    exec_guard.enforce_execution_policy(__file__, sys.argv)
     main()

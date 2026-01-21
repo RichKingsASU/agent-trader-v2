@@ -17,6 +17,15 @@ Requirements:
     - Service account credentials configured
 """
 
+import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+import scripts.lib.exec_guard as exec_guard
+
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime, timedelta
@@ -344,4 +353,5 @@ def main():
 
 
 if __name__ == "__main__":
+    exec_guard.enforce_execution_policy(__file__, sys.argv)
     exit(main())
