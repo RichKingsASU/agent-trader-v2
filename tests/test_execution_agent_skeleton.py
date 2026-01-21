@@ -150,9 +150,11 @@ def test_decision_rejects_when_valid_until_expired() -> None:
     assert "proposal_expired" in d.reject_reason_codes
 
 
-def test_decision_ndjson_has_required_keys(tmp_path) -> None:
+def test_decision_ndjson_has_required_keys(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _require_decider()
     # Import here to avoid polluting import graph.
+    monkeypatch.setenv("AGENT_MODE", "OBSERVE")
+    monkeypatch.setenv("TRADING_MODE", "paper")
     from backend.execution_agent.main import append_decision_ndjson
 
     safety = SafetySnapshot(
