@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 from urllib.parse import urlparse
 from typing import Any, Optional
 
@@ -13,6 +14,21 @@ def get_env(name: str, default: Any = None, *, required: bool = False) -> Any:
         return default
     return str(v).strip()
 
+    Env contract (official Alpaca SDK):
+    - APCA_API_KEY_ID
+    """
+    # Canonical (official Alpaca SDK)
+    v = get_env("APCA_API_KEY_ID", default=None, required=False)
+    # Common historical/infra aliases (normalize to canonical so Alpaca SDKs can read them).
+    v = v or get_env("ALPACA_API_KEY", default=None, required=False)
+    v = v or get_env("ALPACA_API_KEY_ID", default=None, required=False)
+    v = v or get_env("APCA_API_KEY", default=None, required=False)  # legacy
+    if v:
+        s = str(v).strip()
+        if s:
+            # Ensure canonical env var is present for downstream libs (alpaca-py / alpaca-trade-api).
+            os.environ.setdefault("APCA_API_KEY_ID", s)
+            return s
 
 def get_alpaca_key_id(*, required: bool = True) -> str | None:
     v = get_env("APCA_API_KEY_ID", None, required=required)
@@ -28,6 +44,20 @@ def get_alpaca_secret_key(*, required: bool = True) -> str | None:
     v = get_env("APCA_API_SECRET_KEY", None, required=required)
     return str(v).strip() if v is not None else None
 
+    Env contract (official Alpaca SDK):
+    - APCA_API_SECRET_KEY
+    """
+    # Canonical (official Alpaca SDK)
+    v = get_env("APCA_API_SECRET_KEY", default=None, required=False)
+    # Common historical/infra aliases (normalize to canonical so Alpaca SDKs can read them).
+    v = v or get_env("ALPACA_SECRET_KEY", default=None, required=False)
+    v = v or get_env("ALPACA_API_SECRET_KEY", default=None, required=False)
+    v = v or get_env("APCA_API_SECRET", default=None, required=False)  # legacy
+    if v:
+        s = str(v).strip()
+        if s:
+            os.environ.setdefault("APCA_API_SECRET_KEY", s)
+            return s
 
 def get_alpaca_api_base_url(*, required: bool = True) -> str | None:
     # Default to paper URL for safety if not explicitly set.
