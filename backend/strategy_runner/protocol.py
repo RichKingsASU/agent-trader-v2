@@ -25,6 +25,10 @@ Side = Literal["buy", "sell"]
 OrderType = Literal["market", "limit", "stop", "stop_limit"]
 TimeInForce = Literal["day", "gtc", "ioc", "fok"]
 
+OptionRight = Literal["CALL", "PUT"]
+OptionOrderType = Literal["MARKET"]
+OptionTimeInForce = Literal["DAY"]
+
 _ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_\-]{0,127}$")
 
 
@@ -151,6 +155,73 @@ class OrderIntent:
 
 
 @dataclass(frozen=True)
+class OptionOrderIntent:
+    """
+    Phase O1: single-leg option order intent.
+
+    Safety boundary:
+    - This is *parsed* and *validated* only.
+    - OPTIONS EXECUTION NOT IMPLEMENTED: any attempt to hand this object to execution
+      code must raise (see `to_execution_intent`).
+    """
+
+    protocol: str
+    type: Literal["order_intent"]
+    intent_id: str
+    event_id: str
+    ts: str
+
+    # Discriminator
+    asset_type: Literal["OPTION"]
+
+    # Contract details (single-leg only)
+    contract_symbol: str
+    underlying: str
+    expiration: str  # YYYY-MM-DD
+    strike: float
+    right: OptionRight
+
+    # Contracts
+    qty: float
+    multiplier: int = 100
+
+    # Phase O1: hard-coded routing constraints
+    order_type: OptionOrderType = "MARKET"
+    time_in_force: OptionTimeInForce = "DAY"
+
+    client_tag: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    def to_execution_intent(self) -> None:
+        # OPTIONS EXECUTION NOT IMPLEMENTED
+        raise NotImplementedError("OPTIONS EXECUTION NOT IMPLEMENTED")
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "protocol": self.protocol,
+            "type": self.type,
+            "intent_id": self.intent_id,
+            "event_id": self.event_id,
+            "ts": self.ts,
+            "asset_type": self.asset_type,
+            "contract_symbol": self.contract_symbol,
+            "underlying": self.underlying,
+            "expiration": self.expiration,
+            "strike": self.strike,
+            "right": self.right,
+            "qty": self.qty,
+            "multiplier": self.multiplier,
+            "order_type": self.order_type,
+            "time_in_force": self.time_in_force,
+        }
+        if self.client_tag is not None:
+            d["client_tag"] = self.client_tag
+        if self.metadata is not None:
+            d["metadata"] = self.metadata
+        return d
+
+
+@dataclass(frozen=True)
 class LogMessage:
     protocol: str
     type: Literal["log"]
@@ -193,7 +264,21 @@ def parse_inbound_message(obj: Dict[str, Any]) -> Union[MarketEvent, Dict[str, A
     raise ProtocolError(f"unsupported inbound type: {msg_type}")
 
 
-def parse_order_intent(obj: Dict[str, Any]) -> OrderIntent:
+def _require_iso_date(d: Dict[str, Any], key: str) -> str:
+    v = _require_str(d, key)
+    # YYYY-MM-DD (ISO date) enforcement.
+    # Fail-closed: reject non-parseable values rather than normalizing.
+    try:
+        # Import locally to keep module import surface small.
+        from datetime import date as _date  # noqa: WPS433
+
+        _date.fromisoformat(v)
+    except Exception:
+        raise ProtocolError(f"field {key} must be ISO date YYYY-MM-DD")
+    return v
+
+
+def parse_order_intent(obj: Dict[str, Any]) -> Union[OrderIntent, OptionOrderIntent]:
     protocol = _require_str(obj, "protocol")
     if protocol != PROTOCOL_VERSION:
         raise ProtocolError(f"unsupported protocol: {protocol}")
@@ -204,6 +289,77 @@ def parse_order_intent(obj: Dict[str, Any]) -> OrderIntent:
     intent_id = _require_id(obj, "intent_id")
     event_id = _require_id(obj, "event_id")
     ts = _require_str(obj, "ts")
+
+    # Phase O1: OptionOrderIntent support (single-leg only).
+    asset_type_raw = obj.get("asset_type")
+    if isinstance(asset_type_raw, str) and asset_type_raw.strip().upper() == "OPTION":
+        # Reject multi-leg payloads explicitly (fail-closed).
+        if "legs" in obj:
+            raise ProtocolError("multi-leg option payloads not supported")
+
+        contract_symbol = _require_str(obj, "contract_symbol")
+        underlying = _require_str(obj, "underlying")
+        expiration = _require_iso_date(obj, "expiration")
+
+        strike_raw = _require(obj, "strike")
+        if isinstance(strike_raw, bool) or not isinstance(strike_raw, (int, float)):
+            raise ProtocolError("field strike must be number")
+        strike = float(strike_raw)
+        if strike <= 0:
+            raise ProtocolError("field strike must be > 0")
+
+        right_raw = _require_str(obj, "right").strip().upper()
+        if right_raw not in ("CALL", "PUT"):
+            raise ProtocolError("field right must be CALL or PUT")
+
+        qty_raw = _require(obj, "qty")
+        if isinstance(qty_raw, bool) or not isinstance(qty_raw, (int, float)):
+            raise ProtocolError("field qty must be number")
+        qty = float(qty_raw)
+        if qty <= 0:
+            raise ProtocolError("field qty must be > 0")
+
+        multiplier_raw = obj.get("multiplier", 100)
+        if isinstance(multiplier_raw, bool) or not isinstance(multiplier_raw, (int, float)):
+            raise ProtocolError("field multiplier must be number")
+        multiplier = int(multiplier_raw)
+        if multiplier <= 0:
+            raise ProtocolError("field multiplier must be > 0")
+
+        order_type_raw = _require_str(obj, "order_type").strip().upper()
+        if order_type_raw != "MARKET":
+            raise ProtocolError("field order_type invalid (MARKET only for options)")
+
+        tif_raw = _require_str(obj, "time_in_force").strip().upper()
+        if tif_raw != "DAY":
+            raise ProtocolError("field time_in_force invalid (DAY only for options)")
+
+        client_tag = _optional_str(obj, "client_tag")
+        metadata = obj.get("metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ProtocolError("field metadata must be object")
+
+        return OptionOrderIntent(
+            protocol=protocol,
+            type="order_intent",
+            intent_id=intent_id,
+            event_id=event_id,
+            ts=ts,
+            asset_type="OPTION",
+            contract_symbol=contract_symbol,
+            underlying=underlying,
+            expiration=expiration,
+            strike=strike,
+            right=right_raw,  # type: ignore[arg-type]
+            qty=qty,
+            multiplier=multiplier,
+            order_type="MARKET",
+            time_in_force="DAY",
+            client_tag=client_tag,
+            metadata=metadata,
+        )
+
+    # Backward-compatible parsing for existing (equity) OrderIntent remains unchanged.
     symbol = _require_str(obj, "symbol")
     side = _require_str(obj, "side")
     if side not in ("buy", "sell"):

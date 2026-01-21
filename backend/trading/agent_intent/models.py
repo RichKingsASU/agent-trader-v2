@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -115,3 +115,32 @@ class AgentIntent(BaseModel):
     rationale: AgentIntentRationale
     constraints: AgentIntentConstraints
 
+
+class OptionOrderIntent(BaseModel):
+    """
+    Phase O1: OptionOrderIntent protocol model (single-leg only).
+
+    Safety boundary:
+    - This model is for *intent capture + validation only*.
+    - OPTIONS EXECUTION NOT IMPLEMENTED: do not route this into any execution path.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    asset_type: Literal["OPTION"] = Field(default="OPTION")
+    contract_symbol: str = Field(..., min_length=1, description="Provider contract symbol (required)")
+    underlying: str = Field(..., min_length=1, description="Underlying symbol (e.g., SPY)")
+    expiration: date = Field(..., description="Option expiration date (YYYY-MM-DD)")
+    strike: float = Field(..., gt=0, description="Strike price")
+    right: OptionRight = Field(..., description="CALL|PUT")
+
+    qty: int = Field(..., gt=0, description="Contracts (must be > 0)")
+    multiplier: int = Field(default=100, gt=0, description="Contract multiplier (default 100)")
+
+    # Phase O1 constraints:
+    order_type: Literal["MARKET"] = Field(default="MARKET", description="MARKET only (Phase O1)")
+    time_in_force: Literal["DAY"] = Field(default="DAY", description="DAY only (Phase O1)")
+
+    def to_execution_intent(self) -> None:
+        # OPTIONS EXECUTION NOT IMPLEMENTED
+        raise NotImplementedError("OPTIONS EXECUTION NOT IMPLEMENTED")
