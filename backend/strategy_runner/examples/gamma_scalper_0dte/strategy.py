@@ -27,11 +27,11 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, time, date
+from datetime import datetime, time
+from datetime import date as date_type
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
-from backend.time.nyse_time import NYSE_TZ, parse_ts, to_nyse, utc_now
-from backend.common.trading_config import get_options_contract_multiplier
+from backend.time.nyse_time import NYSE_TZ, is_trading_day, parse_ts, to_nyse, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 HEDGING_THRESHOLD = Decimal("0.15")  # Base delta threshold for hedging
 HEDGING_THRESHOLD_NEGATIVE_GEX = Decimal("0.10")  # Tighter threshold when GEX is negative
 EXIT_TIME_ET = time(15, 45, 0)  # 3:45 PM ET - exit time to avoid MOC volatility
+ALLOWED_UNDERLYING_SYMBOL = "SPY"
 
 # Global state (persists across market events in the same run)
 _portfolio_positions: Dict[str, Dict[str, Any]] = {}
@@ -52,6 +53,12 @@ _last_macro_check: Optional[datetime] = None
 _last_hedge_trade_date: Optional[date] = None  # America/New_York date of last hedge intent
 _spy_hedge_qty: Decimal = Decimal("0")  # Running SPY hedge share exposure from emitted intents
 _halted: bool = False  # Hard halt latch after 15:45 ET exit logic
+
+# Daily safety latch (NYSE trading day scoped)
+_latch_trading_day: Optional[date_type] = None
+_latch_entry_used: bool = False
+_latch_flatten_used: bool = False
+_spy_position_qty: Decimal = Decimal("0")  # signed shares: +long, -short
 
 
 def _to_decimal(value: Any) -> Decimal:
@@ -81,9 +88,58 @@ def _is_market_close_time(current_time: datetime) -> bool:
     return et_time.time() >= EXIT_TIME_ET
 
 
-def _et_trading_day(current_time: datetime) -> date:
-    """Return the NYSE (ET) trading day date for a timestamp."""
-    return to_nyse(current_time).date()
+def _current_trading_day(current_time: datetime) -> Optional[date_type]:
+    """Return the NYSE trading day (NY date) for a timestamp, else None on non-trading days."""
+    ny_date = to_nyse(current_time).date()
+    if not is_trading_day(ny_date):
+        return None
+    return ny_date
+
+
+def _reset_daily_latch_if_new_trading_day(current_time: datetime) -> None:
+    """
+    Reset the daily latch on the first event of a new NYSE trading day.
+
+    Note: weekends/holidays do not reset the latch; it resets when the next trading day arrives.
+    """
+    global _latch_trading_day, _latch_entry_used, _latch_flatten_used, _spy_position_qty, _last_hedge_time
+
+    td = _current_trading_day(current_time)
+    if td is None:
+        return
+
+    if _latch_trading_day != td:
+        _latch_trading_day = td
+        _latch_entry_used = False
+        _latch_flatten_used = False
+        _spy_position_qty = Decimal("0")
+        _last_hedge_time = None  # allow first trade immediately on a new day
+
+
+def _create_flatten_order(event_id: str, ts: str, current_time: datetime) -> Dict[str, Any]:
+    """Create a single SPY market order to flatten the tracked SPY hedge position."""
+    global _spy_position_qty
+    side = "sell" if _spy_position_qty > Decimal("0") else "buy"
+    abs_qty = abs(_spy_position_qty)
+
+    return {
+        "protocol": "v1",
+        "type": "order_intent",
+        "intent_id": f"flatten_{ALLOWED_UNDERLYING_SYMBOL}_{uuid.uuid4().hex[:12]}",
+        "event_id": event_id,
+        "ts": ts,
+        "symbol": ALLOWED_UNDERLYING_SYMBOL,
+        "side": side,
+        "qty": float(abs_qty),
+        "order_type": "market",
+        "time_in_force": "day",
+        "client_tag": "0dte_gamma_scalper_exit",
+        "metadata": {
+            "reason": "daily_flatten",
+            "exit_time_et": current_time.astimezone(NYSE_TZ).isoformat(),
+            "strategy": "0dte_gamma_scalper",
+        },
+    }
 
 
 def _get_net_portfolio_delta() -> Decimal:
@@ -510,57 +566,21 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     current_time = _parse_timestamp(ts)
     et_now = to_nyse(current_time)
 
-    # Hard halt: after exit at/after 15:45 ET, do not update state and emit NO_OP forever.
-    if _halted:
-        return []
+    # Daily hard cap / latch reset (NYSE trading day)
+    _reset_daily_latch_if_new_trading_day(current_time)
     
     # Safety check: Exit all positions at 3:45 PM ET
     if _is_market_close_time(current_time):
-        has_option_exposure = any(
-            _to_decimal(pos.get("quantity", 0)) != Decimal("0") for pos in _portfolio_positions.values()
-        )
-        has_spy_hedge = _spy_hedge_qty != Decimal("0")
-
-        exit_orders: List[Dict[str, Any]] = []
-        if has_option_exposure:
-            exit_orders.extend(_create_exit_orders(current_time, event_id, ts))
-
-        if has_spy_hedge:
-            # Close SPY hedge exposure tracked from emitted hedge intents.
-            side = "sell" if _spy_hedge_qty > Decimal("0") else "buy"
-            exit_orders.append(
-                {
-                    "protocol": "v1",
-                    "type": "order_intent",
-                    "intent_id": f"exit_SPY_{uuid.uuid4().hex[:12]}",
-                    "event_id": event_id,
-                    "ts": ts,
-                    "symbol": "SPY",
-                    "side": side,
-                    "qty": float(abs(_spy_hedge_qty)),
-                    "order_type": "market",
-                    "time_in_force": "day",
-                    "client_tag": "0dte_gamma_scalper_exit",
-                    "metadata": {
-                        "reason": "market_close_exit",
-                        "exit_time_et": et_now.isoformat(),
-                        "strategy": "0dte_gamma_scalper",
-                        "closes_spy_hedge_qty": str(_spy_hedge_qty),
-                    },
-                }
-            )
-
-        if exit_orders:
-            logger.info("Exit triggered at/after 15:45 ET (et_now=%s)", et_now.isoformat())
-
-        # After 15:45 ET we hard-halt regardless of exposure.
-        _halted = True
-        logger.info("Strategy halted (hard 15:45 ET halt engaged)")
-
-        # Reset internal exposure state after exit/halt.
-        _spy_hedge_qty = Decimal("0")
-        _last_hedge_trade_date = None
-        return exit_orders
+        global _latch_flatten_used, _spy_position_qty
+        if (not _latch_flatten_used) and _spy_position_qty != Decimal("0"):
+            _latch_flatten_used = True
+            flatten = _create_flatten_order(event_id=event_id, ts=ts, current_time=current_time)
+            _spy_position_qty = Decimal("0")
+            _portfolio_positions.clear()
+            return [flatten]
+        # No SPY position to flatten (or already flattened today).
+        _portfolio_positions.clear()
+        return []
     
     # Update position tracking
     # Check if this is an options contract or underlying
@@ -592,6 +612,11 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     # Check if hedging is needed
     if not _should_hedge(net_delta, current_time, threshold):
         return []
+
+    # Hard cap: only one entry (SPY hedge) per NYSE trading day.
+    global _latch_entry_used
+    if _latch_entry_used:
+        return []
     
     # One-trade-per-day latch (America/New_York date), exit logic is exempt.
     today_et = et_now.date()
@@ -601,7 +626,7 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
 
     # Determine underlying symbol for hedging
     # For options on SPY, hedge with SPY; for SPX options, use SPY as proxy
-    underlying_symbol = "SPY"  # Default underlying
+    underlying_symbol = ALLOWED_UNDERLYING_SYMBOL
     
     # Extract underlying price from payload or use current symbol price if it's the underlying
     underlying_price = _to_decimal(payload.get("underlying_price", payload.get("price", 0)))
@@ -627,9 +652,10 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
         ts=ts,
     )
 
-    # Track hedge exposure and apply one-trade-per-day latch on successful intent emission.
-    _spy_hedge_qty += hedge_qty
-    _last_hedge_trade_date = today_et
+    # Latch: record that we've opened today's single allowed trade.
+    _latch_entry_used = True
+    _spy_position_qty += hedge_qty
+
     return [hedge_order]
 
 
@@ -638,7 +664,7 @@ def reset_strategy_state() -> None:
     """Reset all strategy state (useful for testing)."""
     global _portfolio_positions, _last_gex_value, _last_gex_update, _last_hedge_time
     global _macro_event_active, _stop_loss_multiplier, _position_size_multiplier, _last_macro_check
-    global _last_hedge_trade_date, _spy_hedge_qty, _halted
+    global _latch_trading_day, _latch_entry_used, _latch_flatten_used, _spy_position_qty
     _portfolio_positions.clear()
     _last_gex_value = None
     _last_gex_update = None
@@ -647,6 +673,7 @@ def reset_strategy_state() -> None:
     _stop_loss_multiplier = Decimal("1.0")
     _position_size_multiplier = Decimal("1.0")
     _last_macro_check = None
-    _last_hedge_trade_date = None
-    _spy_hedge_qty = Decimal("0")
-    _halted = False
+    _latch_trading_day = None
+    _latch_entry_used = False
+    _latch_flatten_used = False
+    _spy_position_qty = Decimal("0")
