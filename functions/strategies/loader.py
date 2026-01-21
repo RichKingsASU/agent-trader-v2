@@ -71,8 +71,21 @@ class StrategyLoader:
         strategies = loader.get_all_strategies()
         signals = await loader.evaluate_all_strategies_with_maestro(market_data, account_snapshot)
     """
+
+    # Rate limiting shared counters (class-level for warm reuse)
+    _batch_write_limit: int = 500
+    _doc_write_limit: int = 50
+    _batch_cooldown_sec: float = 5.0
+    _current_batch_count: int = 0
+    _last_batch_time: float = 0.0
     
-    def __init__(self, db=None):
+    def __init__(
+        self,
+        db=None,
+        config: Optional[Dict[str, Any]] = None,
+        tenant_id: str = "default",
+        uid: Optional[str] = None,
+    ):
         """
         Initialize the strategy loader and discover all strategies.
         
@@ -80,11 +93,24 @@ class StrategyLoader:
             db: Optional Firestore client for agent identity registration.
                 If provided, each strategy will be registered with a cryptographic
                 identity for Zero-Trust signal authentication.
+            config: Optional configuration dict (e.g. rate limiting settings).
+            tenant_id: Tenant identifier for multi-tenancy (used by Maestro if enabled).
+            uid: User identifier (optional, used by Maestro if enabled).
         """
+        # Maestro is optional; always define the attribute for a stable contract.
+        self.maestro = None
+
         self.strategies: Dict[str, Any] = {}
         self._strategy_classes: Dict[str, Type] = {}
         self._load_errors: Dict[str, str] = {}
         self._db = db
+
+        # Some tests reference this mangled alias; keep it stable.
+        self._StrategyLoader__class__ = self.__class__
+
+        # Initialize Maestro controller if available and db provided
+        if db is not None and HAS_MAESTRO and MaestroController is not None:
+            self.maestro = MaestroController(db=db, tenant_id=tenant_id, uid=uid)
         
         # Initialize identity manager if Firestore client provided
         self._identity_manager = None
@@ -100,11 +126,11 @@ class StrategyLoader:
                 )
         
         # Rate limiting configuration
-        config = config or {}
-        self._enable_rate_limiting = config.get("enable_rate_limiting", True)
-        self.__class__._batch_write_limit = config.get("batch_write_limit", 500)
-        self.__class__._doc_write_limit = config.get("doc_write_limit", 50)
-        self.__class__._batch_cooldown_sec = config.get("batch_cooldown_sec", 5.0)
+        cfg = config or {}
+        self._enable_rate_limiting = cfg.get("enable_rate_limiting", True)
+        self.__class__._batch_write_limit = cfg.get("batch_write_limit", 500)
+        self.__class__._doc_write_limit = cfg.get("doc_write_limit", 50)
+        self.__class__._batch_cooldown_sec = cfg.get("batch_cooldown_sec", 5.0)
         
         # Discover and register all strategies
         self._discover_strategies()
