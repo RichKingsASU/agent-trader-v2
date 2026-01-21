@@ -214,7 +214,7 @@ backend/strategy_runner/examples/gamma_scalper_0dte/
 ### Smoke Test Results
 
 ```bash
-$ python3 backend/strategy_runner/examples/gamma_scalper_0dte/smoke_test.py
+$ python3 -m backend.strategy_runner.examples.gamma_scalper_0dte.smoke_test
 
 ✅ Position tracking works
 ✅ Net delta calculated correctly: 6.50
@@ -226,7 +226,7 @@ $ python3 backend/strategy_runner/examples/gamma_scalper_0dte/smoke_test.py
 ### Full Integration Test Results
 
 ```bash
-$ python3 backend/strategy_runner/examples/gamma_scalper_0dte/test_strategy.py
+$ python3 -m backend.strategy_runner.examples.gamma_scalper_0dte.test_strategy
 
 Test 1: Standard GEX
 - 8 events processed
