@@ -4,6 +4,7 @@ import argparse
 import base64
 import json
 import statistics
+import sys
 import threading
 import time
 import urllib.error
@@ -11,7 +12,14 @@ import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Tuple
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+import scripts.lib.exec_guard as exec_guard
 
 
 def _now_rfc3339() -> str:
@@ -140,5 +148,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    exec_guard.enforce_execution_policy(__file__, sys.argv)
     raise SystemExit(main())
 
