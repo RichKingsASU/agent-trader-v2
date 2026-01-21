@@ -12,16 +12,22 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Any
 
-# Add strategy module to path
-strategy_dir = Path(__file__).parent
-sys.path.insert(0, str(strategy_dir))
-
-from strategy import (
-    on_market_event,
-    reset_strategy_state,
-    _portfolio_positions,
-    _get_net_portfolio_delta,
-)
+try:
+    # Preferred: run as a module (e.g. `python3 -m backend.strategy_runner.examples.gamma_scalper_0dte.test_strategy`)
+    from .strategy import (
+        on_market_event,
+        reset_strategy_state,
+        _portfolio_positions,
+        _get_net_portfolio_delta,
+    )
+except ImportError:  # pragma: no cover
+    # Fallback: allow running from repo root as a file path (e.g. `python3 backend/.../test_strategy.py`)
+    from backend.strategy_runner.examples.gamma_scalper_0dte.strategy import (  # type: ignore[import-not-found]
+        on_market_event,
+        reset_strategy_state,
+        _portfolio_positions,
+        _get_net_portfolio_delta,
+    )
 
 
 def out(msg: str = "") -> None:

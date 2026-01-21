@@ -5,18 +5,24 @@ Quick smoke test to verify core strategy functionality
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from decimal import Decimal
 
-# Add strategy to path
-sys.path.insert(0, str(Path(__file__).parent))
-
-from strategy import (
-    on_market_event,
-    reset_strategy_state,
-    _portfolio_positions,
-    _get_net_portfolio_delta,
-)
+try:
+    # Preferred: run as a module (e.g. `python3 -m backend.strategy_runner.examples.gamma_scalper_0dte.smoke_test`)
+    from .strategy import (
+        on_market_event,
+        reset_strategy_state,
+        _portfolio_positions,
+        _get_net_portfolio_delta,
+    )
+except ImportError:  # pragma: no cover
+    # Fallback: allow running from repo root as a file path (e.g. `python3 backend/.../smoke_test.py`)
+    from backend.strategy_runner.examples.gamma_scalper_0dte.strategy import (  # type: ignore[import-not-found]
+        on_market_event,
+        reset_strategy_state,
+        _portfolio_positions,
+        _get_net_portfolio_delta,
+    )
 
 
 def out(msg: str = "") -> None:
@@ -53,7 +59,8 @@ def test_basic_functionality():
     # Test 2: Net delta calculation
     out("\nTest 2: Net Delta Calculation")
     net_delta = _get_net_portfolio_delta()
-    expected_delta = Decimal("6.50")
+    # Net delta is returned in share-equivalent units (options delta × contracts × multiplier).
+    expected_delta = Decimal("650.00")
     assert net_delta == expected_delta, f"❌ Expected {expected_delta}, got {net_delta}"
     out(f"✅ Net delta calculated correctly: {net_delta}")
     
