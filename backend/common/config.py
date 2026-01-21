@@ -39,14 +39,18 @@ def _parse_bool(value: object | None) -> Optional[bool]:
 
 def _as_int_or_none(v: str | None) -> int | None:
     try:
-        return int(v)
+        if v is None:
+            return None
+        return int(str(v).strip())
     except Exception:
         return None
 
 
 def _as_float_or_none(v: str | None) -> float | None:
     try:
-        return float(v)
+        if v is None:
+            return None
+        return float(str(v).strip())
     except Exception:
         return None
 
