@@ -12,6 +12,11 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
+# These are async test functions; require the asyncio plugin integration.
+pytestmark = pytest.mark.asyncio
+
 # Add functions directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "functions"))
 

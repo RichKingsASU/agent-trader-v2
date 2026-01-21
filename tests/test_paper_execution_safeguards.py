@@ -226,36 +226,36 @@ def test_execution_engine_sync_and_ledger_if_filled_non_paper_mode_blocked_even_
 
 def test_assert_paper_alpaca_base_url_with_paper_url_succeeds():
     paper_url = "https://paper-api.alpaca.markets/v2"
-    assert assert_valid_alpaca_base_url(paper_url, AgentMode.PAPER, "paper") == "https://paper-api.alpaca.markets/v2"
+    assert assert_valid_alpaca_base_url(paper_url, AgentMode.DISABLED, "paper") == "https://paper-api.alpaca.markets/v2"
     paper_url_no_v2 = "https://paper-api.alpaca.markets"
-    assert assert_valid_alpaca_base_url(paper_url_no_v2, AgentMode.PAPER, "paper") == "https://paper-api.alpaca.markets"
+    assert assert_valid_alpaca_base_url(paper_url_no_v2, AgentMode.DISABLED, "paper") == "https://paper-api.alpaca.markets"
 
 def test_assert_paper_alpaca_base_url_with_live_url_fails():
     live_url = "https://api.alpaca.markets/v2"
     with pytest.raises(RuntimeError, match="REFUSED: live Alpaca trading host is forbidden"):
-        assert_valid_alpaca_base_url(live_url, AgentMode.PAPER, "paper")
+        assert_valid_alpaca_base_url(live_url, AgentMode.DISABLED, "paper")
 
 def test_assert_paper_alpaca_base_url_with_non_alpaca_url_fails():
     non_alpaca_url = "https://some-other-api.com"
-    with pytest.raises(RuntimeError, match="REFUSED: Alpaca base URL validation failed for mode 'PAPER' and trading_mode 'paper'. Got: 'https://some-other-api.com'"):
-        assert_valid_alpaca_base_url(non_alpaca_url, AgentMode.PAPER, "paper")
+    with pytest.raises(RuntimeError, match="REFUSED: Alpaca base URL validation failed for mode 'DISABLED' and trading_mode 'paper'. Got: 'https://some-other-api.com'"):
+        assert_valid_alpaca_base_url(non_alpaca_url, AgentMode.DISABLED, "paper")
 
 def test_assert_paper_alpaca_base_url_with_http_scheme_fails():
     http_url = "http://paper-api.alpaca.markets"
     with pytest.raises(RuntimeError, match="REFUSED: Alpaca base URL must be https"):
-        assert_valid_alpaca_base_url(http_url, AgentMode.PAPER, "paper")
+        assert_valid_alpaca_base_url(http_url, AgentMode.DISABLED, "paper")
 
 def test_assert_paper_alpaca_base_url_with_credentials_fails():
     url_with_creds = "https://user:pass@paper-api.alpaca.markets"
     with pytest.raises(RuntimeError, match="REFUSED: Alpaca base URL must not include credentials"):
-        assert_valid_alpaca_base_url(url_with_creds, AgentMode.PAPER, "paper")
+        assert_valid_alpaca_base_url(url_with_creds, AgentMode.DISABLED, "paper")
 
 def test_assert_paper_alpaca_base_url_with_port_fails():
     url_with_port = "https://paper-api.alpaca.markets:8080"
     with pytest.raises(RuntimeError, match="REFUSED: Alpaca base URL must not specify a port"):
-        assert_valid_alpaca_base_url(url_with_port, AgentMode.PAPER, "paper")
+        assert_valid_alpaca_base_url(url_with_port, AgentMode.DISABLED, "paper")
 
 def test_assert_paper_alpaca_base_url_with_query_fails():
     url_with_query = "https://paper-api.alpaca.markets?query=param"
     with pytest.raises(RuntimeError, match="REFUSED: Alpaca base URL must not include query/fragment"):
-        assert_valid_alpaca_base_url(url_with_query, AgentMode.PAPER, "paper")
+        assert_valid_alpaca_base_url(url_with_query, AgentMode.DISABLED, "paper")

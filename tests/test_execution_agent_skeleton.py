@@ -48,6 +48,7 @@ def test_gating_allows_observe_only_startup(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("AGENT_MODE", "OBSERVE")
     monkeypatch.setenv("EXECUTION_AGENT_ENABLED", "true")
     monkeypatch.setenv("BROKER_EXECUTION_ENABLED", "false")
+    monkeypatch.setenv("EXECUTION_ENABLED", "false")
 
     # Should not exit when configured for OBSERVE-only operation.
     enforce_startup_gate_or_exit()
