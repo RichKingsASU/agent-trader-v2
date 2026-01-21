@@ -9,8 +9,7 @@ hedging flows. It implements:
 """
 
 import logging
-import os
-from datetime import datetime, time
+from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 import pytz
@@ -97,6 +96,12 @@ class GammaScalper(BaseStrategy):
             gex_negative_multiplier: Allocation multiplier when GEX is negative (default: 1.5)
         """
         super().__init__(config)
+
+        # Post-15:45 ET behavior:
+        # - emit CLOSE_ALL once (if needed)
+        # - then halt for the rest of the ET day (no further hedging)
+        self._halted_day_et: Optional[date] = None
+        self._close_emitted_day_et: Optional[date] = None
         
         # Set hedging threshold with Decimal precision
         threshold = self.config.get("threshold", self.DEFAULT_HEDGING_THRESHOLD)
@@ -146,19 +151,70 @@ class GammaScalper(BaseStrategy):
             # ----------------------------------------------------------------
 
             # Step 1: Time-Based Exit Rule
-            current_time = datetime.now(self.EST_TIMEZONE).time()
+            now_et = datetime.now(self.EST_TIMEZONE)
+            current_day_et = now_et.date()
+            current_time = now_et.time()
+
+            # Day rollover: clear halt flags when ET date changes.
+            if self._halted_day_et is not None and self._halted_day_et != current_day_et:
+                self._halted_day_et = None
+                self._close_emitted_day_et = None
+
             if current_time >= self.MARKET_CLOSE_TIME:
+                # Already halted for this ET day: do nothing further.
+                if self._halted_day_et == current_day_et:
+                    signal = TradingSignal(
+                        signal_type=SignalType.HOLD,
+                        confidence=0.0,
+                        reasoning=(
+                            f"Post-close halt: Current time {current_time.strftime('%H:%M:%S')} "
+                            f"is past {self.MARKET_CLOSE_TIME.strftime('%H:%M:%S')} ET. "
+                            "Strategy halted for the rest of the day (no hedging)."
+                        ),
+                        metadata={
+                            "current_time": current_time.isoformat(),
+                            "close_time": self.MARKET_CLOSE_TIME.isoformat(),
+                            "halted_for_day": True,
+                        }
+                    )
+                    return self.sign_signal(signal)
+
+                # First observation at/after close: halt for the rest of day.
+                self._halted_day_et = current_day_et
+
+                # Emit CLOSE_ALL once *only if needed* (positions exist).
+                positions = account_snapshot.get("positions") or []
+                if positions and self._close_emitted_day_et != current_day_et:
+                    self._close_emitted_day_et = current_day_et
+                    signal = TradingSignal(
+                        signal_type=SignalType.CLOSE_ALL,
+                        confidence=1.0,
+                        reasoning=(
+                            f"Time-based exit: Current time {current_time.strftime('%H:%M:%S')} "
+                            f"is past market close threshold {self.MARKET_CLOSE_TIME.strftime('%H:%M:%S')} ET. "
+                            "Closing all positions, then halting for the rest of the day."
+                        ),
+                        metadata={
+                            "current_time": current_time.isoformat(),
+                            "close_time": self.MARKET_CLOSE_TIME.isoformat(),
+                            "halted_for_day": True,
+                        }
+                    )
+                    return self.sign_signal(signal)
+
+                # No positions to close: just halt.
                 signal = TradingSignal(
-                    signal_type=SignalType.CLOSE_ALL,
-                    confidence=1.0,
+                    signal_type=SignalType.HOLD,
+                    confidence=0.0,
                     reasoning=(
                         f"Time-based exit: Current time {current_time.strftime('%H:%M:%S')} "
-                        f"is past market close threshold {self.MARKET_CLOSE_TIME.strftime('%H:%M:%S')} EST. "
-                        "Closing all positions to avoid Market on Close imbalance."
+                        f"is past market close threshold {self.MARKET_CLOSE_TIME.strftime('%H:%M:%S')} ET. "
+                        "No positions to close. Strategy halted for the rest of the day (no hedging)."
                     ),
                     metadata={
                         "current_time": current_time.isoformat(),
                         "close_time": self.MARKET_CLOSE_TIME.isoformat(),
+                        "halted_for_day": True,
                     }
                 )
                 # Sign signal for Zero-Trust verification
