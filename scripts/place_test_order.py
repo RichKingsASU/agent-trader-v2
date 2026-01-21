@@ -1,13 +1,3 @@
-import sys
-from pathlib import Path
-
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-import scripts.lib.exec_guard as exec_guard
-
-from backend.common.secrets import get_secret
 import os
 
 from alpaca.trading.client import TradingClient
@@ -36,13 +26,18 @@ def main():
     # dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env.local')
     # load_dotenv(dotenv_path=dotenv_path)
 
-    api_key = get_secret("APCA_API_KEY_ID", fail_if_missing=True)
-    secret_key = get_secret("APCA_API_SECRET_KEY", fail_if_missing=True)
-    # Safety: if a base URL is configured, it must be paper-only.
-    try:
-        from backend.common.env import assert_paper_alpaca_base_url  # type: ignore
+    # Safety gate: NO broker actions unless explicitly enabled.
+    from backend.common.execution_enabled import require_execution_enabled
+    from backend.common.secrets import get_secret
+    from backend.common.env import assert_paper_alpaca_base_url
 
-        base_url = get_secret("APCA_API_BASE_URL", fail_if_missing=False) or "https://paper-api.alpaca.markets"
+    # Resolve creds from Secret Manager first, then env (if allowed).
+    api_key = (get_secret("APCA_API_KEY_ID", fail_if_missing=False) or os.getenv("APCA_API_KEY_ID") or "").strip()
+    secret_key = (get_secret("APCA_API_SECRET_KEY", fail_if_missing=False) or os.getenv("APCA_API_SECRET_KEY") or "").strip()
+
+    # Safety: if a base URL is configured, it must be paper-only (and HTTPS).
+    base_url = (get_secret("APCA_API_BASE_URL", fail_if_missing=False) or os.getenv("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets").strip()
+    try:
         _ = assert_paper_alpaca_base_url(base_url)
     except Exception as e:
         print(f"REFUSED: invalid Alpaca trading base URL: {e}")
@@ -57,6 +52,7 @@ def main():
 
     print("--> Placing test order: SPY BUY 1 Qty")
     try:
+        require_execution_enabled(operation="scripts.place_test_order.submit_order", context={"symbol": "SPY", "side": "buy", "qty": 1})
         trading_client = TradingClient(api_key, secret_key, paper=True)
         market_order_data = MarketOrderRequest(
             symbol="SPY",
