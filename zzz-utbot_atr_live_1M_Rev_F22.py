@@ -196,7 +196,17 @@ class _AlpacaPyRestAdapter:
         self._client = client
         self._default_feed = str(default_feed).strip().lower() or ALPACA_STOCK_FEED
 
-    def get_bars(self, symbol: str, timeframe: Any, start=None, end=None, limit: int | None = None, adjustment: str | None = None, feed: str | None = None, **_kwargs):  # noqa: ANN001
+    def get_bars(
+        self,
+        symbol: str,
+        timeframe: Any,
+        start=None,
+        end=None,
+        limit: Optional[int] = None,
+        adjustment: Optional[str] = None,
+        feed: Optional[str] = None,
+        **_kwargs,
+    ):  # noqa: ANN001
         req = StockBarsRequest(
             symbol_or_symbols=str(symbol).upper(),
             timeframe=_parse_timeframe(timeframe),
