@@ -25,6 +25,8 @@ import os
 # Add backend to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import scripts.lib.exec_guard as exec_guard
+
 from backend.persistence.firebase_client import get_firestore_client
 from google.cloud import firestore
 
@@ -125,6 +127,7 @@ def display_current_config():
 
 
 if __name__ == "__main__":
+    exec_guard.enforce_execution_policy(__file__, sys.argv)
     print("Shadow Mode Configuration Initializer")
     print("=" * 60)
     
