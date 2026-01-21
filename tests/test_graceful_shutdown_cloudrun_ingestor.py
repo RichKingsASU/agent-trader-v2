@@ -6,6 +6,8 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 
 def test_cloudrun_ingestor_sigterm_exits_under_10s() -> None:
     """
@@ -14,6 +16,11 @@ def test_cloudrun_ingestor_sigterm_exits_under_10s() -> None:
     This runs a lightweight harness that imports `cloudrun_ingestor.main`,
     waits, then we SIGTERM it and assert it exits promptly.
     """
+
+    try:  # pragma: no cover
+        import google  # noqa: F401
+    except Exception:
+        pytest.xfail("cloudrun_ingestor shutdown smoke requires google-cloud-pubsub dependency")
 
     env = dict(os.environ)
     # Ensure the repo root is on sys.path for `python -m ...`.
