@@ -48,7 +48,7 @@ def assert_paper_alpaca_base_url(url: str) -> str:
     if parsed.scheme.lower() != "https":
         raise RuntimeError(f"REFUSED: Alpaca base URL must be https: {raw!r}")
     if parsed.username or parsed.password:
-        raise RuntimeError(f"REFUSED: Alpaca base URL must not include credentials: {raw!r}")
+        raise RuntimeError(f"Alpaca base URL must not include credentials: {raw!r}")
     if parsed.query or parsed.fragment:
         raise RuntimeError(f"REFUSED: Alpaca base URL must not include query/fragment: {raw!r}")
     if parsed.port not in (None, 443):

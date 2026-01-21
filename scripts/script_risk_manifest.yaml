@@ -1,0 +1,555 @@
+scripts:
+  scripts/01_setup_database.sql:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Creates or alters database schema/tables."]
+  scripts/02_setup_paper_trades_table.sql:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Creates or alters database schema/tables."]
+  scripts/agent_executor.py:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Executes arbitrary shell commands from a local task file."]
+  scripts/audit_cloudrun.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Reads Cloud Run service/job metadata via gcloud (no mutation)."]
+  scripts/backup_cluster_state.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Reads cluster resources and writes a backup snapshot under audit_artifacts/."]
+  scripts/blueprint_generator.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Generates read-only operational/audit artifacts on disk."]
+  scripts/calc_monthly_performance_fees.py:
+    risk: MEDIUM
+    category: MUST_LOCK
+    automation_allowed: true
+    required_flags: [--write]
+    side_effects: ["Reads Firestore performance snapshots/terms; with --write it writes monthly fee records."]
+    notes: "Default is dry-run (prints computed fees)."
+  scripts/calc_monthly_strategy_perf_snapshot.py:
+    risk: MEDIUM
+    category: MUST_LOCK
+    automation_allowed: true
+    required_flags: [--write]
+    side_effects: ["Reads Firestore ledger data; with --write it writes monthly strategy performance snapshots."]
+    notes: "Default is dry-run (prints computed snapshots)."
+  scripts/capture_config_snapshot.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Reads config/cluster state and writes a config snapshot under audit_artifacts/."]
+  scripts/capture_lkg.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Reads cluster state and writes LKG snapshot files under ops/lkg/."]
+  scripts/check_production_readiness.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/ci/check_bash_guardrails.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/ci/check_bash_vars.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/ci/check_ci_guardrail_enforcement.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/ci/check_no_latest_tags.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/ci/check_python_runtime_guardrails.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/ci/guardrails.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/ci/validate_yaml_syntax.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/ci_import_gate.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/ci_safety_guard.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/ci_yaml_validate.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/data_plane_smoke_test.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Sends test requests/events to configured endpoints (non-production by intent)."]
+  scripts/data_plane_smoke_test.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Sends test requests/events to configured endpoints (non-production by intent)."]
+  scripts/demo_whale_flow_service.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/deploy_cloudrun_ingestor.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Mutates cloud/Kubernetes infrastructure state."]
+  scripts/deploy_firestore_scale.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Mutates cloud/Kubernetes infrastructure state."]
+  scripts/deploy_report.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Reads Kubernetes state and writes a deployment health report under deploy_logs/."]
+  scripts/deploy_v2.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Mutates cloud/Kubernetes infrastructure state."]
+  scripts/deploy_v2_legacy.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Mutates cloud/Kubernetes infrastructure state."]
+  scripts/dev_all.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Starts local services or long-running processes; may contact external systems."]
+  scripts/dev_backend.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Starts local services or long-running processes; may contact external systems."]
+  scripts/dev_frontend.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Starts local services or long-running processes; may contact external systems."]
+  scripts/dlq_pull_sample.sh:
+    risk: MEDIUM
+    category: MUST_LOCK
+    automation_allowed: true
+    required_flags: [--ack]
+    side_effects: ["Pulls messages from a Pub/Sub DLQ; with --ack it acknowledges messages (destructive)."]
+    notes: "Default is non-destructive (no ack)."
+  scripts/dlq_replay.sh:
+    risk: MEDIUM
+    category: MUST_LOCK
+    automation_allowed: true
+    required_flags: [--yes]
+    side_effects: ["Replays Pub/Sub DLQ messages by publishing to a topic; may also ack originals."]
+    notes: "Refuses destructive mode without --yes (or use --dry-run)."
+  scripts/emit_chaos_pubsub_events.md:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Documentation only (no execution)."]
+  scripts/emit_chaos_pubsub_events.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Sends test requests/events to configured endpoints (non-production by intent)."]
+  scripts/generate_blueprint.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Generates read-only operational/audit artifacts on disk."]
+  scripts/generate_blueprint.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Generates read-only operational/audit artifacts on disk."]
+  scripts/import_runtime_modules.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/infra/provision_sandbox.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Mutates cloud/Kubernetes infrastructure state."]
+  scripts/infra/startup.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Mutates cloud/Kubernetes infrastructure state."]
+  scripts/ingest_market_data.py:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Loads/handles market data API secrets and configuration (unsafe to auto-run)."]
+  scripts/init_shadow_mode_config.py:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Writes seed/test or configuration data to external stores (e.g., Firestore/DB)."]
+  scripts/insert_paper_order.py:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Submits a (paper) broker order and/or writes trade records."]
+  scripts/kubectl_logs.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Reads Kubernetes state/logs (no mutation)."]
+  scripts/kubectl_scale.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Scales Kubernetes deployments/statefulsets (cluster mutation)."]
+  scripts/kubectl_status.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Reads Kubernetes state/logs (no mutation)."]
+  scripts/ledger_pnl_demo.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/mock_market_feed.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/mock_options_feed.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/ops_post_market.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Generates read-only operational/audit artifacts on disk."]
+  scripts/ops_pre_market.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Generates read-only operational/audit artifacts on disk."]
+  scripts/place_test_order.py:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Submits a (paper) broker order and/or writes trade records."]
+  scripts/populate_institutional_features_data.py:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Writes seed/test or configuration data to external stores (e.g., Firestore/DB)."]
+  scripts/populate_whale_flow_test_data.py:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Writes seed/test or configuration data to external stores (e.g., Firestore/DB)."]
+  scripts/predeploy_guard.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only pre-deploy guardrail checks; may query kubectl/gcloud for validation."]
+  scripts/preflight.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Runs local build/compile checks; may install dependencies and build artifacts locally."]
+    notes: "Intended for local/CI validation; does not deploy or place orders."
+  scripts/readiness_check.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Generates read-only operational/audit artifacts on disk."]
+  scripts/realtime_test.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Sends test requests/events to configured endpoints (non-production by intent)."]
+  scripts/replay_from_logs.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Generates read-only operational/audit artifacts on disk."]
+  scripts/replay_ticks_to_candles.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/report_v2_deploy.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Generates read-only operational/audit artifacts on disk."]
+  scripts/report_v2_deploy.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Generates read-only operational/audit artifacts on disk."]
+  scripts/restore_lkg.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Mutates cloud/Kubernetes infrastructure state."]
+  scripts/rollout_guard.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Reads Kubernetes state/logs (no mutation)."]
+  scripts/run-all-streamers.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Starts local services or long-running processes; may contact external systems."]
+  scripts/run-alpaca-minute-loop.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Starts local services or long-running processes; may contact external systems."]
+  scripts/run-alpaca-quotes-stream.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Starts local services or long-running processes; may contact external systems."]
+  scripts/run-backend-dev.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Starts local services or long-running processes; may contact external systems."]
+  scripts/run-dexter-research.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Starts local services or long-running processes; may contact external systems."]
+  scripts/run-ticker-service.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Starts local services or long-running processes; may contact external systems."]
+  scripts/run_backtest_example.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/run_congressional_ingest.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Starts local services or long-running processes; may contact external systems."]
+  scripts/run_experiment.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/run_gemini_with_master_prompt.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Starts local services or long-running processes; may contact external systems."]
+  scripts/run_sector_rotation_strategy.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/run_sentiment_strategy.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Starts local services or long-running processes; may contact external systems."]
+  scripts/run_stress_test.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/seed_sentiment_data.py:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Writes seed/test or configuration data to external stores (e.g., Firestore/DB)."]
+  scripts/seed_whale_flow_data.py:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Writes seed/test or configuration data to external stores (e.g., Firestore/DB)."]
+  scripts/set_google_application_credentials.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Sets GOOGLE_APPLICATION_CREDENTIALS in the current shell session."]
+  scripts/script_risk_manifest.yaml:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Defines canonical machine-readable script risk classifications (data file)."]
+  scripts/setup_cloud_run_ingest.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Mutates cloud/Kubernetes infrastructure state."]
+  scripts/setup_cloud_run_strategy_engine.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Mutates cloud/Kubernetes infrastructure state."]
+  scripts/setup_cloud_run_stream_bridge.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Mutates cloud/Kubernetes infrastructure state."]
+  scripts/setup_cloud_scheduler_ingest.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Mutates cloud/Kubernetes infrastructure state."]
+  scripts/smoke.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Sends test requests/events to configured endpoints (non-production by intent)."]
+  scripts/smoke_check_imports.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Local helper script (no intended production side effects)."]
+  scripts/smoke_cloudshell.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Sends test requests/events to configured endpoints (non-production by intent)."]
+  scripts/snapshot_artifacts.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Generates read-only operational/audit artifacts on disk."]
+  scripts/tag_production_lock.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Creates git tags / modifies local repository state."]
+  scripts/tag_release.sh:
+    risk: HIGH
+    category: NEVER_AUTO
+    automation_allowed: false
+    side_effects: ["Creates git tags / modifies local repository state."]
+  scripts/test_ai_trade_analysis.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/test_macro_scraper.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/test_trade_executor.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/update_execution_board.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Updates ops/EXECUTION_BOARD.md (local repo file mutation)."]
+  scripts/validate_alpaca_account.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/validate_ci_layout.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/validate_cloudbuild_configs.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/validate_cloudbuild_yaml.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/validate_day1_ops.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/validate_intent_logging.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/validate_k8s_yaml.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/validate_production_lock.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/verify_observability.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/verify_risk_management.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/verify_saas_migration.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/verify_service_discovery.sh:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]
+  scripts/verify_zero_trust.py:
+    risk: LOW
+    category: SAFE
+    automation_allowed: true
+    side_effects: ["Read-only validation/checks (no external mutation)."]

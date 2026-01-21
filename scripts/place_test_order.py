@@ -1,4 +1,5 @@
 import os
+
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -9,18 +10,26 @@ def main():
     """
     Places a single 'SPY buy 1' market order using the Alpaca paper trading account.
     """
-    # Global kill-switch guard: never place even paper orders while halted.
-    try:
-        from backend.common.kill_switch import get_kill_switch_state  # type: ignore
 
-        enabled, source = get_kill_switch_state()
-        if enabled:
-            print(f"REFUSED: kill switch is active (source={source}). Set EXECUTION_HALTED=0 to proceed.")
-            exit(2)
-    except Exception:
-        # Best-effort safety: if we cannot evaluate the kill-switch module, do not block the script.
-        # (The runtime execution engine has its own defenses.)
-        pass
+    parser = argparse.ArgumentParser(description="Place a single Alpaca PAPER test order (safety-gated).")
+    parser.add_argument(
+        "--execution-confirm",
+        required=True,
+        help="Required safety confirmation token (must match EXECUTION_CONFIRM_TOKEN).",
+    )
+    args = parser.parse_args()
+
+    # Global kill-switch guard: never place even paper orders while halted (fail-closed).
+    try:
+        from backend.common.kill_switch import ExecutionHaltedError, require_live_mode  # type: ignore
+
+        require_live_mode(operation="paper order placement")
+    except ExecutionHaltedError as e:
+        print(f"REFUSED: {e}")
+        raise SystemExit(2)
+    except Exception as e:
+        print(f"REFUSED: could not evaluate kill switch: {e}")
+        raise SystemExit(2)
 
     # dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env.local')
     # load_dotenv(dotenv_path=dotenv_path)
@@ -40,11 +49,14 @@ def main():
         _ = assert_paper_alpaca_base_url(base_url)
     except Exception as e:
         print(f"REFUSED: invalid Alpaca trading base URL: {e}")
-        exit(2)
+        raise SystemExit(2)
+
+    api_key = (os.getenv("APCA_API_KEY_ID") or "").strip()
+    secret_key = (os.getenv("APCA_API_SECRET_KEY") or "").strip()
 
     if not api_key or not secret_key:
         print("ERROR: APCA_API_KEY_ID and APCA_API_SECRET_KEY must be set in .env.local.")
-        exit(1)
+        raise SystemExit(1)
 
     print("--> Placing test order: SPY BUY 1 Qty")
     try:
@@ -71,8 +83,12 @@ def main():
         if "market is closed" in str(e).lower():
             print("INFO: This is expected if the market is currently closed.")
             # Exit gracefully since this isn't a credentials/config error.
-            exit(0)
-        exit(1)
+            raise SystemExit(0)
+        raise SystemExit(1)
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
-        exit(1)
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()
