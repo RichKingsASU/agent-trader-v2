@@ -18,6 +18,8 @@ from decimal import Decimal
 # Add parent directory to path to import firebase_admin
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import scripts.lib.exec_guard as exec_guard
+
 import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
@@ -182,6 +184,7 @@ def populate_test_data(num_trades: int = 30):
     print(f"\n🚀 Open your Whale Flow Dashboard to see the data!")
 
 if __name__ == "__main__":
+    exec_guard.enforce_execution_policy(__file__, sys.argv)
     import argparse
     
     parser = argparse.ArgumentParser(description="Populate whale flow test data")

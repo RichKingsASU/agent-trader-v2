@@ -1,4 +1,12 @@
-import argparse
+import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+import scripts.lib.exec_guard as exec_guard
+
 import os
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
@@ -97,4 +105,5 @@ def main():
         exit(1)
 
 if __name__ == "__main__":
+    exec_guard.enforce_execution_policy(__file__, sys.argv)
     main()
