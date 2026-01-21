@@ -31,6 +31,7 @@ from datetime import datetime, time, date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 from backend.time.nyse_time import NYSE_TZ, parse_ts, to_nyse, utc_now
+from backend.common.trading_config import get_options_contract_multiplier
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ def _get_net_portfolio_delta() -> Decimal:
         Decimal: Net delta in underlying-share equivalents
     """
     net_delta = Decimal("0")
+    contract_multiplier = Decimal(str(get_options_contract_multiplier()))
     
     for symbol, position in _portfolio_positions.items():
         delta = _to_decimal(position.get("delta", 0))
