@@ -1,4 +1,13 @@
-import argparse
+import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+import scripts.lib.exec_guard as exec_guard
+
+from backend.common.secrets import get_secret
 import os
 
 from alpaca.trading.client import TradingClient
@@ -11,16 +20,8 @@ def main():
     """
     Places a single 'SPY buy 1' market order using the Alpaca paper trading account.
     """
-
-    parser = argparse.ArgumentParser(description="Place a single Alpaca PAPER test order (safety-gated).")
-    parser.add_argument(
-        "--execution-confirm",
-        required=True,
-        help="Required safety confirmation token (must match EXECUTION_CONFIRM_TOKEN).",
-    )
-    args = parser.parse_args()
-
-    # Global kill-switch guard: never place even paper orders while halted (fail-closed).
+    exec_guard.enforce_execution_policy(__file__, sys.argv)
+    # Global kill-switch guard: never place even paper orders while halted.
     try:
         from backend.common.kill_switch import ExecutionHaltedError, require_live_mode  # type: ignore
 

@@ -3,6 +3,13 @@ import os
 import json
 import sys
 from datetime import datetime
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+import scripts.lib.exec_guard as exec_guard
 
 import psycopg
 
@@ -141,4 +148,5 @@ def main():
 
 
 if __name__ == "__main__":
+    exec_guard.enforce_execution_policy(__file__, sys.argv)
     main()
