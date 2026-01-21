@@ -100,6 +100,7 @@ NEVER_AUTO:
   - scripts/mock_market_feed.py
   - scripts/mock_options_feed.py
   - scripts/place_test_order.py
+  - scripts/place_test_option_order.py
   - scripts/populate_institutional_features_data.py
   - scripts/populate_whale_flow_test_data.py
   - scripts/restore_lkg.sh
