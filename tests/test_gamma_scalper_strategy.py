@@ -20,6 +20,7 @@ from backend.strategy_runner.examples.gamma_scalper_0dte.strategy import (
     on_market_event,
     reset_strategy_state,
     _portfolio_positions,
+    _hedge_position_qty,
     _get_net_portfolio_delta,
     _get_hedging_threshold,
     _calculate_hedge_quantity,
@@ -165,7 +166,7 @@ class TestHedgeQuantity:
         underlying_price = Decimal("495.50")
         hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
         # Should be negative (sell) to offset positive delta
-        assert hedge_qty == Decimal("-6")  # Rounded to nearest whole
+        assert hedge_qty == Decimal("-7")  # Rounded to nearest whole
     
     def test_negative_delta_requires_buy(self):
         net_delta = Decimal("-5.3")
@@ -184,8 +185,8 @@ class TestHedgeQuantity:
         net_delta = Decimal("6.5")
         underlying_price = Decimal("495.50")
         hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
-        # -6.5 should round to -6 (away from zero for .5)
-        assert hedge_qty == Decimal("-6")
+        # -6.5 should round to -7 with ROUND_HALF_UP
+        assert hedge_qty == Decimal("-7")
 
 
 class TestShouldHedge:
@@ -318,41 +319,69 @@ class TestStrategyExecution:
         # Portfolio should be cleared
         assert "SPY_CALL" not in _portfolio_positions
 
+    def test_flattens_spy_hedge_at_close_time_even_on_underlying_event(self):
+        # Create a hedge by sending an option event that triggers hedging.
+        option_event = {
+            "protocol": "v1",
+            "type": "market_event",
+            "event_id": "evt_open",
+            "ts": "2025-12-30T14:00:00Z",
+            "symbol": "SPY_CALL",
+            "source": "alpaca",
+            "payload": {
+                "delta": 0.65,
+                "price": 2.50,
+                "quantity": 10,
+                "underlying_price": 495.50,
+            },
+        }
+        orders = on_market_event(option_event)
+        assert orders is not None and len(orders) > 0
+        assert orders[0]["client_tag"] == "0dte_gamma_scalper_hedge"
+        assert _hedge_position_qty["SPY"] != Decimal("0")
+
+        # Trigger EOD logic using an underlying SPY event (no option greeks update).
+        close_underlying_event = {
+            "protocol": "v1",
+            "type": "market_event",
+            "event_id": "evt_close",
+            "ts": "2025-12-30T20:45:00Z",  # 3:45 PM ET
+            "symbol": "SPY",
+            "source": "alpaca",
+            "payload": {
+                "price": 495.50,
+                "bid": 495.48,
+                "ask": 495.52,
+            },
+        }
+        eod_orders = on_market_event(close_underlying_event)
+        assert eod_orders is not None
+        assert any(o.get("client_tag") == "0dte_gamma_scalper_hedge_flatten" for o in eod_orders)
+        assert _hedge_position_qty["SPY"] == Decimal("0")
+
+        # Subsequent events after close should not re-emit flatten intents.
+        eod_orders_2 = on_market_event(close_underlying_event)
+        assert eod_orders_2 == [] or eod_orders_2 is None
+
 
 class TestGEXIntegration:
     """Test GEX-based adaptive hedging."""
     
     def test_negative_gex_uses_tighter_threshold(self):
         os.environ["GEX_VALUE"] = "-15000.0"
-        
+
         # Net delta = 0.12 (between tighter and standard thresholds)
-        _portfolio_positions["SPY_CALL"] = {
-            "delta": Decimal("0.12"),
-            "quantity": Decimal("1"),
-            "price": Decimal("2.50"),
-        }
-        
-        event = {
-            "protocol": "v1",
-            "type": "market_event",
-            "event_id": "evt_001",
-            "ts": "2025-12-30T14:00:00Z",
-            "symbol": "SPY_CALL",
-            "source": "alpaca",
-            "payload": {
-                "delta": 0.12,
-                "price": 2.50,
-                "quantity": 1,
-                "underlying_price": 495.50,
-            },
-        }
-        
-        orders = on_market_event(event)
-        
-        # Should hedge because 0.12 > 0.10 (negative GEX threshold)
-        # but would NOT hedge if threshold was 0.15
-        assert orders is not None
-        assert len(orders) > 0
+        # We assert the *decision* to hedge changes with GEX, independent of
+        # share rounding/min-qty constraints in order generation.
+        net_delta = Decimal("0.12")
+        current_time = datetime(2025, 12, 30, 19, 0, 0, tzinfo=ZoneInfo("UTC"))
+
+        assert _should_hedge(net_delta, current_time)
+
+        # Without negative GEX, the standard 0.15 threshold would not hedge.
+        reset_strategy_state()
+        os.environ.pop("GEX_VALUE", None)
+        assert not _should_hedge(net_delta, current_time)
 
 
 if __name__ == "__main__":

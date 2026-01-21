@@ -48,6 +48,8 @@ _macro_event_active: bool = False
 _stop_loss_multiplier: Decimal = Decimal("1.0")
 _position_size_multiplier: Decimal = Decimal("1.0")
 _last_macro_check: Optional[datetime] = None
+_hedge_position_qty: Dict[str, Decimal] = {"SPY": Decimal("0")}
+_eod_hedge_flatten_sent: bool = False
 
 
 def _to_decimal(value: Any) -> Decimal:
@@ -376,6 +378,55 @@ def _create_exit_orders(current_time: datetime, event_id: str, ts: str) -> List[
     return orders
 
 
+def _create_hedge_flatten_intent(
+    *,
+    hedge_symbol: str,
+    current_time: datetime,
+    event_id: str,
+    ts: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Create a one-shot flatten intent for an existing hedge position (e.g. SPY shares).
+
+    This is intentionally state-based and does not rely on option events: any market event
+    at/after EXIT_TIME_ET can trigger the flatten intent.
+    """
+    global _hedge_position_qty, _eod_hedge_flatten_sent
+
+    qty = _hedge_position_qty.get(hedge_symbol, Decimal("0"))
+    if qty == Decimal("0"):
+        return None
+
+    # If we're long shares, we sell to flatten; if short, we buy.
+    side = "sell" if qty > Decimal("0") else "buy"
+    abs_qty = abs(qty)
+
+    # Mark as flattened (best-effort) to avoid spamming intents after 15:45.
+    _eod_hedge_flatten_sent = True
+    _hedge_position_qty[hedge_symbol] = Decimal("0")
+
+    return {
+        "protocol": "v1",
+        "type": "order_intent",
+        "intent_id": f"flatten_{hedge_symbol}_{uuid.uuid4().hex[:12]}",
+        "event_id": event_id,
+        "ts": ts,
+        "symbol": hedge_symbol,
+        "side": side,
+        "qty": float(abs_qty),
+        "order_type": "market",
+        "time_in_force": "day",
+        "client_tag": "0dte_gamma_scalper_hedge_flatten",
+        "metadata": {
+            "reason": "market_close_hedge_flatten",
+            "exit_time_et": current_time.astimezone(NYSE_TZ).isoformat(),
+            "hedge_symbol": hedge_symbol,
+            "flatten_qty": str(abs_qty),
+            "strategy": "0dte_gamma_scalper",
+        },
+    }
+
+
 def _create_hedge_order(
     underlying_symbol: str,
     hedge_qty: Decimal,
@@ -408,6 +459,11 @@ def _create_hedge_order(
     # Update last hedge time
     global _last_hedge_time
     _last_hedge_time = _parse_timestamp(ts)
+
+    # Minimal hedge state tracking (assume immediate fill).
+    # Positive hedge_qty means we bought shares (long); negative means we sold (short).
+    global _hedge_position_qty
+    _hedge_position_qty[underlying_symbol] = _hedge_position_qty.get(underlying_symbol, Decimal("0")) + hedge_qty
     
     # Calculate stop-loss price (if applicable)
     # For a hedge order, we widen the stop-loss during macro events
@@ -488,8 +544,25 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     # Safety check: Exit all positions at 3:45 PM ET
     if _is_market_close_time(current_time):
         exit_orders = _create_exit_orders(current_time, event_id, ts)
-        if exit_orders:
-            return exit_orders
+
+        # Ensure any SPY hedge exposure is flattened at/after 15:45 ET.
+        # Do not depend on option updates: any market event can trigger this.
+        global _eod_hedge_flatten_sent
+        flatten_intent: Optional[Dict[str, Any]] = None
+        if not _eod_hedge_flatten_sent:
+            flatten_intent = _create_hedge_flatten_intent(
+                hedge_symbol="SPY",
+                current_time=current_time,
+                event_id=event_id,
+                ts=ts,
+            )
+
+        out: List[Dict[str, Any]] = []
+        out.extend(exit_orders)
+        if flatten_intent is not None:
+            out.append(flatten_intent)
+        if out:
+            return out
     
     # Update position tracking
     # Check if this is an options contract or underlying
@@ -541,6 +614,7 @@ def reset_strategy_state() -> None:
     """Reset all strategy state (useful for testing)."""
     global _portfolio_positions, _last_gex_value, _last_gex_update, _last_hedge_time
     global _macro_event_active, _stop_loss_multiplier, _position_size_multiplier, _last_macro_check
+    global _hedge_position_qty, _eod_hedge_flatten_sent
     _portfolio_positions.clear()
     _last_gex_value = None
     _last_gex_update = None
@@ -549,3 +623,7 @@ def reset_strategy_state() -> None:
     _stop_loss_multiplier = Decimal("1.0")
     _position_size_multiplier = Decimal("1.0")
     _last_macro_check = None
+    # Do not rebind the dict (tests may import a reference); mutate in place.
+    _hedge_position_qty.clear()
+    _hedge_position_qty["SPY"] = Decimal("0")
+    _eod_hedge_flatten_sent = False
