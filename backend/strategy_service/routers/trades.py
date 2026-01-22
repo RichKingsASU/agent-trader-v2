@@ -22,6 +22,7 @@ from backend.risk.daily_capital_snapshot import DailyCapitalSnapshotError, Daily
 from backend.time.nyse_time import to_nyse
 from backend.common.a2a_sdk import RiskAgentSyncClient
 from backend.contracts.risk import TradeCheckRequest
+from backend.strategy_service.trade_intents import TradeRequest, shadow_option_fill_price
 
 from ..db import build_raw_order, insert_paper_order
 from ..db import insert_paper_order_idempotent
@@ -31,23 +32,6 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 RISK_SERVICE_URL = os.getenv("RISK_SERVICE_URL", "http://127.0.0.1:8002")
-
-class TradeRequest(BaseModel):
-    # Correlation across signal -> allocation -> execution
-    correlation_id: str | None = None
-    signal_id: str | None = None
-    allocation_id: str | None = None
-    execution_id: str | None = None
-    broker_account_id: UUID
-    strategy_id: UUID
-    symbol: str
-    instrument_type: str
-    side: str
-    order_type: str
-    time_in_force: str = "day"
-    notional: float
-    quantity: float = None
-    idempotency_key: str | None = None
 
 
 def _stable_id(*, scope: str, key: str) -> str:
@@ -216,8 +200,13 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, idem
         raw_key = (idempotency_key or "").strip() or None
         shadow_id = _stable_id(scope="shadow_trade", key=raw_key) if raw_key else str(uuid4())
         
-        # Get current price for fill simulation
-        fill_price = get_current_price(trade_request.symbol)
+        # Get fill price for shadow simulation:
+        # - equities: current underlying mid-price from live_quotes
+        # - options: derive premium from notional/qty (no broker / no market API calls)
+        if str(trade_request.instrument_type or "").strip().lower() == "option":
+            fill_price = shadow_option_fill_price(notional=trade_request.notional, quantity=trade_request.quantity)
+        else:
+            fill_price = get_current_price(trade_request.symbol)
         
         # Calculate quantity using Decimal for precision
         if trade_request.quantity:
@@ -254,6 +243,17 @@ def create_shadow_trade(trade_request: TradeRequest, ctx: TenantContext, *, idem
             "current_price": str(fill_price),
             "last_updated": firestore.SERVER_TIMESTAMP,
         }
+
+        # Option fields (shadow-only, SPY single-leg only).
+        if str(trade_request.instrument_type or "").strip().lower() == "option":
+            shadow_trade.update(
+                {
+                    "contract_symbol": str(trade_request.contract_symbol),
+                    "expiration": str(trade_request.expiration),
+                    "strike": str(trade_request.strike),
+                    "right": str(trade_request.right).strip().lower(),
+                }
+            )
         
         # Write to user-scoped shadowTradeHistory collection (idempotent on shadow_id).
         ref = (
@@ -289,10 +289,10 @@ def execute_trade(trade_request: TradeRequest, request: Request):
     If shadow mode is enabled (is_shadow_mode == True):
     - Create a synthetic order with SHADOW_FILLED status
     - Log to shadowTradeHistory collection
-    - Do NOT contact Alpaca broker
+    - Do NOT contact any broker (shadow-only)
     
     If shadow mode is disabled (is_shadow_mode == False):
-    - Proceed with live Alpaca order submission
+    - Proceed with broker submission (non-shadow)
     - (Current implementation uses paper orders; will be extended for live trading)
     
     Fail-safe: On any error reading the shadow mode flag, defaults to shadow mode = True
@@ -523,7 +523,7 @@ def execute_trade(trade_request: TradeRequest, request: Request):
                 risk_scope=risk_result.scope,
                 risk_reason=risk_result.reason or "Allowed by risk check",
                 raw_order=build_raw_order(logical_order),
-                status="simulated",  # TODO: Change to "submitted" when live Alpaca integration is complete
+                status="simulated",  # TODO: Change to "submitted" when broker integration is complete
             )
             
             if idem:
