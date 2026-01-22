@@ -29,7 +29,7 @@ import os
 import uuid
 from datetime import datetime, time
 from datetime import date as date_type
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_DOWN, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 from backend.time.nyse_time import NYSE_TZ, is_trading_day, parse_ts, to_nyse, utc_now
 
@@ -59,6 +59,15 @@ _latch_trading_day: Optional[date_type] = None
 _latch_entry_used: bool = False
 _latch_flatten_used: bool = False
 _spy_position_qty: Decimal = Decimal("0")  # signed shares: +long, -short
+
+
+def get_options_contract_multiplier() -> int:
+    """
+    Options contract multiplier (shares per contract).
+
+    Kept as a function for test/implementation stability; default is 100.
+    """
+    return 100
 
 
 def _to_decimal(value: Any) -> Decimal:
@@ -157,7 +166,7 @@ def _get_net_portfolio_delta() -> Decimal:
         qty = _to_decimal(position.get("quantity", 0))
         # ASSUMPTION (explicit): incoming option delta is PER-CONTRACT delta.
         # Convert to underlying-share equivalents by applying the 100x contract multiplier once.
-        net_delta += delta * qty * Decimal("100")
+        net_delta += delta * qty * contract_multiplier
     
     return net_delta
 

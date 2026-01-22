@@ -35,6 +35,8 @@ def get_apca_env() -> ApcaEnv:
     base_url = _get_required("APCA_API_BASE_URL")
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
     
+    agent_mode = get_agent_mode()
+    trading_mode = (os.getenv("TRADING_MODE") or "").strip().lower() or "paper"
     base_url = assert_valid_alpaca_base_url(
         url=base_url,
         agent_mode=agent_mode,
@@ -89,11 +91,9 @@ def assert_valid_alpaca_base_url(url: str, agent_mode: AgentMode, trading_mode: 
         if hostname == "paper-api.alpaca.markets":
             # Normalize (preserve any path; just strip trailing slash).
             return raw[:-1] if raw.endswith("/") else raw
-        if hostname == "api.alpaca.markets":
-            raise RuntimeError(f"REFUSED: live Alpaca trading host is forbidden in paper mode: {raw!r}")
         raise RuntimeError(
-            f"REFUSED: Alpaca base URL validation failed for mode '{agent_mode.value}' "
-            f"and trading_mode '{trading_mode}'. Got: {raw!r}"
+            "REFUSED: TRADING_MODE='paper' requires Alpaca base URL to be 'https://paper-api.alpaca.markets'. "
+            f"Got: {raw!r}"
         )
     
     # Live mode explicit check (only if AgentMode is LIVE)
