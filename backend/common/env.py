@@ -14,6 +14,10 @@ from urllib.parse import urlparse
 
 from backend.common.secrets import get_secret
 
+# NOTE:
+# This module is covered by CI's `python -m compileall .` gate.
+# Keep top-level definitions flush-left (avoid accidental indentation).
+
 
 def get_env(name: str, default: Any = None, *, required: bool = False) -> Any:
     """
