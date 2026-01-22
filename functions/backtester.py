@@ -339,7 +339,13 @@ class Backtester:
                 signal = self.strategy.evaluate(market_data, account_snapshot)
             except Exception as e:
                 logger.error(f"Strategy evaluation error at {timestamp}: {e}")
-                signal = TradingSignal(SignalType.HOLD, 0.0, f"Error: {e}")
+                signal = TradingSignal(
+                    signal_type=SignalType.HOLD,
+                    symbol=self.symbol,
+                    confidence=0.0,
+                    reasoning=f"Error: {e}",
+                    metadata={"error": str(e)},
+                )
             
             # Execute signal
             self._execute_signal(signal, price, timestamp)
