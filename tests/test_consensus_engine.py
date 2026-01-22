@@ -44,6 +44,7 @@ class MockStrategy(BaseStrategy):
     def evaluate(self, market_data, account_snapshot, regime=None):
         return TradingSignal(
             signal_type=self._signal_type,
+            symbol=market_data.get("symbol", "UNKNOWN"),
             confidence=self._confidence,
             reasoning=f"Mock strategy returning {self._signal_type.value}",
             metadata={"mock": True}
@@ -138,6 +139,7 @@ class TestConsensusEngine:
         
         signal = TradingSignal(
             signal_type=SignalType.BUY,
+            symbol="SPY",
             confidence=0.85,
             reasoning="Test reasoning",
             metadata={"test": "data"}
