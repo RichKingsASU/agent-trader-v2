@@ -43,7 +43,15 @@ class MockStrategy(BaseStrategy):
             return signal
         
         # Default HOLD signal
-        return TradingSignal(SignalType.HOLD, "SPY", confidence=0.0, reasoning="Default HOLD")
+        symbol = str(market_data.get("symbol") or "SPY").upper().strip()
+        if not symbol:
+            symbol = "SPY"
+        return TradingSignal(
+            signal_type=SignalType.HOLD,
+            symbol=symbol,
+            confidence=0.0,
+            reasoning="Default HOLD",
+        )
 
 
 class TestBacktestPosition:
@@ -300,7 +308,8 @@ class TestBacktester:
         """Test running backtest with HOLD strategy."""
         # Strategy that only holds
         strategy = MockStrategy(signals=[
-            TradingSignal(SignalType.HOLD, "SPY", confidence=0.0, reasoning="Hold") for _ in range(10)
+            TradingSignal(signal_type=SignalType.HOLD, symbol="SPY", confidence=0.0, reasoning="Hold")
+            for _ in range(10)
         ])
         
         backtester = Backtester(
@@ -332,8 +341,15 @@ class TestBacktester:
     def test_backtester_run_buy_strategy(self, mock_bars):
         """Test running backtest with BUY strategy."""
         # Strategy that buys on first bar
-        signals = [TradingSignal(SignalType.BUY, "SPY", confidence=0.5, reasoning="Buy signal")]
-        signals.extend([TradingSignal(SignalType.HOLD, "SPY", confidence=0.0, reasoning="Hold") for _ in range(9)])
+        signals = [
+            TradingSignal(signal_type=SignalType.BUY, symbol="SPY", confidence=0.5, reasoning="Buy signal")
+        ]
+        signals.extend(
+            [
+                TradingSignal(signal_type=SignalType.HOLD, symbol="SPY", confidence=0.0, reasoning="Hold")
+                for _ in range(9)
+            ]
+        )
         
         strategy = MockStrategy(signals=signals)
         
