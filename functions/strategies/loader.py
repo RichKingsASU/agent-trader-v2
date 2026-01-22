@@ -71,6 +71,13 @@ class StrategyLoader:
         strategies = loader.get_all_strategies()
         signals = await loader.evaluate_all_strategies_with_maestro(market_data, account_snapshot)
     """
+
+    # Rate limiting shared counters (class-level for warm reuse)
+    _batch_write_limit: int = 500
+    _doc_write_limit: int = 50
+    _batch_cooldown_sec: float = 5.0
+    _current_batch_count: int = 0
+    _last_batch_time: float = 0.0
     
     def __init__(
         self,
@@ -90,19 +97,8 @@ class StrategyLoader:
             uid: Optional user identifier for user-scoped orchestration.
             config: Optional loader configuration (rate limiting, batch sizes, etc.).
         """
-        # NOTE: Must exist unconditionally for callers/logging, even when Maestro is absent.
-        # Keep as None; do not add Maestro logic here.
+        # Maestro is optional; always define the attribute for a stable contract.
         self.maestro = None
-
-        # Compatibility: some tests introspect a mangled `_StrategyLoader__class__`.
-        # Provide an alias to the real class object.
-        self._StrategyLoader__class__ = self.__class__
-
-        # Ensure rate-limiting class state exists (used by _apply_rate_limiting).
-        if not hasattr(self.__class__, "_current_batch_count"):
-            self.__class__._current_batch_count = 0
-        if not hasattr(self.__class__, "_last_batch_time"):
-            self.__class__._last_batch_time = 0.0
 
         self.strategies: Dict[str, Any] = {}
         self._strategy_classes: Dict[str, Type] = {}
@@ -134,11 +130,11 @@ class StrategyLoader:
                 )
         
         # Rate limiting configuration
-        config = config or {}
-        self._enable_rate_limiting = config.get("enable_rate_limiting", True)
-        self.__class__._batch_write_limit = config.get("batch_write_limit", 500)
-        self.__class__._doc_write_limit = config.get("doc_write_limit", 50)
-        self.__class__._batch_cooldown_sec = config.get("batch_cooldown_sec", 5.0)
+        cfg = config or {}
+        self._enable_rate_limiting = cfg.get("enable_rate_limiting", True)
+        self.__class__._batch_write_limit = cfg.get("batch_write_limit", 500)
+        self.__class__._doc_write_limit = cfg.get("doc_write_limit", 50)
+        self.__class__._batch_cooldown_sec = cfg.get("batch_cooldown_sec", 5.0)
         
         # Discover and register all strategies
         self._discover_strategies()
