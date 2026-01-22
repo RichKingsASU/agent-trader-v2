@@ -33,6 +33,9 @@ def test_strategy_service_execute_trade_shadow_mode_emits_logs_and_creates_shado
     logcap = _LogCapture()
     monkeypatch.setattr(trades_router, "log_event", logcap.log_event)
 
+    # Avoid firebase_admin initialization / ADC requirements (hermetic test).
+    monkeypatch.setattr(trades_router, "get_firestore_client", lambda: object())
+
     # Ensure we stay in SHADOW mode and never touch broker/paper insert paths.
     monkeypatch.setattr(trades_router, "get_shadow_mode_flag", lambda: True)
 
@@ -129,6 +132,9 @@ def test_strategy_service_execute_trade_paper_mode_creates_paper_order_and_emits
     logcap = _LogCapture()
     monkeypatch.setattr(trades_router, "log_event", logcap.log_event)
 
+    # Avoid firebase_admin initialization / ADC requirements (hermetic test).
+    monkeypatch.setattr(trades_router, "get_firestore_client", lambda: object())
+
     monkeypatch.setattr(trades_router, "get_shadow_mode_flag", lambda: False)
     monkeypatch.setenv("EXECUTION_HALTED", "0")
 
@@ -206,6 +212,9 @@ def test_strategy_service_execute_trade_kill_switch_blocks_paper_mode(monkeypatc
 
     monkeypatch.setattr(trades_router, "get_shadow_mode_flag", lambda: False)
     monkeypatch.setenv("EXECUTION_HALTED", "1")
+
+    # Avoid firebase_admin initialization / ADC requirements (hermetic test).
+    monkeypatch.setattr(trades_router, "get_firestore_client", lambda: object())
 
     # Avoid Firestore dependencies (we should fail before any risk client call).
     monkeypatch.setattr(trades_router, "_require_daily_capital_snapshot", lambda **_kw: object())
