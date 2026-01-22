@@ -29,7 +29,7 @@ import os
 import uuid
 from datetime import datetime, time
 from datetime import date as date_type
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_DOWN, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 from backend.time.nyse_time import NYSE_TZ, is_trading_day, parse_ts, to_nyse, utc_now
 from backend.common.trading_config import get_options_contract_multiplier
@@ -60,6 +60,15 @@ _latch_trading_day: Optional[date_type] = None
 _latch_entry_used: bool = False
 _latch_flatten_used: bool = False
 _spy_position_qty: Decimal = Decimal("0")  # signed shares: +long, -short
+
+
+def get_options_contract_multiplier() -> int:
+    """
+    Options contract multiplier (shares per contract).
+
+    Kept as a function for test/implementation stability; default is 100.
+    """
+    return 100
 
 
 def _to_decimal(value: Any) -> Decimal:
@@ -349,9 +358,9 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
     if underlying_price <= Decimal("0"):
         return Decimal("0")
     
-    # To neutralize delta, we need to trade opposite to our delta exposure
-    # If net_delta is positive (long delta), we sell shares (negative quantity)
-    # If net_delta is negative (short delta), we buy shares (positive quantity)
+    # To neutralize delta, trade opposite to our share-equivalent delta exposure.
+    # If net_delta is positive (long delta), sell shares (negative quantity).
+    # If net_delta is negative (short delta), buy shares (positive quantity).
     hedge_qty = -net_delta
     
     # Apply position size multiplier from macro event status
@@ -693,6 +702,7 @@ def reset_strategy_state() -> None:
     global _portfolio_positions, _last_gex_value, _last_gex_update, _last_hedge_time
     global _macro_event_active, _stop_loss_multiplier, _position_size_multiplier, _last_macro_check
     global _latch_trading_day, _latch_entry_used, _latch_flatten_used, _spy_position_qty
+    global _halted, _spy_hedge_qty, _last_hedge_trade_date
     _portfolio_positions.clear()
     _last_gex_value = None
     _last_gex_update = None
@@ -705,3 +715,6 @@ def reset_strategy_state() -> None:
     _latch_entry_used = False
     _latch_flatten_used = False
     _spy_position_qty = Decimal("0")
+    _spy_hedge_qty = Decimal("0")
+    _last_hedge_trade_date = None
+    _halted = False

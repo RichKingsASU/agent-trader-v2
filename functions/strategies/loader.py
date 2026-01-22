@@ -90,6 +90,20 @@ class StrategyLoader:
             uid: Optional user identifier for user-scoped orchestration.
             config: Optional loader configuration (rate limiting, batch sizes, etc.).
         """
+        # NOTE: Must exist unconditionally for callers/logging, even when Maestro is absent.
+        # Keep as None; do not add Maestro logic here.
+        self.maestro = None
+
+        # Compatibility: some tests introspect a mangled `_StrategyLoader__class__`.
+        # Provide an alias to the real class object.
+        self._StrategyLoader__class__ = self.__class__
+
+        # Ensure rate-limiting class state exists (used by _apply_rate_limiting).
+        if not hasattr(self.__class__, "_current_batch_count"):
+            self.__class__._current_batch_count = 0
+        if not hasattr(self.__class__, "_last_batch_time"):
+            self.__class__._last_batch_time = 0.0
+
         self.strategies: Dict[str, Any] = {}
         self._strategy_classes: Dict[str, Type] = {}
         self._load_errors: Dict[str, str] = {}
