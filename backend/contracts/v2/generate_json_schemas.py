@@ -10,7 +10,7 @@ from backend.contracts.v2.execution import ExecutionAttempt, ExecutionResult
 from backend.contracts.v2.explainability import StrategyExplanation
 from backend.contracts.v2.risk import RiskDecision
 from backend.contracts.v2.shadow import ShadowTrade
-from backend.contracts.v2.trading import OrderIntent, TradingSignal
+from backend.contracts.v2.trading import OptionOrderIntent, OrderIntent, TradingSignal
 from backend.contracts.v2.types import CONTRACT_VERSION_V2
 
 
@@ -22,6 +22,7 @@ def _repo_root() -> Path:
 MODELS: dict[str, Type[BaseModel]] = {
     "trading_signal": TradingSignal,
     "order_intent": OrderIntent,
+    "option_order_intent": OptionOrderIntent,
     "shadow_trade": ShadowTrade,
     "risk_decision": RiskDecision,
     "execution_attempt": ExecutionAttempt,
