@@ -36,6 +36,17 @@ class _PositionsStub:
     def get_position_qty(self, *, symbol: str) -> float:  # noqa: ARG002
         return float(self._qty)
 
+class _OptionPositionsStub:
+    def __init__(self, net_delta: float = 0.0, net_gamma: float = 0.0):
+        self._net_delta = float(net_delta)
+        self._net_gamma = float(net_gamma)
+
+    def net_delta(self, *, contract_multiplier: float = 100.0) -> float:  # noqa: ARG002
+        return float(self._net_delta)
+
+    def net_gamma(self, *, contract_multiplier: float = 100.0) -> float:  # noqa: ARG002
+        return float(self._net_gamma)
+
 
 class _BrokerStub:
     def __init__(self):
@@ -202,4 +213,106 @@ def test_agent_mode_halted_refuses_trading(monkeypatch):
     except AgentModeError:
         pass
     assert broker.place_calls == 0
+
+
+def test_max_delta_exposure_rejects(monkeypatch):
+    monkeypatch.delenv("EXECUTION_HALTED", raising=False)
+    broker = _BrokerStub()
+    risk = RiskManager(
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, max_delta_exposure=50.0),
+        ledger=_LedgerStub(trades_today=0),
+        positions=_PositionsStub(qty=0),
+        option_positions=_OptionPositionsStub(net_delta=0.0, net_gamma=0.0),
+    )
+    engine = ExecutionEngine(broker=broker, risk=risk, dry_run=True)
+
+    result = engine.execute_intent(
+        intent=OrderIntent(
+            strategy_id="s1",
+            broker_account_id="acct1",
+            symbol="AAPL250117C00150000",
+            side="buy",
+            qty=1,
+            metadata={"greeks": {"delta": 0.60}},
+        )
+    )
+    assert result.status == "rejected"
+    assert result.risk.reason == "max_delta_exposure_exceeded"
+    assert broker.place_calls == 0
+
+
+def test_max_gamma_exposure_rejects(monkeypatch):
+    monkeypatch.delenv("EXECUTION_HALTED", raising=False)
+    broker = _BrokerStub()
+    risk = RiskManager(
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, max_gamma_exposure=5.0),
+        ledger=_LedgerStub(trades_today=0),
+        positions=_PositionsStub(qty=0),
+        option_positions=_OptionPositionsStub(net_delta=0.0, net_gamma=0.0),
+    )
+    engine = ExecutionEngine(broker=broker, risk=risk, dry_run=True)
+
+    result = engine.execute_intent(
+        intent=OrderIntent(
+            strategy_id="s1",
+            broker_account_id="acct1",
+            symbol="AAPL250117C00150000",
+            side="buy",
+            qty=1,
+            metadata={"greeks": {"gamma": 0.10}},
+        )
+    )
+    assert result.status == "rejected"
+    assert result.risk.reason == "max_gamma_exposure_exceeded"
+
+
+def test_per_trade_risk_cap_rejects_long_option(monkeypatch):
+    monkeypatch.delenv("EXECUTION_HALTED", raising=False)
+    broker = _BrokerStub()
+    risk = RiskManager(
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, per_trade_risk_cap_usd=100.0),
+        ledger=_LedgerStub(trades_today=0),
+        positions=_PositionsStub(qty=0),
+        option_positions=_OptionPositionsStub(net_delta=0.0, net_gamma=0.0),
+    )
+    engine = ExecutionEngine(broker=broker, risk=risk, dry_run=True)
+
+    # premium risk ~= price * 100 * qty
+    result = engine.execute_intent(
+        intent=OrderIntent(
+            strategy_id="s1",
+            broker_account_id="acct1",
+            symbol="AAPL250117C00150000",
+            side="buy",
+            qty=1,
+            metadata={"price": 2.0, "greeks": {"delta": 0.25, "gamma": 0.05}},
+        )
+    )
+    assert result.status == "rejected"
+    assert result.risk.reason == "per_trade_risk_cap_exceeded"
+
+
+def test_daily_options_loss_cap_rejects(monkeypatch):
+    monkeypatch.delenv("EXECUTION_HALTED", raising=False)
+    broker = _BrokerStub()
+    risk = RiskManager(
+        config=RiskConfig(max_position_qty=100, max_daily_trades=50, fail_open=True, daily_options_loss_cap_usd=100.0),
+        ledger=_LedgerStub(trades_today=0),
+        positions=_PositionsStub(qty=0),
+        option_positions=_OptionPositionsStub(net_delta=0.0, net_gamma=0.0),
+    )
+    engine = ExecutionEngine(broker=broker, risk=risk, dry_run=True)
+
+    result = engine.execute_intent(
+        intent=OrderIntent(
+            strategy_id="s1",
+            broker_account_id="acct1",
+            symbol="AAPL250117C00150000",
+            side="buy",
+            qty=1,
+            metadata={"daily_options_pnl_usd": -150.0, "greeks": {"delta": 0.25}},
+        )
+    )
+    assert result.status == "rejected"
+    assert result.risk.reason == "daily_options_loss_cap_exceeded"
 
