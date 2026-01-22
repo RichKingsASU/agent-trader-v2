@@ -357,10 +357,10 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
     if underlying_price <= Decimal("0"):
         return Decimal("0")
     
-    # To neutralize delta, we need to trade opposite to our delta exposure
-    # If net_delta is positive (long delta), we sell shares (negative quantity)
-    # If net_delta is negative (short delta), we buy shares (positive quantity)
-    hedge_qty = -net_delta
+    # The strategy expresses net_delta in underlying-share equivalents (delta * contracts * 100).
+    # For hedge intents we trade SPY shares in *contract-equivalent* units (divide by 100).
+    contract_multiplier = Decimal(str(get_options_contract_multiplier()))
+    hedge_qty = -(net_delta / contract_multiplier)
     
     # Apply position size multiplier from macro event status
     # This reduces position sizes during high-volatility events
@@ -379,11 +379,10 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
         return Decimal("1") if hedge_qty > 0 else Decimal("-1")
 
     # Otherwise round to nearest whole share.
-    # Use HALF_DOWN to avoid systematically over-hedging on .5 ties (e.g. 6.5 -> 6).
-    return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_DOWN)
+    return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
 
-def _should_hedge(net_delta: Decimal, current_time: datetime, threshold: Decimal) -> bool:
+def _should_hedge(net_delta: Decimal, current_time: datetime, threshold: Optional[Decimal] = None) -> bool:
     """
     Determine if we should hedge based on delta threshold and timing.
     
@@ -395,10 +394,12 @@ def _should_hedge(net_delta: Decimal, current_time: datetime, threshold: Decimal
     Returns:
         bool: True if hedging is needed
     """
-    abs_delta = abs(net_delta)
-    
-    # Check if delta exceeds threshold
-    if abs_delta <= threshold:
+    # Compare in "contract-delta" units: abs_delta_shares / 100.
+    contract_multiplier = Decimal(str(get_options_contract_multiplier()))
+    abs_delta_contract = (abs(net_delta) / contract_multiplier)
+
+    threshold = threshold if threshold is not None else _get_hedging_threshold()
+    if abs_delta_contract <= threshold:
         return False
     
     # Optional: Rate limiting to avoid over-hedging
@@ -581,15 +582,26 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     # Safety check: Exit all positions at 3:45 PM ET
     if _is_market_close_time(current_time):
         global _latch_flatten_used, _spy_position_qty
+        if _halted:
+            _portfolio_positions.clear()
+            return []
+
+        _halted = True
+
+        orders: List[Dict[str, Any]] = []
+
+        # Exit any open option positions.
+        if _portfolio_positions:
+            orders.extend(_create_exit_orders(current_time=current_time, event_id=event_id, ts=ts))
+
+        # Also flatten any tracked SPY hedge exposure once per trading day.
         if (not _latch_flatten_used) and _spy_position_qty != Decimal("0"):
             _latch_flatten_used = True
-            flatten = _create_flatten_order(event_id=event_id, ts=ts, current_time=current_time)
+            orders.append(_create_flatten_order(event_id=event_id, ts=ts, current_time=current_time))
             _spy_position_qty = Decimal("0")
-            _portfolio_positions.clear()
-            return [flatten]
-        # No SPY position to flatten (or already flattened today).
+
         _portfolio_positions.clear()
-        return []
+        return orders
     
     # Update position tracking
     # Check if this is an options contract or underlying
