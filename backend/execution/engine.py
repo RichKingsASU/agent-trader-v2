@@ -503,6 +503,44 @@ class ExecutionEngine:
         if base_url:
             _assert_paper_only_base_url_or_fatal(base_url=str(base_url), trading_mode=os.getenv("TRADING_MODE", "paper"), operation=operation)
 
+    def _write_portfolio_history(self, *, intent: OrderIntent, broker_order: Mapping[str, Any], fill: Mapping[str, Any]) -> None:
+        """
+        Best-effort persistence of fills to `users/{uid}/portfolio/history`.
+
+        This is intentionally optional: in minimal unit-test environments we may not have
+        Firestore dependencies configured. Callers should treat failures as non-fatal.
+        """
+        meta = intent.metadata or {}
+        uid = meta.get("uid")
+        if not uid:
+            raise RuntimeError("firestore: missing uid in intent.metadata")
+
+        try:
+            from google.cloud import firestore  # type: ignore
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError(f"firestore unavailable: {e}") from e
+
+        db = firestore.Client()
+        # Use an append-only subcollection for history entries.
+        ref = (
+            db.collection("users")
+            .document(str(uid))
+            .collection("portfolio")
+            .document("history")
+            .collection("entries")
+            .document(str(broker_order.get("id") or fill.get("id") or intent.client_intent_id or "unknown"))
+        )
+        ref.set(
+            {
+                "broker": self.broker_name,
+                "intent": dict(intent.__dict__),
+                "broker_order": dict(broker_order),
+                "fill": dict(fill),
+                "ts_utc": datetime.now(timezone.utc).isoformat(),
+            },
+            merge=True,
+        )
+
     def execute_intent(self, *, intent: OrderIntent) -> ExecutionResult:
         # Smart routing (optional): can downgrade before risk/broker.
         routing: SmartRoutingDecision | None = None
