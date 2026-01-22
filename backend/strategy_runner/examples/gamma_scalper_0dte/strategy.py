@@ -688,6 +688,7 @@ def reset_strategy_state() -> None:
     global _portfolio_positions, _last_gex_value, _last_gex_update, _last_hedge_time
     global _macro_event_active, _stop_loss_multiplier, _position_size_multiplier, _last_macro_check
     global _latch_trading_day, _latch_entry_used, _latch_flatten_used, _spy_position_qty
+    global _halted, _spy_hedge_qty, _last_hedge_trade_date
     _portfolio_positions.clear()
     _last_gex_value = None
     _last_gex_update = None
@@ -700,3 +701,6 @@ def reset_strategy_state() -> None:
     _latch_entry_used = False
     _latch_flatten_used = False
     _spy_position_qty = Decimal("0")
+    _spy_hedge_qty = Decimal("0")
+    _last_hedge_trade_date = None
+    _halted = False
