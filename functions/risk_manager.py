@@ -136,8 +136,8 @@ def _as_float(v: Any) -> float:
             return 0.0
         try:
             return float(s)
-        except ValueError:
-            raise TypeError(f"Could not convert string to float: {v!r}")
+        except ValueError as e:
+            raise TypeError(f"Could not convert string to float: {v!r}") from e
     raise TypeError(f"Expected number-like value, got {type(v).__name__}")
 
 
@@ -165,6 +165,12 @@ def calculate_drawdown(current: Any, hwm: Any) -> Decimal:
     drawdown_pct = ((hwm_dec - current_dec) / hwm_dec) * Decimal("100")
     return drawdown_pct.quantize(Decimal("0.01"))  # percent, 2dp
 
+def _fmt_money(v: Any) -> str:
+    # Tests expect comma-separated integers (e.g., "85,000").
+    try:
+        return f"{int(_as_decimal(v)):,.0f}"
+    except Exception:
+        return str(v)
 
 def _get_high_water_mark(db: Any | None = None) -> Optional[Any]:
     """
@@ -265,25 +271,7 @@ def validate_trade_risk(
     db: Any | None = None
 ) -> RiskCheckResult:
     """
-    This is a pure utility function that checks:
-    1. Current equity is NOT more than 5% below the High Water Mark
-    2. Trade size does NOT exceed 5% of buying power
-    
-    Args:
-        account_snapshot: Current account state (equity, buying_power, cash as strings)
-        trade_request: Proposed trade details (symbol, side, qty, notional_usd)
-        db: Optional Firestore client (will create if not provided)
-    
-    Returns:
-        RiskCheckResult with allowed=True if all checks pass,
-        or allowed=False with reason if any check fails
-    
-    Example:
-        >>> account = AccountSnapshot(equity="100000", buying_power="50000", cash="25000")
-        >>> trade = TradeRequest(symbol="AAPL", side="buy", qty=100, notional_usd=2000)
-        >>> result = validate_trade_risk(account, trade)
-        >>> if not result.allowed:
-        ...     print(f"Trade rejected: {result.reason}")
+    Validate a proposed trade against drawdown and trade-size caps.
     """
     # Resolve thresholds once; pass explicitly to avoid implicit globals.
     max_drawdown_pct = _resolve_max_drawdown_pct()
@@ -302,20 +290,18 @@ def validate_trade_risk(
     if bp_dec < 0:
         return RiskCheckResult(
             allowed=False,
-            reason=f"Invalid account snapshot: buying_power is negative ({account_snapshot.buying_power})"
+            reason=f"Invalid account snapshot: buying_power is negative ({account_snapshot.buying_power})",
         )
-    
-    if trade_request.notional_usd < 0:
+    if _as_decimal(trade_request.notional_usd) < 0:
         return RiskCheckResult(
             allowed=False,
-            reason=f"Invalid trade request: notional_usd is negative ({trade_request.notional_usd})"
+            reason=f"Invalid trade request: notional_usd is negative ({trade_request.notional_usd})",
         )
     
     # Check 1: High Water Mark drawdown check
     high_water_mark = _get_high_water_mark(db=db)
     hwm_error = _check_high_water_mark(account_snapshot.equity, high_water_mark, max_drawdown_pct=max_drawdown_pct)
     if hwm_error:
-        logger.error("Trade rejected: %s", hwm_error)
         return RiskCheckResult(allowed=False, reason=hwm_error)
     
     # Check 2: Trade size as percentage of buying power
@@ -340,5 +326,8 @@ def validate_trade_risk(
         notional_dec,
         pct_bp.quantize(Decimal("0.01"))
     )
-    
+    if size_error:
+        return RiskCheckResult(allowed=False, reason=size_error)
+
     return RiskCheckResult(allowed=True, reason=None)
+

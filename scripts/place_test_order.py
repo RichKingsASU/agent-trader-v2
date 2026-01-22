@@ -1,4 +1,7 @@
 import os
+import sys
+
+import scripts.lib.exec_guard as exec_guard
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
