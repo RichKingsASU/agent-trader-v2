@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Dict, Optional, Literal
 from uuid import UUID
 
@@ -16,6 +17,8 @@ from backend.contracts.v2.types import (
     Side,
     TimeInForce,
 )
+
+OptionRight = Literal["call", "put"]
 
 
 class TradingSignal(ContractBase):
@@ -130,4 +133,22 @@ class OrderIntent(ContractBase):
         default=None,
         description="Optional non-broker-specific execution/routing options.",
     )
+
+
+class OptionOrderIntent(OrderIntent):
+    """
+    A broker-agnostic order intent for a single-leg listed option contract.
+
+    NOTE:
+    - This contract does not imply broker routing.
+    - Consumers must enforce trading-mode / execution authority separately.
+    """
+
+    schema_name: Literal["agenttrader.v2.option_order_intent"] = Field(..., alias="schema")
+
+    # Option contract identity.
+    contract_symbol: str = Field(min_length=1, description="Listed option contract symbol (OCC-style preferred).")
+    expiration: date = Field(..., description="Option expiration date (YYYY-MM-DD).")
+    strike: DecimalString = Field(..., description="Option strike price as decimal string.")
+    right: OptionRight = Field(..., description="Option right: call or put.")
 

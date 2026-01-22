@@ -14,6 +14,10 @@ from urllib.parse import urlparse
 
 from backend.common.secrets import get_secret
 
+# NOTE:
+# This module is covered by CI's `python -m compileall .` gate.
+# Keep top-level definitions flush-left (avoid accidental indentation).
+
 
     - Secret name: APCA_API_SECRET_KEY
     - No secret access at import time (call-time only).

@@ -61,6 +61,12 @@ class RiskConfig:
     max_position_qty: float = 100.0
     max_daily_trades: int = 50
     fail_open: bool = False
+    # Options risk limits (Greek-based + PnL caps). Any None disables the check.
+    max_delta_exposure: float | None = None
+    max_gamma_exposure: float | None = None
+    per_trade_risk_cap_usd: float | None = None
+    daily_options_loss_cap_usd: float | None = None
+    option_contract_multiplier: float = 100.0
 
 
 @dataclass(frozen=True)
@@ -178,10 +184,76 @@ class SmartRouter:
 
 
 class RiskManager:
-    def __init__(self, *, config: RiskConfig | None = None, ledger: Any | None = None, positions: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        config: RiskConfig | None = None,
+        ledger: Any | None = None,
+        positions: Any | None = None,
+        option_positions: Any | None = None,
+    ) -> None:
         self.config = config or RiskConfig()
         self.ledger = ledger
         self.positions = positions
+        self.option_positions = option_positions
+
+    def _is_options_intent(self, *, intent: OrderIntent) -> bool:
+        """
+        Best-effort option detection. This engine accepts broker-agnostic intents,
+        so we rely on symbol formatting + metadata hints.
+        """
+        try:
+            if str(getattr(intent, "asset_class", "") or "").strip().upper() in {"OPTION", "OPTIONS"}:
+                return True
+        except Exception:
+            pass
+        try:
+            it = str((intent.metadata or {}).get("instrument_type") or "").strip().upper()
+            if it in {"OPTION", "OPTIONS"}:
+                return True
+        except Exception:
+            pass
+        sym = str(intent.symbol or "").strip().upper()
+        # Heuristic: Alpaca/OCC-ish options symbols contain digits + a C/P marker after date-ish section.
+        if len(sym) > 10 and any(c.isdigit() for c in sym) and ("C" in sym[6:] or "P" in sym[6:]):
+            return True
+        return False
+
+    def _extract_float(self, v: Any) -> float | None:
+        if v is None:
+            return None
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            try:
+                return float(s)
+            except Exception:
+                return None
+        return None
+
+    def _extract_options_greeks(self, *, intent: OrderIntent) -> tuple[float | None, float | None]:
+        meta = intent.metadata or {}
+        greeks = None
+        # Common shapes:
+        # - metadata.greeks
+        # - metadata.options.greeks (when originating from v2 TradingSignal.options)
+        # - metadata.option_greeks
+        if isinstance(meta.get("greeks"), Mapping):
+            greeks = meta.get("greeks")
+        elif isinstance(meta.get("option_greeks"), Mapping):
+            greeks = meta.get("option_greeks")
+        else:
+            opt = meta.get("options")
+            if isinstance(opt, Mapping) and isinstance(opt.get("greeks"), Mapping):
+                greeks = opt.get("greeks")
+        if not isinstance(greeks, Mapping):
+            return None, None
+        d = self._extract_float(greeks.get("delta"))
+        g = self._extract_float(greeks.get("gamma"))
+        return d, g
 
     def validate(self, *, intent: OrderIntent) -> RiskDecision:
         checks: list[dict[str, Any]] = []
@@ -229,6 +301,120 @@ class RiskManager:
             checks.append({"check": "max_position_size", "error": str(e)})
             if not bool(self.config.fail_open):
                 return RiskDecision(allowed=False, reason="risk_data_unavailable", checks=checks)
+
+        # Options Greek risk limits (execution gate only; signals are still emitted upstream).
+        if self._is_options_intent(intent=intent):
+            mult = float(getattr(self.config, "option_contract_multiplier", 100.0) or 100.0)
+            signed_qty = float(intent.qty) if str(intent.side).lower() == "buy" else -float(intent.qty)
+
+            # Current exposures (best-effort; can be fail-closed if configured to enforce).
+            try:
+                if self.option_positions is None:
+                    raise RuntimeError("option_positions_unconfigured")
+                cur_delta = float(self.option_positions.net_delta(contract_multiplier=mult))  # type: ignore[call-arg]
+                cur_gamma = float(self.option_positions.net_gamma(contract_multiplier=mult))  # type: ignore[call-arg]
+            except Exception as e:
+                checks.append({"check": "options_exposure_state", "error": str(e)})
+                if (
+                    self.config.max_delta_exposure is not None
+                    or self.config.max_gamma_exposure is not None
+                ) and not bool(self.config.fail_open):
+                    return RiskDecision(allowed=False, reason="risk_data_unavailable", checks=checks)
+                cur_delta = 0.0
+                cur_gamma = 0.0
+
+            d, g = self._extract_options_greeks(intent=intent)
+            delta_change = None if d is None else (signed_qty * mult * float(d))
+            gamma_change = None if g is None else (signed_qty * mult * float(g))
+
+            # Max delta exposure.
+            if self.config.max_delta_exposure is not None:
+                if delta_change is None:
+                    checks.append({"check": "max_delta_exposure", "error": "missing_delta"})
+                    if not bool(self.config.fail_open):
+                        return RiskDecision(allowed=False, reason="risk_data_unavailable", checks=checks)
+                else:
+                    projected = float(cur_delta + delta_change)
+                    limit = float(self.config.max_delta_exposure)
+                    checks.append(
+                        {
+                            "check": "max_delta_exposure",
+                            "current_net_delta": cur_delta,
+                            "delta_change": delta_change,
+                            "projected_net_delta": projected,
+                            "limit_abs": limit,
+                        }
+                    )
+                    if abs(projected) > limit:
+                        return RiskDecision(allowed=False, reason="max_delta_exposure_exceeded", checks=checks)
+
+            # Max gamma exposure.
+            if self.config.max_gamma_exposure is not None:
+                if gamma_change is None:
+                    checks.append({"check": "max_gamma_exposure", "error": "missing_gamma"})
+                    if not bool(self.config.fail_open):
+                        return RiskDecision(allowed=False, reason="risk_data_unavailable", checks=checks)
+                else:
+                    projected = float(cur_gamma + gamma_change)
+                    limit = float(self.config.max_gamma_exposure)
+                    checks.append(
+                        {
+                            "check": "max_gamma_exposure",
+                            "current_net_gamma": cur_gamma,
+                            "gamma_change": gamma_change,
+                            "projected_net_gamma": projected,
+                            "limit_abs": limit,
+                        }
+                    )
+                    if abs(projected) > limit:
+                        return RiskDecision(allowed=False, reason="max_gamma_exposure_exceeded", checks=checks)
+
+            # Per-trade risk cap (USD). For options, default interpretation is max-loss/premium at risk.
+            if self.config.per_trade_risk_cap_usd is not None:
+                meta = intent.metadata or {}
+                # Prefer explicit max-loss/risk fields; otherwise estimate from price * qty * multiplier for longs only.
+                risk_usd = (
+                    self._extract_float(meta.get("max_loss_usd"))
+                    or self._extract_float(meta.get("risk_usd"))
+                    or self._extract_float(meta.get("per_trade_risk_usd"))
+                )
+                if risk_usd is None:
+                    # Long options: approximate risk as premium paid. Short options require explicit max_loss_usd.
+                    if str(intent.side).lower() == "buy":
+                        px = (
+                            self._extract_float(meta.get("estimated_price_usd"))
+                            or self._extract_float(meta.get("price"))
+                            or (float(intent.limit_price) if intent.limit_price is not None else None)
+                        )
+                        if px is not None:
+                            risk_usd = abs(float(intent.qty)) * mult * float(px)
+                    # sell without explicit risk is fail-closed when enforcing
+                limit = float(self.config.per_trade_risk_cap_usd)
+                checks.append({"check": "per_trade_risk_cap", "estimated_risk_usd": risk_usd, "limit_usd": limit})
+                if risk_usd is None:
+                    if not bool(self.config.fail_open):
+                        return RiskDecision(allowed=False, reason="risk_data_unavailable", checks=checks)
+                elif float(risk_usd) > limit:
+                    return RiskDecision(allowed=False, reason="per_trade_risk_cap_exceeded", checks=checks)
+
+            # Daily options loss cap (USD). Requires daily options PnL in metadata when enforced.
+            if self.config.daily_options_loss_cap_usd is not None:
+                meta = intent.metadata or {}
+                pnl = (
+                    self._extract_float(meta.get("daily_options_pnl_usd"))
+                    or self._extract_float(meta.get("options_daily_pnl_usd"))
+                    or self._extract_float(meta.get("daily_pnl_options_usd"))
+                )
+                limit = float(self.config.daily_options_loss_cap_usd)
+                checks.append({"check": "daily_options_loss_cap", "daily_options_pnl_usd": pnl, "limit_usd": limit})
+                if pnl is None:
+                    if not bool(self.config.fail_open):
+                        return RiskDecision(allowed=False, reason="risk_data_unavailable", checks=checks)
+                else:
+                    day_loss = max(0.0, -float(pnl))
+                    checks.append({"check": "daily_options_loss", "daily_loss_usd": day_loss})
+                    if day_loss >= limit:
+                        return RiskDecision(allowed=False, reason="daily_options_loss_cap_exceeded", checks=checks)
 
         return RiskDecision(allowed=True, reason="ok", checks=checks)
 
