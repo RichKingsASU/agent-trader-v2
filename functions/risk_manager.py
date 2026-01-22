@@ -1,31 +1,89 @@
 """
-Risk Manager: drawdown + trade-size kill-switch checks.
+Risk manager kill-switch logic.
 
-SAFE CLEANUP NOTE:
-- This module is used by unit tests and must remain importable in minimal CI.
-- Firestore access is optional and must be lazy.
-- No broker/execution actions are performed here.
+This module provides dependency-light safety checks to validate trade requests
+before execution. The core contract (as documented in `functions/RISK_MANAGER_*`)
+is:
+
+- Reject trades if current equity is more than 10% below the High Water Mark (HWM)
+- Reject trades if trade notional exceeds 5% of buying power
+
+Thresholds are sourced from environment variables in production (when set),
+otherwise defaults are used. Values are NOT hardcoded inline; they are resolved
+once and passed explicitly to checks to avoid implicit globals.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Defaults (kept intentionally simple; callers may override via function params).
-DEFAULT_DRAWDOWN_THRESHOLD = Decimal("0.10")  # 10% max drawdown from HWM
-DEFAULT_MAX_TRADE_PCT_BP = Decimal("0.05")  # 5% max trade size vs buying power
+try:  # Optional dependency; unit tests should run without cloud libs.
+    from google.cloud import firestore  # type: ignore
+except Exception:  # pragma: no cover
+    firestore = None  # type: ignore
+
+
+# -----------------------------
+# Threshold defaults (documented behavior)
+# -----------------------------
+
+# Default max drawdown, expressed as a percentage (10.0 == 10%).
+DEFAULT_MAX_DRAWDOWN_PCT = Decimal("10.0")
+# Default max trade size, expressed as a percentage of buying power (5.0 == 5%).
+DEFAULT_MAX_TRADE_BP_PCT = Decimal("5.0")
+
+
+def _env_decimal(name: str) -> Optional[Decimal]:
+    v = os.getenv(name)
+    if v is None:
+        return None
+    s = str(v).strip()
+    if s == "":
+        return None
+    return Decimal(s)
+
+
+def _resolve_max_drawdown_pct(drawdown_threshold: Decimal | None = None) -> Decimal:
+    """
+    Resolve the max drawdown percent from:
+    - explicit argument (highest priority)
+    - environment `RISK_MAX_DRAWDOWN_PCT`
+    - module default `DEFAULT_MAX_DRAWDOWN_PCT`
+    """
+    if drawdown_threshold is not None:
+        return Decimal(str(drawdown_threshold))
+    return _env_decimal("RISK_MAX_DRAWDOWN_PCT") or DEFAULT_MAX_DRAWDOWN_PCT
+
+
+def _resolve_max_trade_bp_pct(max_trade_bp_pct: Decimal | None = None) -> Decimal:
+    """
+    Resolve the max trade size percent of buying power from:
+    - explicit argument (highest priority)
+    - environment `RISK_MAX_TRADE_BP_PCT`
+    - module default `DEFAULT_MAX_TRADE_BP_PCT`
+    """
+    if max_trade_bp_pct is not None:
+        return Decimal(str(max_trade_bp_pct))
+    return _env_decimal("RISK_MAX_TRADE_BP_PCT") or DEFAULT_MAX_TRADE_BP_PCT
+
+
+# -----------------------------
+# Data contracts
+# -----------------------------
 
 
 @dataclass(frozen=True)
 class AccountSnapshot:
-    equity: float
-    buying_power: float
-    cash: float
+    # Keep fields flexible; tests pass ints and production may pass strings/floats.
+    equity: Any
+    buying_power: Any
+    cash: Any
 
 
 @dataclass(frozen=True)
@@ -40,6 +98,27 @@ class TradeRequest:
 class RiskCheckResult:
     allowed: bool
     reason: Optional[str] = None
+
+
+def _as_decimal(v: Any) -> Decimal:
+    """
+    Convert various types to Decimal safely for precision.
+    
+    Handles None, numeric types, and string representations.
+    Returns Decimal("0") for None or empty strings.
+    """
+    if v is None:
+        return Decimal("0")
+    if isinstance(v, Decimal):
+        return v
+    if isinstance(v, (int, float)):
+        return Decimal(str(v))
+    if isinstance(v, str):
+        s = v.strip()
+        if s == "":
+            return Decimal("0")
+        return Decimal(s)
+    raise TypeError(f"Expected number-like value, got {type(v).__name__}")
 
 
 def _as_float(v: Any) -> float:
@@ -62,23 +141,29 @@ def _as_float(v: Any) -> float:
     raise TypeError(f"Expected number-like value, got {type(v).__name__}")
 
 
-def _as_decimal(v: Any) -> Decimal:
-    if v is None:
+def calculate_drawdown(current: Any, hwm: Any) -> Decimal:
+    """
+    Calculate drawdown percentage from High Water Mark.
+    
+    Args:
+        current: Current equity value (as string for precision)
+        hwm: High Water Mark value (as string for precision)
+    
+    Returns:
+        Drawdown as a Decimal percentage (e.g., Decimal("5.25") for 5.25%)
+    
+    Example:
+        >>> calculate_drawdown("95000", "100000")
+        Decimal('5.00')
+    """
+    current_dec = _as_decimal(current)
+    hwm_dec = _as_decimal(hwm)
+    
+    if hwm_dec <= 0:
         return Decimal("0")
-    if isinstance(v, Decimal):
-        return v
-    if isinstance(v, (int, float)):
-        return Decimal(str(v))
-    if isinstance(v, str):
-        s = v.strip()
-        if s == "":
-            return Decimal("0")
-        try:
-            return Decimal(s)
-        except InvalidOperation as e:
-            raise TypeError(f"Could not convert string to Decimal: {v!r}") from e
-    raise TypeError(f"Expected number-like value, got {type(v).__name__}")
-
+    
+    drawdown_pct = ((hwm_dec - current_dec) / hwm_dec) * Decimal("100")
+    return drawdown_pct.quantize(Decimal("0.01"))  # percent, 2dp
 
 def _fmt_money(v: Any) -> str:
     # Tests expect comma-separated integers (e.g., "85,000").
@@ -87,111 +172,122 @@ def _fmt_money(v: Any) -> str:
     except Exception:
         return str(v)
 
-
-def _get_high_water_mark(db: Any | None = None) -> Optional[float]:
+def _get_high_water_mark(db: Any | None = None) -> Optional[Any]:
     """
-    Best-effort read of High Water Mark from Firestore.
+    Retrieve the High Water Mark from Firestore if available.
 
-    This is optional: tests patch this function, and CI may not have cloud libs.
-    Returns:
-        High water mark as float, or None if unavailable.
+    The documented location for this module is:
+    `riskManagement/highWaterMark` with field `value`.
+
+    In unit tests, this function is typically patched.
     """
-    if db is None:
+    if db is None or firestore is None:
         return None
     try:
-        doc = db.collection("systemStatus").document("risk").get()
+        doc = db.collection("riskManagement").document("highWaterMark").get()
         if not getattr(doc, "exists", False):
             return None
         data = doc.to_dict() or {}
-        hwm = data.get("high_water_mark")
-        if hwm is None:
-            return None
-        return float(_as_decimal(hwm))
-    except Exception:
-        # Keep failure isolated; risk checks should remain usable without Firestore.
+        return data.get("value")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to read HWM from Firestore: %s", e)
         return None
 
 
 def _check_high_water_mark(
     current_equity: Any,
-    high_water_mark: Any,
+    high_water_mark: Optional[Any],
     *,
-    drawdown_threshold: Decimal = DEFAULT_DRAWDOWN_THRESHOLD,
+    max_drawdown_pct: Decimal | None = None
 ) -> Optional[str]:
     """
-    Reject trading if drawdown from High Water Mark exceeds `drawdown_threshold`.
+    Check if current equity is more than `max_drawdown_pct` below High Water Mark.
 
-    Returns:
-        None if ok, otherwise a KILL-SWITCH reason string.
+    Returns an error string containing "KILL-SWITCH" on breach; otherwise None.
     """
+    max_dd = _resolve_max_drawdown_pct(max_drawdown_pct)
+
     if high_water_mark is None:
-        # No HWM configured => cannot enforce drawdown; pass with warning.
-        logger.warning("High Water Mark not set; skipping drawdown enforcement")
+        logger.warning("High Water Mark not set; skipping drawdown check")
         return None
 
-    hwm = _as_decimal(high_water_mark)
-    if hwm <= 0:
+    current_dec = _as_decimal(current_equity)
+    hwm_dec = _as_decimal(high_water_mark)
+
+    if hwm_dec <= 0:
+        logger.warning("High Water Mark is <= 0 (%s); skipping drawdown check", high_water_mark)
         return None
 
-    cur = _as_decimal(current_equity)
-    # Drawdown as a fraction in [0,1].
-    drawdown = (hwm - cur) / hwm
-    if drawdown <= drawdown_threshold:
-        return None
+    drawdown_pct = calculate_drawdown(current_dec, hwm_dec)
 
-    drawdown_pct = (drawdown * Decimal("100")).quantize(Decimal("0.01"))
-    thresh_pct = (drawdown_threshold * Decimal("100")).quantize(Decimal("0.01"))
-    return (
-        "KILL-SWITCH: High Water Mark drawdown "
-        f"{drawdown_pct}% exceeds threshold {thresh_pct}%. "
-        f"Current equity {_fmt_money(cur)} is {drawdown_pct}% below High Water Mark {_fmt_money(hwm)}."
-    )
+    # At exactly the threshold, allow. Breach only if strictly greater.
+    if drawdown_pct > max_dd:
+        threshold_equity = (hwm_dec * (Decimal("100") - max_dd) / Decimal("100")).quantize(Decimal("0.01"))
+        return (
+            "KILL-SWITCH: "
+            f"Current equity ${current_dec:,.2f} is {drawdown_pct:,.2f}% below High Water Mark ${hwm_dec:,.2f} "
+            f"(threshold: ${threshold_equity:,.2f}, max allowed drawdown: {max_dd}%)"
+        )
+
+    return None
 
 
 def _check_trade_size(
-    trade_notional: Any,
+    trade_notional: float,
     buying_power: Any,
     *,
-    max_trade_pct_bp: Decimal = DEFAULT_MAX_TRADE_PCT_BP,
+    max_trade_bp_pct: Decimal | None = None
 ) -> Optional[str]:
     """
-    Reject trades larger than `max_trade_pct_bp` of buying power.
+    Reject if trade notional exceeds `max_trade_bp_pct` of buying power.
     """
-    bp = _as_decimal(buying_power)
-    if bp <= 0:
-        return f"KILL-SWITCH: Buying power is {bp}. Cannot validate trade size."
+    max_pct = _resolve_max_trade_bp_pct(max_trade_bp_pct)
 
-    trade = _as_decimal(trade_notional)
-    max_allowed = (bp * max_trade_pct_bp).quantize(Decimal("0.01"))
-    if trade <= max_allowed:
-        return None
-
-    pct = ((trade / bp) * Decimal("100")).quantize(Decimal("0.01"))
-    pct_limit = (max_trade_pct_bp * Decimal("100")).quantize(Decimal("0.01"))
-    return (
-        "KILL-SWITCH: Trade size "
-        f"{_fmt_money(trade)} ({pct}% of buying power) exceeds maximum allowed "
-        f"{_fmt_money(max_allowed)} ({pct_limit}% of buying power {_fmt_money(bp)})"
-    )
+    bp_dec = _as_decimal(buying_power)
+    trade_dec = _as_decimal(trade_notional)
+    
+    if bp_dec <= 0:
+        return (
+            f"KILL-SWITCH: Buying power is {bp_dec}. "
+            "Cannot validate trade size."
+        )
+    
+    max_allowed = (bp_dec * max_pct / Decimal("100")).quantize(Decimal("0.01"))
+    
+    if trade_dec > max_allowed:
+        size_pct = ((trade_dec / bp_dec) * Decimal("100")).quantize(Decimal("0.01"))
+        return (
+            "KILL-SWITCH: "
+            f"Trade size {trade_dec:,.2f} ({size_pct:,.2f}% of buying power) exceeds maximum allowed {max_allowed:,.2f} "
+            f"({max_pct}% of buying power {bp_dec:,.2f})"
+        )
+    
+    return None
 
 
 def validate_trade_risk(
     account_snapshot: AccountSnapshot,
     trade_request: TradeRequest,
-    db: Any | None = None,
-    *,
-    drawdown_threshold: Decimal = DEFAULT_DRAWDOWN_THRESHOLD,
-    max_trade_pct_bp: Decimal = DEFAULT_MAX_TRADE_PCT_BP,
+    db: Any | None = None
 ) -> RiskCheckResult:
     """
     Validate a proposed trade against drawdown and trade-size caps.
     """
-    equity = _as_decimal(account_snapshot.equity)
-    buying_power = _as_decimal(account_snapshot.buying_power)
+    # Resolve thresholds once; pass explicitly to avoid implicit globals.
+    max_drawdown_pct = _resolve_max_drawdown_pct()
+    max_trade_bp_pct = _resolve_max_trade_bp_pct()
 
-    if equity < 0:
-        return RiskCheckResult(allowed=False, reason=f"Invalid account snapshot: equity is negative ({account_snapshot.equity})")
-    if buying_power < 0:
+    # Validate inputs using Decimal
+    equity_dec = _as_decimal(account_snapshot.equity)
+    bp_dec = _as_decimal(account_snapshot.buying_power)
+    
+    if equity_dec < 0:
+        return RiskCheckResult(
+            allowed=False,
+            reason=f"Invalid account snapshot: equity is negative ({account_snapshot.equity})"
+        )
+    
+    if bp_dec < 0:
         return RiskCheckResult(
             allowed=False,
             reason=f"Invalid account snapshot: buying_power is negative ({account_snapshot.buying_power})",
@@ -201,20 +297,34 @@ def validate_trade_risk(
             allowed=False,
             reason=f"Invalid trade request: notional_usd is negative ({trade_request.notional_usd})",
         )
-
-    hwm = _get_high_water_mark(db=db)
-    hwm_error = _check_high_water_mark(
-        current_equity=equity,
-        high_water_mark=hwm,
-        drawdown_threshold=drawdown_threshold,
-    )
+    
+    # Check 1: High Water Mark drawdown check
+    high_water_mark = _get_high_water_mark(db=db)
+    hwm_error = _check_high_water_mark(account_snapshot.equity, high_water_mark, max_drawdown_pct=max_drawdown_pct)
     if hwm_error:
         return RiskCheckResult(allowed=False, reason=hwm_error)
-
-    size_error = _check_trade_size(
-        trade_notional=trade_request.notional_usd,
-        buying_power=buying_power,
-        max_trade_pct_bp=max_trade_pct_bp,
+    
+    # Check 2: Trade size as percentage of buying power
+    trade_size_error = _check_trade_size(
+        trade_request.notional_usd,
+        account_snapshot.buying_power,
+        max_trade_bp_pct=max_trade_bp_pct,
+    )
+    if trade_size_error:
+        logger.error("Trade rejected: %s", trade_size_error)
+        return RiskCheckResult(allowed=False, reason=trade_size_error)
+    
+    # All checks passed
+    notional_dec = Decimal(str(trade_request.notional_usd))
+    pct_bp = (notional_dec / bp_dec * Decimal("100")) if bp_dec > 0 else Decimal("0")
+    
+    logger.info(
+        "Trade validation passed: %s %s %.0f shares, notional=%s (%s%% of buying power)",
+        trade_request.side.upper(),
+        trade_request.symbol,
+        trade_request.qty,
+        notional_dec,
+        pct_bp.quantize(Decimal("0.01"))
     )
     if size_error:
         return RiskCheckResult(allowed=False, reason=size_error)
