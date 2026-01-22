@@ -26,6 +26,7 @@ from backend.common.agent_mode import AgentModeError
 from backend.common.agent_boot import configure_startup_logging
 from backend.common.replay_events import build_replay_event, dumps_replay_event, set_replay_context
 from backend.common.logging import init_structured_logging, install_fastapi_request_id_middleware
+from backend.common.logging import log_event
 from backend.execution.engine import (
     AlpacaBroker,
     DryRunBroker,
@@ -735,6 +736,27 @@ def execute(req: ExecuteIntentRequest, request: Request) -> ExecuteIntentRespons
                         "broker_order_id": result.broker_order_id,
                     }
                 ),
+            )
+        except Exception:
+            pass
+
+        # Emit semantic risk events for operators (execution gate only).
+        try:
+            corr = str((req.metadata or {}).get("correlation_id") or "").strip() or None
+            exec_id = str((req.metadata or {}).get("execution_id") or "").strip() or None
+            evt = "risk.trade_check.allowed" if bool(result.risk.allowed) else "risk.trade_check.denied"
+            log_event(
+                logger,
+                evt,
+                severity="INFO" if bool(result.risk.allowed) else "WARNING",
+                correlation_id=corr,
+                execution_id=exec_id,
+                strategy_id=req.strategy_id,
+                broker_account_id=req.broker_account_id,
+                symbol=req.symbol,
+                side=req.side,
+                reason=result.risk.reason,
+                checks=result.risk.checks,
             )
         except Exception:
             pass
