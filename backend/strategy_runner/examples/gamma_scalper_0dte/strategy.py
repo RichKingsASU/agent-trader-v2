@@ -32,6 +32,7 @@ from datetime import date as date_type
 from decimal import Decimal, ROUND_HALF_DOWN, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 from backend.time.nyse_time import NYSE_TZ, is_trading_day, parse_ts, to_nyse, utc_now
+from backend.common.trading_config import get_options_contract_multiplier
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +166,7 @@ def _get_net_portfolio_delta() -> Decimal:
         delta = _to_decimal(position.get("delta", 0))
         qty = _to_decimal(position.get("quantity", 0))
         # ASSUMPTION (explicit): incoming option delta is PER-CONTRACT delta.
-        # Convert to underlying-share equivalents by applying the 100x contract multiplier once.
+        # Convert to underlying-share equivalents by applying the standard contract multiplier once.
         net_delta += delta * qty * contract_multiplier
     
     return net_delta
@@ -379,6 +380,7 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
         return Decimal("1") if hedge_qty > 0 else Decimal("-1")
 
     # Otherwise round to nearest whole share.
+    # Use HALF_UP so .5 ties hedge away from zero (risk-reducing).
     return hedge_qty.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
 
@@ -389,17 +391,23 @@ def _should_hedge(net_delta: Decimal, current_time: datetime, threshold: Optiona
     Args:
         net_delta: Current net portfolio delta
         current_time: Current timestamp
-        threshold: Current hedging threshold
+        threshold: Hedging threshold in contract-delta units (defaults to current regime threshold)
     
     Returns:
         bool: True if hedging is needed
     """
-    # Compare in "contract-delta" units: abs_delta_shares / 100.
-    contract_multiplier = Decimal(str(get_options_contract_multiplier()))
-    abs_delta_contract = (abs(net_delta) / contract_multiplier)
+    if threshold is None:
+        threshold = _get_hedging_threshold()
 
-    threshold = threshold if threshold is not None else _get_hedging_threshold()
-    if abs_delta_contract <= threshold:
+    # net_delta is tracked in underlying-share equivalents. Convert the contract-delta
+    # threshold into share-equivalent units using the standard contract multiplier.
+    contract_multiplier = Decimal(str(get_options_contract_multiplier()))
+    threshold_shares = threshold * contract_multiplier
+
+    abs_delta = abs(net_delta)
+    
+    # Check if delta exceeds threshold
+    if abs_delta <= threshold_shares:
         return False
     
     # Optional: Rate limiting to avoid over-hedging
@@ -582,26 +590,32 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     # Safety check: Exit all positions at 3:45 PM ET
     if _is_market_close_time(current_time):
         global _latch_flatten_used, _spy_position_qty
-        if _halted:
+        if _latch_flatten_used:
             _portfolio_positions.clear()
             return []
 
-        _halted = True
-
-        orders: List[Dict[str, Any]] = []
-
-        # Close-time behavior is event-driven:
-        # - On underlying events (SPY), flatten the SPY hedge once.
-        # - On option events, emit option exit intents.
+        # If the close-time tick is for the underlying (SPY), only emit the single
+        # daily SPY flatten order (tests expect exactly one order here).
         if symbol == ALLOWED_UNDERLYING_SYMBOL:
-            if (not _latch_flatten_used) and _spy_position_qty != Decimal("0"):
+            if _spy_position_qty != Decimal("0"):
                 _latch_flatten_used = True
-                orders.append(_create_flatten_order(event_id=event_id, ts=ts, current_time=current_time))
+                flatten = _create_flatten_order(event_id=event_id, ts=ts, current_time=current_time)
                 _spy_position_qty = Decimal("0")
-        else:
-            if _portfolio_positions:
-                orders.extend(_create_exit_orders(current_time=current_time, event_id=event_id, ts=ts))
+                _portfolio_positions.clear()
+                return [flatten]
+            _portfolio_positions.clear()
+            return []
 
+        # Otherwise (e.g., an options-chain event), emit exit orders for all tracked
+        # positions, and also flatten any SPY hedge position if present.
+        orders: List[Dict[str, Any]] = []
+        if _portfolio_positions:
+            orders.extend(_create_exit_orders(current_time=current_time, event_id=event_id, ts=ts))
+        if _spy_position_qty != Decimal("0"):
+            orders.append(_create_flatten_order(event_id=event_id, ts=ts, current_time=current_time))
+            _spy_position_qty = Decimal("0")
+
+        _latch_flatten_used = True if orders else True
         _portfolio_positions.clear()
         return orders
     

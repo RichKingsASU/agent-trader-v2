@@ -411,6 +411,12 @@ class MaestroOrchestrator(BaseStrategy):
             TradingSignal with action=HOLD and weights in metadata
         """
         try:
+            # Symbol context: Maestro doesn't trade a single instrument, but downstream
+            # systems expect every TradingSignal to carry a non-empty symbol.
+            symbol = str(market_data.get("symbol") or account_snapshot.get("symbol") or "SPY").upper().strip()
+            if not symbol:
+                symbol = "SPY"
+
             # Extract user_id from account snapshot
             # This assumes account_snapshot has a 'user_id' or 'uid' field
             user_id = account_snapshot.get('user_id') or account_snapshot.get('uid')
@@ -419,7 +425,7 @@ class MaestroOrchestrator(BaseStrategy):
                 logger.error("No user_id found in account_snapshot, cannot calculate weights")
                 return TradingSignal(
                     signal_type=SignalType.HOLD,
-                    symbol=market_data.get("symbol", "SPY"),
+                    symbol=symbol,
                     confidence=0.0,
                     reasoning="Error: No user_id provided",
                     metadata={'error': 'missing_user_id'}
@@ -431,7 +437,7 @@ class MaestroOrchestrator(BaseStrategy):
             if not weights:
                 return TradingSignal(
                     signal_type=SignalType.HOLD,
-                    symbol=market_data.get("symbol", "SPY"),
+                    symbol=symbol,
                     confidence=0.0,
                     reasoning="No agent weights calculated (no trade history available)",
                     metadata={'weights': {}}
@@ -443,7 +449,7 @@ class MaestroOrchestrator(BaseStrategy):
             # Return signal with weights in metadata
             return TradingSignal(
                 signal_type=SignalType.HOLD,  # Maestro doesn't generate trades directly
-                symbol=market_data.get("symbol", "SPY"),
+                symbol=symbol,
                 confidence=1.0,
                 reasoning=(
                     f"Agent weights calculated based on {self.lookback_trades} recent trades per agent. "
@@ -461,7 +467,7 @@ class MaestroOrchestrator(BaseStrategy):
             logger.exception(f"Error in MaestroOrchestrator.evaluate: {e}")
             return TradingSignal(
                 signal_type=SignalType.HOLD,
-                symbol=market_data.get("symbol", "SPY"),
+                symbol=str(market_data.get("symbol") or account_snapshot.get("symbol") or "SPY").upper().strip() or "SPY",
                 confidence=0.0,
                 reasoning=f"Error calculating agent weights: {str(e)}",
                 metadata={'error': str(e)}
