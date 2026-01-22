@@ -25,6 +25,27 @@ from strategies.loader import get_strategy_loader
 logger = logging.getLogger(__name__)
 
 
+def load_strategies(db: Optional[firestore.Client] = None) -> Dict[str, Any]:
+    """
+    Load available strategy classes for evaluation.
+
+    Note:
+    - The StrategyLoader maintains both instantiated strategies and their classes.
+    - The consensus engine needs classes so it can instantiate per-evaluation, and
+      tests patch this function to inject deterministic strategy sets.
+    """
+    loader = get_strategy_loader(db=db)
+
+    # Prefer the discovered class registry if available.
+    strategy_classes = getattr(loader, "_strategy_classes", None)
+    if isinstance(strategy_classes, dict) and strategy_classes:
+        return dict(strategy_classes)
+
+    # Fallback: derive classes from instantiated strategies (best effort).
+    instances = loader.get_all_strategies()
+    return {name: obj.__class__ for name, obj in instances.items()}
+
+
 class ConsensuAction(Enum):
     """Standardized consensus actions"""
     BUY = "BUY"
@@ -146,7 +167,7 @@ class ConsensusEngine:
         self.db = db
         
         # Load all available strategies
-        self.available_strategies = get_strategy_loader(db=self.db).get_all_strategies()
+        self.available_strategies = load_strategies(db=self.db)
         
         logger.info(
             f"ConsensusEngine initialized: threshold={self.consensus_threshold}, "

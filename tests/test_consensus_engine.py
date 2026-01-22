@@ -42,9 +42,12 @@ class MockStrategy(BaseStrategy):
         self._confidence = confidence
     
     def evaluate(self, market_data, account_snapshot, regime=None):
+        symbol = str(market_data.get("symbol") or "SPY").upper().strip()
+        if not symbol:
+            symbol = "SPY"
         return TradingSignal(
             signal_type=self._signal_type,
-            symbol=market_data.get("symbol", "UNKNOWN"),
+            symbol=symbol,
             confidence=self._confidence,
             reasoning=f"Mock strategy returning {self._signal_type.value}",
             metadata={"mock": True}
