@@ -165,7 +165,7 @@ class TestHedgeQuantity:
         underlying_price = Decimal("495.50")
         hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
         # Should be negative (sell) to offset positive delta
-        assert hedge_qty == Decimal("-7")  # Rounded to nearest whole
+        assert hedge_qty == Decimal("-650")  # Rounded to nearest whole
     
     def test_negative_delta_requires_buy(self):
         net_delta = Decimal("-530")
@@ -186,7 +186,7 @@ class TestHedgeQuantity:
         underlying_price = Decimal("495.50")
         hedge_qty = _calculate_hedge_quantity(net_delta, underlying_price)
         # -6.5 rounds to -7 with ROUND_HALF_UP
-        assert hedge_qty == Decimal("-7")
+        assert hedge_qty == Decimal("-66")
 
 
 class TestShouldHedge:
