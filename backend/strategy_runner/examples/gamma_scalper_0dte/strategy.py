@@ -357,10 +357,10 @@ def _calculate_hedge_quantity(net_delta: Decimal, underlying_price: Decimal) -> 
     if underlying_price <= Decimal("0"):
         return Decimal("0")
     
-    # The strategy expresses net_delta in underlying-share equivalents (delta * contracts * 100).
-    # For hedge intents we trade SPY shares in *contract-equivalent* units (divide by 100).
-    contract_multiplier = Decimal(str(get_options_contract_multiplier()))
-    hedge_qty = -(net_delta / contract_multiplier)
+    # To neutralize delta, trade opposite to our share-equivalent delta exposure.
+    # If net_delta is positive (long delta), sell shares (negative quantity).
+    # If net_delta is negative (short delta), buy shares (positive quantity).
+    hedge_qty = -net_delta
     
     # Apply position size multiplier from macro event status
     # This reduces position sizes during high-volatility events
@@ -590,15 +590,17 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
 
         orders: List[Dict[str, Any]] = []
 
-        # Exit any open option positions.
-        if _portfolio_positions:
-            orders.extend(_create_exit_orders(current_time=current_time, event_id=event_id, ts=ts))
-
-        # Also flatten any tracked SPY hedge exposure once per trading day.
-        if (not _latch_flatten_used) and _spy_position_qty != Decimal("0"):
-            _latch_flatten_used = True
-            orders.append(_create_flatten_order(event_id=event_id, ts=ts, current_time=current_time))
-            _spy_position_qty = Decimal("0")
+        # Close-time behavior is event-driven:
+        # - On underlying events (SPY), flatten the SPY hedge once.
+        # - On option events, emit option exit intents.
+        if symbol == ALLOWED_UNDERLYING_SYMBOL:
+            if (not _latch_flatten_used) and _spy_position_qty != Decimal("0"):
+                _latch_flatten_used = True
+                orders.append(_create_flatten_order(event_id=event_id, ts=ts, current_time=current_time))
+                _spy_position_qty = Decimal("0")
+        else:
+            if _portfolio_positions:
+                orders.extend(_create_exit_orders(current_time=current_time, event_id=event_id, ts=ts))
 
         _portfolio_positions.clear()
         return orders
