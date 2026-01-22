@@ -11,12 +11,13 @@ from backend.contracts.v2.execution import ExecutionAttempt, ExecutionFill, Exec
 from backend.contracts.v2.explainability import StrategyExplanation
 from backend.contracts.v2.risk import RiskDecision
 from backend.contracts.v2.shadow import ShadowTrade
-from backend.contracts.v2.trading import OrderIntent, TradingSignal
+from backend.contracts.v2.trading import OptionOrderIntent, OrderIntent, TradingSignal
 
 __all__ = [
     "ExecutionAttempt",
     "ExecutionFill",
     "ExecutionResult",
+    "OptionOrderIntent",
     "OrderIntent",
     "RiskDecision",
     "ShadowTrade",

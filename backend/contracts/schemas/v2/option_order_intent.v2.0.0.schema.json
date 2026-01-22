@@ -1,0 +1,461 @@
+{
+  "$defs": {
+    "AssetClass": {
+      "enum": [
+        "equity",
+        "option",
+        "future",
+        "fx",
+        "crypto",
+        "index",
+        "other"
+      ],
+      "title": "AssetClass",
+      "type": "string"
+    },
+    "OrderConstraints": {
+      "additionalProperties": true,
+      "description": "Broker-agnostic constraints for executing an OrderIntent.",
+      "properties": {
+        "allow_partial_fills": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allow Partial Fills"
+        },
+        "max_notional": {
+          "anyOf": [
+            {
+              "description": "Base-10 decimal encoded as a JSON string.",
+              "examples": [
+                "0",
+                "1",
+                "10.5",
+                "-0.01"
+              ],
+              "pattern": "^-?\\d+(\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Max notional (quote currency).",
+          "title": "Max Notional"
+        },
+        "max_slippage_bps": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Slippage Bps"
+        },
+        "min_fill_quantity": {
+          "anyOf": [
+            {
+              "description": "Base-10 decimal encoded as a JSON string.",
+              "examples": [
+                "0",
+                "1",
+                "10.5",
+                "-0.01"
+              ],
+              "pattern": "^-?\\d+(\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Fill Quantity"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Options"
+        }
+      },
+      "title": "OrderConstraints",
+      "type": "object"
+    },
+    "OrderType": {
+      "enum": [
+        "market",
+        "limit",
+        "stop",
+        "stop_limit"
+      ],
+      "title": "OrderType",
+      "type": "string"
+    },
+    "Side": {
+      "enum": [
+        "buy",
+        "sell"
+      ],
+      "title": "Side",
+      "type": "string"
+    },
+    "TimeInForce": {
+      "enum": [
+        "day",
+        "gtc",
+        "ioc",
+        "fok"
+      ],
+      "title": "TimeInForce",
+      "type": "string"
+    }
+  },
+  "$id": "agenttrader.v2/option_order_intent.v2.0.0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "A broker-agnostic order intent for a single-leg listed option contract.\n\nNOTE:\n- This contract does not imply broker routing.\n- Consumers must enforce trading-mode / execution authority separately.",
+  "properties": {
+    "account_id": {
+      "description": "Stable account/portfolio identifier within the tenant (not broker account id).",
+      "minLength": 1,
+      "title": "Account Id",
+      "type": "string"
+    },
+    "asset_class": {
+      "$ref": "#/$defs/AssetClass"
+    },
+    "client_intent_ref": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional idempotent client reference (stable across retries).",
+      "title": "Client Intent Ref"
+    },
+    "constraints": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OrderConstraints"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "contract_symbol": {
+      "description": "Listed option contract symbol (OCC-style preferred).",
+      "minLength": 1,
+      "title": "Contract Symbol",
+      "type": "string"
+    },
+    "correlation_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional correlation id for end-to-end tracing across services.",
+      "title": "Correlation Id"
+    },
+    "created_at": {
+      "description": "UTC timestamp when created.",
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "currency": {
+      "anyOf": [
+        {
+          "description": "ISO 4217 currency code (upper-case).",
+          "examples": [
+            "USD",
+            "EUR"
+          ],
+          "maxLength": 3,
+          "minLength": 3,
+          "pattern": "^[A-Z]{3}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional quote currency (ISO 4217).",
+      "title": "Currency"
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "enum": [
+            "prod",
+            "staging",
+            "dev",
+            "local"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional environment hint (prod/staging/dev/local).",
+      "title": "Environment"
+    },
+    "expiration": {
+      "description": "Option expiration date (YYYY-MM-DD).",
+      "format": "date",
+      "title": "Expiration",
+      "type": "string"
+    },
+    "intent_id": {
+      "format": "uuid",
+      "title": "Intent Id",
+      "type": "string"
+    },
+    "limit_price": {
+      "anyOf": [
+        {
+          "description": "Base-10 decimal encoded as a JSON string.",
+          "examples": [
+            "0",
+            "1",
+            "10.5",
+            "-0.01"
+          ],
+          "pattern": "^-?\\d+(\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Limit Price"
+    },
+    "meta": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional, producer-provided metadata (non-sensitive, non-broker-specific).",
+      "title": "Meta"
+    },
+    "notional": {
+      "anyOf": [
+        {
+          "description": "Base-10 decimal encoded as a JSON string.",
+          "examples": [
+            "0",
+            "1",
+            "10.5",
+            "-0.01"
+          ],
+          "pattern": "^-?\\d+(\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Quote-currency notional as decimal string.",
+      "title": "Notional"
+    },
+    "options": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional non-broker-specific execution/routing options.",
+      "title": "Options"
+    },
+    "order_type": {
+      "$ref": "#/$defs/OrderType"
+    },
+    "quantity": {
+      "anyOf": [
+        {
+          "description": "Base-10 decimal encoded as a JSON string.",
+          "examples": [
+            "0",
+            "1",
+            "10.5",
+            "-0.01"
+          ],
+          "pattern": "^-?\\d+(\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Base quantity as decimal string.",
+      "title": "Quantity"
+    },
+    "right": {
+      "description": "Option right: call or put.",
+      "enum": [
+        "call",
+        "put"
+      ],
+      "title": "Right",
+      "type": "string"
+    },
+    "schema": {
+      "const": "agenttrader.v2.option_order_intent",
+      "title": "Schema",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "2.0.0",
+      "description": "SemVer contract version for this schema.",
+      "examples": [
+        "2.0.0"
+      ],
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "side": {
+      "$ref": "#/$defs/Side"
+    },
+    "signal_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional linkage to a TradingSignal.",
+      "title": "Signal Id"
+    },
+    "stop_price": {
+      "anyOf": [
+        {
+          "description": "Base-10 decimal encoded as a JSON string.",
+          "examples": [
+            "0",
+            "1",
+            "10.5",
+            "-0.01"
+          ],
+          "pattern": "^-?\\d+(\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stop Price"
+    },
+    "strategy_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Strategy Id"
+    },
+    "strike": {
+      "description": "Option strike price as decimal string.",
+      "examples": [
+        "0",
+        "1",
+        "10.5",
+        "-0.01"
+      ],
+      "pattern": "^-?\\d+(\\.\\d+)?$",
+      "title": "Strike",
+      "type": "string"
+    },
+    "symbol": {
+      "minLength": 1,
+      "title": "Symbol",
+      "type": "string"
+    },
+    "tenant_id": {
+      "description": "Tenant / org identifier.",
+      "minLength": 1,
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "time_in_force": {
+      "$ref": "#/$defs/TimeInForce"
+    }
+  },
+  "required": [
+    "schema",
+    "schema_version",
+    "tenant_id",
+    "created_at",
+    "intent_id",
+    "account_id",
+    "symbol",
+    "asset_class",
+    "side",
+    "order_type",
+    "time_in_force",
+    "contract_symbol",
+    "expiration",
+    "strike",
+    "right"
+  ],
+  "title": "AgentTrader v2 - OptionOrderIntent",
+  "type": "object"
+}
