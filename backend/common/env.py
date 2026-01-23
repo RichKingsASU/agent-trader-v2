@@ -14,113 +14,48 @@ from urllib.parse import urlparse
 
 from backend.common.secrets import get_secret
 
-# NOTE:
-# This module is covered by CI's `python -m compileall .` gate.
-# Keep top-level definitions flush-left (avoid accidental indentation).
+_allow_env_fallback: Optional[bool] = None
 
 
-    - Secret name: APCA_API_SECRET_KEY
-    - No secret access at import time (call-time only).
+def _should_allow_env_fallback() -> bool:
     """
-    v = get_secret("APCA_API_SECRET_KEY", fail_if_missing=required)
-    v = str(v).strip()
-    if v == "":
-        return None
-    return v
+    Global policy: allow falling back to process env vars when Secret Manager
+    isn't available.
 
-
-def get_alpaca_api_base_url(*, required: bool = True) -> str | None:
+    Enabled by `ALLOW_ENV_SECRET_FALLBACK=1`.
     """
-    Returns the Alpaca trading API base URL from Secret Manager (or env fallback as implemented by `get_secret`).
-
-    - Secret name: APCA_API_BASE_URL
-    - Reads ALPACA_ENV only via os.getenv (no secrets involved).
-    - No secret access at import time (call-time only).
-    """
-    _ = os.getenv("ALPACA_ENV")  # read via getenv only (required by platform rules)
-    v = get_secret("APCA_API_BASE_URL", fail_if_missing=required)
-    v = str(v).strip()
-    if v == "":
-        return None
-    return v[:-1] if v.endswith("/") else v
-
-def assert_paper_alpaca_base_url(url: str) -> str:
-    """
-    Read an environment variable with optional Secret Manager fallback.
-
-    Order:
-    - Secret Manager (best-effort; never raises here)
-    - os.environ
-    - default
-    """
-    try:
-        v = get_secret(name, fail_if_missing=False)
-    except Exception:
-        v = ""
-
-    if v is not None and str(v).strip() != "":
-        return str(v).strip()
-
-    env_v = os.getenv(name)
-    if env_v is not None and str(env_v).strip() != "":
-        return str(env_v).strip()
-
-    if required:
-        raise RuntimeError(f"Missing required env var: {name}")
-
-    return default
-
-
-
-def _should_allow_env_fallback_for_name(name: str) -> bool:
-    """
-    Per-variable policy gate for env fallback.
-
-    Today this is a simple global flag; keeping it as a function allows tightening
-    later without changing call sites.
-    """
-    _ = name
-    return _should_allow_env_fallback()
-
-__all__ = [
-    "get_env",
-    "get_firebase_project_id",
-    "get_vertex_ai_model_id",
-    "get_vertex_ai_project_id",
-    "get_vertex_ai_location",
-    "get_alpaca_key_id",
-    "get_alpaca_api_key",
-    "get_alpaca_secret_key",
-    "get_alpaca_api_base_url",
-    "assert_paper_alpaca_base_url",
-]
+    global _allow_env_fallback
+    if _allow_env_fallback is None:
+        _allow_env_fallback = os.getenv("ALLOW_ENV_SECRET_FALLBACK", "0").strip().lower() == "1"
+    return _allow_env_fallback
 
 
 def get_env(name: str, default: Any = None, *, required: bool = False) -> Any:
     """
-    Read an environment variable.
+    Read a runtime configuration value.
 
-    - If set and non-empty, returns its string value.
-    - If missing/empty, returns `default`.
-    - If `required=True` and missing/empty, raises RuntimeError.
+    Order:
+    - Secret Manager via `get_secret` (best-effort; call-time only).
+    - Environment variable (only if ALLOW_ENV_SECRET_FALLBACK=1).
+    - `default`
     """
-    # Secret Manager first (call-time only).
-    value = get_secret(name, fail_if_missing=False)
-    if value is not None and str(value).strip() != "":
-        return value
+    try:
+        value = get_secret(name, fail_if_missing=False)
+    except Exception:
+        value = ""
 
-    # If not found in Secret Manager, check environment variable (only if allowed)
-    if _should_allow_env_fallback_for_name(name):
+    if value is not None and str(value).strip() != "":
+        return str(value).strip()
+
+    if _should_allow_env_fallback():
         env_value = os.getenv(name)
-        if env_value is not None and str(env_value).strip():
+        if env_value is not None and str(env_value).strip() != "":
             return str(env_value).strip()
 
-    # If still not found and required, raise error
     if required:
-        raise RuntimeError(
-            "Missing required env var: FIREBASE_PROJECT_ID (or FIRESTORE_PROJECT_ID / GOOGLE_CLOUD_PROJECT / GCP_PROJECT)"
-        )
-    return ""
+        raise RuntimeError(f"Missing required env var or secret: {name}")
+
+    return default
 
 
 def get_firebase_project_id(*, required: bool = False) -> str:
@@ -149,7 +84,7 @@ def get_firebase_project_id(*, required: bool = False) -> str:
 
 
 def get_vertex_ai_model_id(*, default: str = "gemini-2.5-flash") -> str:
-    return str(get_env("VERTEX_AI_MODEL_ID", default=default))
+    return str(get_env("VERTEX_AI_MODEL_ID", default=default) or default)
 
 
 def get_vertex_ai_project_id(*, required: bool = False) -> str:
@@ -159,10 +94,6 @@ def get_vertex_ai_project_id(*, required: bool = False) -> str:
 
 def get_vertex_ai_location(*, default: str = "us-central1") -> str:
     return str(get_env("VERTEX_AI_LOCATION", default=default) or default)
-
-
-def get_vertex_ai_model_id(*, default: str = "gemini-2.5-flash") -> str:
-    return str(get_env("VERTEX_AI_MODEL_ID", default=default) or default)
 
 
 def get_alpaca_key_id(*, required: bool = True) -> Optional[str]:
@@ -195,12 +126,24 @@ def get_alpaca_secret_key(*, required: bool = True) -> str | None:
             return s
     return None
 
+
 def get_alpaca_api_base_url(*, required: bool = True) -> str | None:
-    # Default to paper URL for safety if not explicitly set.
-    v = get_env("APCA_API_BASE_URL", "https://paper-api.alpaca.markets", required=False)
-    if required and (v is None or str(v).strip() == ""):
-        raise RuntimeError("Missing required env var: APCA_API_BASE_URL")
-    return str(v).strip()
+    """
+    Returns the Alpaca trading API base URL.
+
+    Official Alpaca SDK env var:
+    - APCA_API_BASE_URL
+    """
+    # Safe to read, and some runtimes gate behavior on its presence.
+    _ = os.getenv("ALPACA_ENV")
+
+    v = get_env("APCA_API_BASE_URL", default=None, required=False)
+    if v is None or str(v).strip() == "":
+        if required:
+            raise RuntimeError("Missing required env var: APCA_API_BASE_URL")
+        return None
+    s = str(v).strip()
+    return s[:-1] if s.endswith("/") else s
 
 
 def assert_paper_alpaca_base_url(url: str) -> str:
@@ -236,6 +179,7 @@ def assert_valid_alpaca_base_url(url: str, agent_mode: str, trading_mode: str) -
     """
     Conservative validation helper used by scripts/tests.
     """
+    _ = agent_mode
     raw = str(url or "").strip()
     if not raw:
         raise RuntimeError("Missing required Alpaca base URL (APCA_API_BASE_URL)")
