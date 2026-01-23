@@ -53,6 +53,8 @@ from backend.strategy_engine.signal_writer import write_trading_signal
 from backend.common.vertex_ai import init_vertex_ai_or_log
 from backend.trading.decision_flow import intent_to_order_proposal
 from backend.trading.proposals.emitter import emit_proposal
+from backend.common.ops_log import log_json
+from backend.strategy_engine.daily_target_halt import DailyTargetHaltLatch, read_daily_return_pct, DAILY_TARGET_RETURN_PCT
 
 # Configure logging
 logging.basicConfig(
@@ -60,6 +62,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+_daily_target_latch = DailyTargetHaltLatch()
 
 
 def _env_float(name: str, default: float) -> float:
@@ -120,6 +123,7 @@ async def run_sentiment_strategy(
     correlation_id = os.getenv("CORRELATION_ID") or uuid4().hex
     repo_id = os.getenv("REPO_ID") or "RichKingsASU/agent-trader-v2"
     proposal_ttl_minutes = int(os.getenv("PROPOSAL_TTL_MINUTES") or "5")
+    daily_return_pct = read_daily_return_pct()
     
     logger.info(f"=" * 80)
     logger.info(f"LLM Sentiment Strategy - {today}")
@@ -251,6 +255,42 @@ async def run_sentiment_strategy(
                     reason,
                     signal_payload,
                     False
+                )
+                continue
+
+            # Strategy-local daily profit target halt (stop emitting new intents).
+            if _daily_target_latch.halt_and_log_once(
+                today=today,
+                strategy=strategy_name,
+                daily_return_pct=daily_return_pct,
+                iteration_id=correlation_id,
+                correlation_id=correlation_id,
+                extra={"symbol": symbol},
+            ):
+                reason_halt = f"HALTED_DAILY_TARGET: daily_return_pct={daily_return_pct} target={DAILY_TARGET_RETURN_PCT}"
+                try:
+                    log_json(
+                        intent_type="strategy_decision",
+                        severity="WARNING",
+                        strategy=strategy_name,
+                        symbol=symbol,
+                        action="flat",
+                        reason=reason_halt,
+                        halted=True,
+                        halt_reason="daily_target",
+                        daily_return_pct=daily_return_pct,
+                        daily_target_return_pct=DAILY_TARGET_RETURN_PCT,
+                        correlation_id=correlation_id,
+                    )
+                except Exception:
+                    pass
+                await log_decision(
+                    strategy_id,
+                    symbol,
+                    "flat",
+                    reason_halt,
+                    {"halt_reason": "daily_target", "daily_return_pct": daily_return_pct},
+                    False,
                 )
                 continue
             

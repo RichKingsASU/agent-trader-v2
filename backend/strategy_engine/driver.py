@@ -25,6 +25,7 @@ from .risk import can_place_trade, get_or_create_strategy_definition, log_decisi
 from .strategies.naive_flow_trend import make_decision
 from backend.risk_allocator import RiskAllocator
 from backend.trading.agent_intent.emitter import emit_agent_intent
+from backend.strategy_engine.daily_target_halt import DailyTargetHaltLatch, read_daily_return_pct
 from backend.trading.agent_intent.models import (
     AgentIntent,
     AgentIntentConstraints,
@@ -35,6 +36,7 @@ from backend.trading.agent_intent.models import (
 )
 
 _last_cycle_at_iso: str | None = None
+_daily_target_latch = DailyTargetHaltLatch()
 
 
 def _utc_now_iso() -> str:
@@ -84,6 +86,7 @@ async def run_strategy(execute: bool):
     today = date.today()
     iteration_id = uuid.uuid4().hex
     allocator = RiskAllocator()
+    daily_return_pct = read_daily_return_pct()
 
     try:
         log_json(intent_type="strategy_run_start", severity="INFO", strategy=config.STRATEGY_NAME, date=str(today), iteration_id=iteration_id)
@@ -298,6 +301,35 @@ async def run_strategy(execute: bool):
                 pass
             continue
         else:
+            # Strategy-local daily profit target halt.
+            # If breached, we refuse to emit new order intents for the day.
+            if _daily_target_latch.halt_and_log_once(
+                today=today,
+                strategy=config.STRATEGY_NAME,
+                daily_return_pct=daily_return_pct,
+                iteration_id=iteration_id,
+                extra={"symbol": symbol},
+            ):
+                reason = f"HALTED_DAILY_TARGET: daily_return_pct={daily_return_pct} target={0.04}"
+                await log_decision(strategy_id, symbol, "flat", reason, {"halt_reason": "daily_target", "daily_return_pct": daily_return_pct}, False)
+                try:
+                    log_json(
+                        intent_type="strategy_decision",
+                        severity="WARNING",
+                        symbol=symbol,
+                        strategy=config.STRATEGY_NAME,
+                        action="flat",
+                        reason=reason,
+                        halted=True,
+                        halt_reason="daily_target",
+                        daily_return_pct=daily_return_pct,
+                        daily_target_return_pct=0.04,
+                        iteration_id=iteration_id,
+                    )
+                except Exception:
+                    pass
+                continue
+
             # We proposed an order (even if later blocked by risk / kill switch).
             order_proposals_total.inc(1.0)
             try:
