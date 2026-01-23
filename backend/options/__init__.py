@@ -1,7 +1,16 @@
 """
-Option execution components.
+Protocol-layer option intent models + adapters.
 
-This package intentionally contains shadow-only execution code paths that must NOT
-contact any broker APIs.
+This package is intentionally broker-agnostic and pure/deterministic.
 """
+
+from backend.options.option_intent import OptionOrderIntent, OptionType, Side
+from backend.options.adapter import translate_equity_hedge_to_option_intent
+
+__all__ = [
+    "OptionOrderIntent",
+    "OptionType",
+    "Side",
+    "translate_equity_hedge_to_option_intent",
+]
 

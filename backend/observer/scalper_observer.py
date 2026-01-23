@@ -27,9 +27,11 @@ Human-readable explanation JSON with at least:
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Literal, Mapping, Optional, Sequence
+from uuid import UUID, uuid4, uuid5
 
 try:
     # In production this provides retries for transient Firestore issues.
@@ -42,6 +44,17 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 Decision = Literal["BUY", "SELL", "HOLD", "CLOSE_ALL", "NO_OP"]
+
+try:
+    # Canonical explainability contract (v2).
+    from backend.contracts.v2.explainability import KeyFactor, StrategyExplanation
+    from backend.contracts.v2.types import CONTRACT_VERSION_V2, ExplanationSubjectType
+except Exception:  # pragma: no cover
+    # Keep module importable in minimal/unit-test environments even if contracts deps drift.
+    KeyFactor = None  # type: ignore[assignment]
+    StrategyExplanation = None  # type: ignore[assignment]
+    ExplanationSubjectType = None  # type: ignore[assignment]
+    CONTRACT_VERSION_V2 = "2.0.0"  # type: ignore[assignment]
 
 
 # ---- shared tiny helpers (stdlib-only) ----
@@ -115,6 +128,163 @@ def _first_present(mapping: Mapping[str, Any], keys: Sequence[str]) -> Any:
         if k in mapping and mapping.get(k) is not None:
             return mapping.get(k)
     return None
+
+
+def _truncate(s: str, *, max_len: int) -> str:
+    if len(s) <= int(max_len):
+        return s
+    return s[: max(0, int(max_len) - 1)] + "…"
+
+
+def _safe_uuid(value: Any, *, namespace: UUID) -> UUID:
+    """
+    Convert an arbitrary identifier into a UUID.
+
+    - If value is already a UUID or a UUID string, preserve it.
+    - Otherwise, derive a stable UUIDv5 from the namespace + string value.
+    """
+    if isinstance(value, UUID):
+        return value
+    s = str(value or "").strip()
+    if not s:
+        return uuid5(namespace, "missing")
+    try:
+        return UUID(s)
+    except Exception:
+        return uuid5(namespace, s)
+
+
+def _infer_tenant_id(explanation: Mapping[str, Any]) -> str:
+    for src in (
+        explanation,
+        (explanation.get("execution") or {}).get("attempt") if isinstance(explanation.get("execution"), Mapping) else {},
+        (explanation.get("execution") or {}).get("completed") if isinstance(explanation.get("execution"), Mapping) else {},
+        explanation.get("shadow_trade") if isinstance(explanation.get("shadow_trade"), Mapping) else {},
+    ):
+        if not isinstance(src, Mapping):
+            continue
+        t = src.get("tenant_id") or src.get("tenantId") or src.get("org_id") or src.get("orgId")
+        if t is not None and str(t).strip():
+            return str(t).strip()
+    env = str(os.getenv("TENANT_ID") or os.getenv("ORG_ID") or "").strip()
+    return env or "unknown"
+
+
+def _infer_strategy_id(explanation: Mapping[str, Any]) -> str:
+    for src in (
+        explanation,
+        (explanation.get("execution") or {}).get("attempt") if isinstance(explanation.get("execution"), Mapping) else {},
+        (explanation.get("execution") or {}).get("completed") if isinstance(explanation.get("execution"), Mapping) else {},
+        explanation.get("shadow_trade") if isinstance(explanation.get("shadow_trade"), Mapping) else {},
+    ):
+        if not isinstance(src, Mapping):
+            continue
+        sid = src.get("strategy_id") or src.get("strategyId")
+        if sid is not None and str(sid).strip():
+            return str(sid).strip()
+    # Conservative fallback: stable, operator-recognizable.
+    return str(os.getenv("STRATEGY_ID") or "scalper").strip() or "scalper"
+
+
+def build_explanation_record(
+    *,
+    scalper_explanation: Mapping[str, Any],
+    created_at: datetime | None = None,
+    tenant_id: str | None = None,
+    strategy_id: str | None = None,
+) -> "StrategyExplanation":
+    """
+    Map this observer's derived explanation into the repo's canonical ExplanationRecord contract:
+    `agenttrader.v2.strategy_explanation` (StrategyExplanation).
+    """
+    if StrategyExplanation is None or KeyFactor is None or ExplanationSubjectType is None:  # pragma: no cover
+        raise RuntimeError("contracts_unavailable: backend.contracts.v2.explainability could not be imported")
+
+    now = created_at or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    corr = str(scalper_explanation.get("correlation_id") or "").strip() or None
+    signal_id = str(scalper_explanation.get("signal_id") or "").strip() or None
+
+    ten = str(tenant_id or "").strip() or _infer_tenant_id(scalper_explanation)
+    strat = str(strategy_id or "").strip() or _infer_strategy_id(scalper_explanation)
+
+    ns = UUID("b0d589a5-2c3f-4f14-b3bf-7a813b3f08c4")  # stable namespace for observer-derived ids
+    subject_uuid = _safe_uuid(signal_id or corr or "unknown", namespace=ns)
+
+    decision = str(scalper_explanation.get("decision") or "").strip() or "NO_OP"
+    gates = scalper_explanation.get("safety_gates_triggered") or []
+    if not isinstance(gates, Sequence) or isinstance(gates, (str, bytes)):
+        gates = []
+
+    summary = _truncate(_clean_text(scalper_explanation.get("human_explanation") or ""), max_len=2048) or "No explanation available."
+
+    # Keep narrative optional; include compact structured context for operators.
+    narrative_parts: list[str] = []
+    if corr:
+        narrative_parts.append(f"correlation_id={corr}")
+    if signal_id:
+        narrative_parts.append(f"signal_id={signal_id}")
+    if decision:
+        narrative_parts.append(f"decision={decision}")
+    if gates:
+        narrative_parts.append(f"gates={','.join(str(x) for x in gates)}")
+    narrative = _truncate(" | ".join(narrative_parts), max_len=16384) if narrative_parts else None
+
+    kf: list["KeyFactor"] = []
+    for name, val in (
+        ("decision", decision),
+        ("net_delta", scalper_explanation.get("net_delta")),
+        ("threshold", scalper_explanation.get("threshold")),
+        ("gex", ((scalper_explanation.get("gex") or {}) if isinstance(scalper_explanation.get("gex"), Mapping) else {}).get("value")),
+        (
+            "macro_event_active",
+            ((scalper_explanation.get("macro_regime") or {}) if isinstance(scalper_explanation.get("macro_regime"), Mapping) else {}).get(
+                "macro_event_active"
+            ),
+        ),
+        ("safety_gates_triggered", ", ".join(str(x) for x in gates) if gates else None),
+    ):
+        if val is None:
+            continue
+        kf.append(KeyFactor(name=str(name), value=_clean_text(val, max_len=512)))
+
+    options: dict[str, Any] = {
+        "observer": "scalper-observer",
+        "observer_version": "v1",
+        "derived_from": {
+            "firestore": ["trade_signals", "tradingSignals", "users/{uid}/shadowTradeHistory"],
+            "logs": ["execution.attempt", "execution.completed", "risk.trade_check.allowed", "risk.trade_check.denied"],
+        },
+        "scalper_explanation": dict(scalper_explanation),
+    }
+
+    env = str(os.getenv("ENVIRONMENT") or os.getenv("ENV") or "").strip() or None
+    if env not in {"prod", "staging", "dev", "local"}:
+        env = None
+
+    return StrategyExplanation(
+        schema="agenttrader.v2.strategy_explanation",
+        schema_version=CONTRACT_VERSION_V2,
+        tenant_id=ten,
+        created_at=now,
+        correlation_id=corr,
+        environment=env,
+        meta={
+            "producer": "scalper-observer",
+            "read_only": True,
+        },
+        explanation_id=uuid4(),
+        strategy_id=strat,
+        subject_type=ExplanationSubjectType.trading_signal,
+        subject_id=subject_uuid,
+        summary=summary,
+        narrative=narrative,
+        key_factors=tuple(kf) if kf else None,
+        model_info=None,
+        options=options,
+    )
 
 
 def _extract_payload(doc: dict[str, Any]) -> dict[str, Any]:
@@ -654,7 +824,10 @@ class ScalperObserver:
         explanation_collection: str = "scalper_explanations",
     ) -> dict[str, Any]:
         """
-        Produce a human-readable explanation JSON and optionally persist it as an explanation record.
+        Produce a derived explanation and optionally persist it as an ExplanationRecord.
+
+        Safety: this method is READ-ONLY unless `write_explanation=True` AND
+        `ALLOW_EXPLANATION_WRITES=true` is set in the environment.
         """
         sid = str(signal_id or "").strip() or None
         cid = str(correlation_id or "").strip() or None
@@ -684,8 +857,12 @@ class ScalperObserver:
                 "safety_gates_triggered": ["SIGNAL_NOT_FOUND"],
                 "human_explanation": "No matching signal record was found in Firestore for the provided identifiers/time range.",
             }
-            if write_explanation:
-                self._write_explanation_record(collection=explanation_collection, signal_id=sid or cid or None, explanation=out)
+            if write_explanation and _as_bool(os.getenv("ALLOW_EXPLANATION_WRITES")) is True:
+                try:
+                    rec = build_explanation_record(scalper_explanation=out)
+                    self._write_explanation_record(collection=explanation_collection, record=rec.model_dump(by_alias=True))
+                except Exception:
+                    logger.exception("scalper_observer.explanation_record_write_failed")
             return out
 
         def rk(r: _SignalRecord) -> tuple[int, int, str]:
@@ -891,22 +1068,48 @@ class ScalperObserver:
             "human_explanation": human,
         }
 
-        if write_explanation:
-            self._write_explanation_record(
-                collection=explanation_collection,
-                signal_id=resolved_signal_id,
-                explanation=out,
-            )
+        if write_explanation and _as_bool(os.getenv("ALLOW_EXPLANATION_WRITES")) is True:
+            try:
+                rec = build_explanation_record(scalper_explanation=out)
+                self._write_explanation_record(collection=explanation_collection, record=rec.model_dump(by_alias=True))
+            except Exception:
+                logger.exception("scalper_observer.explanation_record_write_failed")
 
         return out
 
-    def _write_explanation_record(self, *, collection: str, signal_id: str | None, explanation: Mapping[str, Any]) -> None:
+    def explain_record(
+        self,
+        *,
+        signal_id: str | None = None,
+        correlation_id: str | None = None,
+        start_time: datetime | str | None = None,
+        end_time: datetime | str | None = None,
+        write_explanation: bool = False,
+        explanation_collection: str = "strategy_explanations",
+    ) -> "StrategyExplanation":
         """
-        The ONLY allowed write path: persist an explanation record.
+        Produce the canonical ExplanationRecord contract (`agenttrader.v2.strategy_explanation`).
+
+        Safety: no side effects unless `write_explanation=True` AND `ALLOW_EXPLANATION_WRITES=true`.
         """
-        doc_id = str(signal_id or "").strip() or None
+        expl = self.explain(
+            signal_id=signal_id,
+            correlation_id=correlation_id,
+            start_time=start_time,
+            end_time=end_time,
+            write_explanation=False,
+        )
+        rec = build_explanation_record(scalper_explanation=expl)
+        if write_explanation and _as_bool(os.getenv("ALLOW_EXPLANATION_WRITES")) is True:
+            self._write_explanation_record(collection=explanation_collection, record=rec.model_dump(by_alias=True))
+        return rec
+
+    def _write_explanation_record(self, *, collection: str, record: Mapping[str, Any]) -> None:
+        """
+        The ONLY allowed write path: persist an ExplanationRecord (contract-shaped).
+        """
+        doc_id = str(record.get("explanation_id") or "").strip() or None
         if doc_id is None:
-            # Fall back to a deterministic-ish id to avoid generating large random IDs.
             doc_id = datetime.now(timezone.utc).strftime("explain_%Y%m%dT%H%M%SZ")
 
         try:
@@ -914,19 +1117,14 @@ class ScalperObserver:
         except Exception:
             fb_firestore = None  # type: ignore[assignment]
 
-        record: dict[str, Any] = {
-            "signal_id": doc_id,
-            "created_at": (fb_firestore.SERVER_TIMESTAMP if fb_firestore is not None else datetime.now(timezone.utc)),
-            "explanation": dict(explanation),
-        }
-        # Keep root fields queryable.
-        for k in ("correlation_id", "decision", "event_time", "safety_gates_triggered"):
-            if k in explanation:
-                record[k] = explanation.get(k)
+        # Ensure created_at exists even if a caller passed a partial record.
+        payload = dict(record)
+        if "created_at" not in payload or payload.get("created_at") is None:
+            payload["created_at"] = (fb_firestore.SERVER_TIMESTAMP if fb_firestore is not None else datetime.now(timezone.utc))
 
         ref = self._db.collection(str(collection)).document(doc_id)
-        with_firestore_retry(lambda: ref.set(record, merge=True))
+        with_firestore_retry(lambda: ref.set(payload, merge=True))
 
 
-__all__ = ["ScalperObserver"]
+__all__ = ["ScalperObserver", "build_explanation_record"]
 
