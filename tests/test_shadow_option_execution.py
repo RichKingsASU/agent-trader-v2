@@ -5,16 +5,6 @@ from datetime import date, datetime, timezone
 from typing import Any, Mapping
 from uuid import UUID, uuid4
 
-import pytest
-
-try:  # pragma: no cover
-    import google  # noqa: F401
-except Exception as e:  # pragma: no cover
-    pytestmark = pytest.mark.xfail(
-        reason=f"Shadow option execution tests require google-cloud libraries (Firestore): {type(e).__name__}: {e}",
-        strict=False,
-    )
-
 
 class _FakeSnap:
     def __init__(self, *, exists: bool, data: dict[str, Any] | None):
@@ -37,7 +27,8 @@ class _FakeDocRef:
         return _FakeDocRef(store=self.store, path=f"{self.path}/{doc_id}")
 
     def create(self, data: dict[str, Any]) -> None:
-        from google.api_core.exceptions import AlreadyExists
+        class AlreadyExists(Exception):
+            pass
 
         if self.path in self.store:
             raise AlreadyExists("already exists")
@@ -84,6 +75,7 @@ def _make_intent(*, tenant_id: str = "t1", intent_id: UUID | None = None, quanti
         tenant_id=tenant_id,
         created_at=datetime.now(timezone.utc),
         correlation_id="corr_1",
+        intent_id=iid,
         account_id="acct_1",
         strategy_id="s1",
         symbol="SPY",
