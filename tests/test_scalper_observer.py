@@ -7,6 +7,7 @@ from backend.observer.scalper_observer import (
     _extract_net_delta,
     _extract_threshold,
     _infer_safety_gates,
+    build_explanation_record,
 )
 
 
@@ -53,4 +54,25 @@ def test_infer_safety_gates_dedupes_and_sorts() -> None:
         "SHADOW_MODE",
         "THRESHOLD_NOT_CROSSED",
     ]
+
+
+def test_build_explanation_record_contract_shape() -> None:
+    rec = build_explanation_record(
+        scalper_explanation={
+            "signal_id": "sig_123",
+            "correlation_id": "corr_123",
+            "decision": "NO_OP",
+            "human_explanation": "No trade due to threshold not crossed.",
+            "safety_gates_triggered": ["THRESHOLD_NOT_CROSSED"],
+            "net_delta": 0.1,
+            "threshold": 0.15,
+        }
+    )
+    dumped = rec.model_dump(by_alias=True)
+    assert dumped["schema"] == "agenttrader.v2.strategy_explanation"
+    assert dumped["schema_version"] == "2.0.0"
+    assert dumped["tenant_id"]
+    assert dumped["strategy_id"]
+    assert dumped["subject_type"] == "trading_signal"
+    assert dumped["summary"].startswith("No trade due to threshold")
 
