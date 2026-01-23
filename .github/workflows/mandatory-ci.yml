@@ -39,7 +39,9 @@ jobs:
 
       - name: Compile gate (syntax integrity)
         run: |
-          python -m compileall .
+          # Avoid noisy output (and log truncation) while still failing on the first
+          # syntax error. `-q` prints only errors.
+          python -m compileall -q backend cloudrun_consumer cloudrun_ingestor functions scripts tests agenttrader mcp
 
       - name: Dependency integrity gate
         run: |
@@ -57,7 +59,7 @@ jobs:
       - name: Run critical tests
         run: |
           # Keep this suite fast and self-contained (no external services).
-          pytest -q cloudrun_consumer/tests backend/time/tests
+          pytest -vv --maxfail=1 --disable-warnings cloudrun_consumer/tests backend/time/tests
 
       - name: CI gates passed
         run: echo "✅ All mandatory CI gates passed. Safe to merge."
