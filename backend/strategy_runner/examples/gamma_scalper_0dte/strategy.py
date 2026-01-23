@@ -33,6 +33,7 @@ from decimal import Decimal, ROUND_HALF_DOWN, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 from backend.time.nyse_time import NYSE_TZ, is_trading_day, parse_ts, to_nyse, utc_now
 from backend.common.trading_config import get_options_contract_multiplier
+from backend.common.logging import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,28 @@ _latch_trading_day: Optional[date_type] = None
 _latch_entry_used: bool = False
 _latch_flatten_used: bool = False
 _spy_position_qty: Decimal = Decimal("0")  # signed shares: +long, -short
+
+
+def _pnl_target_usd_from_env() -> Optional[Decimal]:
+    v = os.getenv("GAMMA_SCALPER_PNL_TARGET_USD") or os.getenv("PNL_TARGET_USD")
+    if not v:
+        return None
+    try:
+        d = Decimal(str(v))
+        return d if d > Decimal("0") else None
+    except Exception:
+        return None
+
+
+# PnL tracker (observability only; must never affect execution paths)
+try:
+    from backend.strategy_runner.examples.gamma_scalper_0dte.pnl_tracker import PnlTracker  # noqa: WPS433
+
+    _pnl_tracker = PnlTracker(symbol=ALLOWED_UNDERLYING_SYMBOL, pnl_target_usd=_pnl_target_usd_from_env())
+except Exception:  # pragma: no cover - best-effort import
+    _pnl_tracker = None  # type: ignore[assignment]
+
+_pnl_halt_logged: bool = False
 
 
 def get_options_contract_multiplier() -> int:
@@ -124,6 +147,74 @@ def _reset_daily_latch_if_new_trading_day(current_time: datetime) -> None:
         _latch_flatten_used = False
         _spy_position_qty = Decimal("0")
         _last_hedge_time = None  # allow first trade immediately on a new day
+        # Reset PnL observability state daily (must not affect trading decisions).
+        global _pnl_halt_logged
+        _pnl_halt_logged = False
+        try:
+            if _pnl_tracker is not None:
+                _pnl_tracker.reset()
+        except Exception:
+            pass
+
+
+def _infer_mark_price(symbol: str, payload: Dict[str, Any]) -> Decimal:
+    """
+    Best-effort mark price for SPY PnL marking.
+
+    Preference order:
+    - For options events: underlying_price
+    - Otherwise: price
+    - Otherwise: mid(bid, ask) if both present
+    """
+    if symbol != ALLOWED_UNDERLYING_SYMBOL:
+        px = _to_decimal(payload.get("underlying_price"))
+        if px > Decimal("0"):
+            return px
+    px = _to_decimal(payload.get("price", payload.get("mid", payload.get("last", 0))))
+    if px > Decimal("0"):
+        return px
+    bid = _to_decimal(payload.get("bid"))
+    ask = _to_decimal(payload.get("ask"))
+    if bid > Decimal("0") and ask > Decimal("0"):
+        return (bid + ask) / Decimal("2")
+    return Decimal("0")
+
+
+def _emit_pnl_update(*, event_id: str, ts: str, mark_price: Decimal) -> None:
+    """
+    Emit per-event mark-to-market PnL log line (best-effort).
+    """
+    try:
+        if _pnl_tracker is None:
+            return
+        fields = _pnl_tracker.as_log_fields(mark_price=mark_price)
+        log_event(
+            logger,
+            "pnl.update",
+            severity="INFO",
+            strategy="0dte_gamma_scalper",
+            event_id=event_id,
+            ts=ts,
+            **fields,
+        )
+        try:
+            # Emit once when target is reached (observability only).
+            net = fields.get("pnl_net_usd")
+            if _pnl_tracker.should_log_target_reached(net_pnl_usd=net):
+                log_event(
+                    logger,
+                    "pnl.target_reached",
+                    severity="NOTICE",
+                    strategy="0dte_gamma_scalper",
+                    event_id=event_id,
+                    ts=ts,
+                    **fields,
+                )
+        except Exception:
+            pass
+    except Exception:
+        # Never allow observability code to affect execution paths.
+        pass
 
 
 def _create_flatten_order(event_id: str, ts: str, current_time: datetime) -> Dict[str, Any]:
@@ -573,7 +664,7 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     Returns:
         List of order intents, or None/empty list if no action needed
     """
-    global _halted, _spy_hedge_qty, _last_hedge_trade_date
+    global _halted, _spy_hedge_qty, _last_hedge_trade_date, _pnl_halt_logged
 
     # Extract event data
     event_id = event.get("event_id", "")
@@ -586,12 +677,16 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
 
     # Daily hard cap / latch reset (NYSE trading day)
     _reset_daily_latch_if_new_trading_day(current_time)
+
+    # Best-effort mark-to-market price for PnL logging.
+    mark_price = _infer_mark_price(symbol, payload)
     
     # Safety check: Exit all positions at 3:45 PM ET
     if _is_market_close_time(current_time):
         global _latch_flatten_used, _spy_position_qty
         if _latch_flatten_used:
             _portfolio_positions.clear()
+            _emit_pnl_update(event_id=event_id, ts=ts, mark_price=mark_price)
             return []
 
         # If the close-time tick is for the underlying (SPY), only emit the single
@@ -600,10 +695,40 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
             if _spy_position_qty != Decimal("0"):
                 _latch_flatten_used = True
                 flatten = _create_flatten_order(event_id=event_id, ts=ts, current_time=current_time)
+                # Realize PnL on exit/flatten (observability only).
+                try:
+                    if _pnl_tracker is not None:
+                        _pnl_tracker.realize_all(exit_price=mark_price)
+                except Exception:
+                    pass
                 _spy_position_qty = Decimal("0")
                 _portfolio_positions.clear()
+                _emit_pnl_update(event_id=event_id, ts=ts, mark_price=mark_price)
+                if not _pnl_halt_logged:
+                    _pnl_halt_logged = True
+                    log_event(
+                        logger,
+                        "pnl.strategy_halted",
+                        severity="NOTICE",
+                        strategy="0dte_gamma_scalper",
+                        event_id=event_id,
+                        ts=ts,
+                        reason="market_close_exit",
+                    )
                 return [flatten]
             _portfolio_positions.clear()
+            _emit_pnl_update(event_id=event_id, ts=ts, mark_price=mark_price)
+            if not _pnl_halt_logged:
+                _pnl_halt_logged = True
+                log_event(
+                    logger,
+                    "pnl.strategy_halted",
+                    severity="NOTICE",
+                    strategy="0dte_gamma_scalper",
+                    event_id=event_id,
+                    ts=ts,
+                    reason="market_close_exit",
+                )
             return []
 
         # Otherwise (e.g., an options-chain event), emit exit orders for all tracked
@@ -613,10 +738,28 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
             orders.extend(_create_exit_orders(current_time=current_time, event_id=event_id, ts=ts))
         if _spy_position_qty != Decimal("0"):
             orders.append(_create_flatten_order(event_id=event_id, ts=ts, current_time=current_time))
+            # Realize PnL on exit/flatten (observability only). Prefer underlying_price from option payload.
+            try:
+                if _pnl_tracker is not None:
+                    _pnl_tracker.realize_all(exit_price=mark_price)
+            except Exception:
+                pass
             _spy_position_qty = Decimal("0")
 
         _latch_flatten_used = True if orders else True
         _portfolio_positions.clear()
+        _emit_pnl_update(event_id=event_id, ts=ts, mark_price=mark_price)
+        if not _pnl_halt_logged:
+            _pnl_halt_logged = True
+            log_event(
+                logger,
+                "pnl.strategy_halted",
+                severity="NOTICE",
+                strategy="0dte_gamma_scalper",
+                event_id=event_id,
+                ts=ts,
+                reason="market_close_exit",
+            )
         return orders
     
     # Update position tracking
@@ -648,17 +791,20 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     
     # Check if hedging is needed
     if not _should_hedge(net_delta, current_time, threshold):
+        _emit_pnl_update(event_id=event_id, ts=ts, mark_price=mark_price)
         return []
 
     # Hard cap: only one entry (SPY hedge) per NYSE trading day.
     global _latch_entry_used
     if _latch_entry_used:
+        _emit_pnl_update(event_id=event_id, ts=ts, mark_price=mark_price)
         return []
     
     # One-trade-per-day latch (America/New_York date), exit logic is exempt.
     today_et = et_now.date()
     if _last_hedge_trade_date == today_et:
         logger.info("One-trade-per-day latch triggered (date_et=%s)", today_et.isoformat())
+        _emit_pnl_update(event_id=event_id, ts=ts, mark_price=mark_price)
         return []
 
     # Determine underlying symbol for hedging
@@ -670,6 +816,7 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     
     if underlying_price <= Decimal("0"):
         # Can't hedge without valid underlying price
+        _emit_pnl_update(event_id=event_id, ts=ts, mark_price=mark_price)
         return []
     
     # Calculate hedge quantity
@@ -677,6 +824,7 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     logger.info("Computed hedge_qty=%s (SPY shares)", str(hedge_qty))
     
     if hedge_qty == Decimal("0"):
+        _emit_pnl_update(event_id=event_id, ts=ts, mark_price=mark_price)
         return []
     
     # Create and return hedge order
@@ -689,9 +837,17 @@ def on_market_event(event: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
         ts=ts,
     )
 
+    # Register entry on hedge intent creation (observability only).
+    try:
+        if _pnl_tracker is not None:
+            _pnl_tracker.register_entry(signed_qty=hedge_qty, price=underlying_price)
+    except Exception:
+        pass
+
     # Latch: record that we've opened today's single allowed trade.
     _latch_entry_used = True
     _spy_position_qty += hedge_qty
+    _emit_pnl_update(event_id=event_id, ts=ts, mark_price=underlying_price)
 
     return [hedge_order]
 
