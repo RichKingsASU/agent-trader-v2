@@ -53,6 +53,8 @@ from backend.strategy_engine.signal_writer import write_trading_signal
 from backend.common.vertex_ai import init_vertex_ai_or_log
 from backend.trading.decision_flow import intent_to_order_proposal
 from backend.trading.proposals.emitter import emit_proposal
+from backend.common.ops_log import log_json
+from backend.strategy_engine.daily_target_halt import DailyTargetHaltController
 
 # Configure logging
 logging.basicConfig(
@@ -120,6 +122,14 @@ async def run_sentiment_strategy(
     correlation_id = os.getenv("CORRELATION_ID") or uuid4().hex
     repo_id = os.getenv("REPO_ID") or "RichKingsASU/agent-trader-v2"
     proposal_ttl_minutes = int(os.getenv("PROPOSAL_TTL_MINUTES") or "5")
+    tenant_id = (os.getenv("TENANT_ID") or "local").strip() or "local"
+    uid = (os.getenv("USER_ID") or os.getenv("UID") or "").strip()
+    daily_target = DailyTargetHaltController(
+        strategy_name=strategy_name,
+        tenant_id=tenant_id,
+        uid=uid,
+        log_fn=log_json,
+    )
     
     logger.info(f"=" * 80)
     logger.info(f"LLM Sentiment Strategy - {today}")
@@ -253,6 +263,31 @@ async def run_sentiment_strategy(
                     False
                 )
                 continue
+
+            # Strategy-local daily target halt (profit lock): stop emitting new intents once the daily return target is hit.
+            if daily_target.should_halt(symbol=symbol, iteration_id=correlation_id):
+                m = daily_target.last_metrics
+                reason = "DAILY_TARGET_HALT: daily_return_pct >= 0.04 (stop emitting intents)"
+                logger.warning(reason)
+                try:
+                    log_json(
+                        intent_type="strategy_decision",
+                        severity="WARNING",
+                        symbol=symbol,
+                        strategy=strategy_name,
+                        action="flat",
+                        reason=reason,
+                        iteration_id=correlation_id,
+                        blocked=True,
+                        block_reason="daily_target_halt",
+                        daily_return_pct=(float(m.daily_return_pct) if m is not None else None),
+                        daily_target_pct=0.04,
+                        current_equity_usd=(float(m.current_equity_usd) if m is not None else None),
+                        starting_equity_usd=(float(m.starting_equity_usd) if m is not None else None),
+                    )
+                except Exception:
+                    pass
+                break
             
             created_at_utc = datetime.now(timezone.utc)
             side = (
