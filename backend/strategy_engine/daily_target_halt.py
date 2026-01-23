@@ -6,12 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from backend.persistence.firebase_client import get_firestore_client
-from backend.persistence.firestore_retry import with_firestore_retry
-from backend.risk.daily_capital_snapshot import DailyCapitalSnapshotError, DailyCapitalSnapshotStore
-from backend.time.nyse_time import to_nyse
-
-
 DAILY_TARGET_RETURN_PCT: float = 0.04
 
 
@@ -49,6 +43,10 @@ def compute_daily_return_pct(*, current_equity_usd: float, starting_equity_usd: 
 
 
 def _read_user_account_snapshot(*, db: Any, uid: str) -> dict[str, Any]:
+    # Lazy imports: keep this module unit-testable without firebase/firestore deps.
+    from backend.persistence.firestore_retry import with_firestore_retry
+    from backend.risk.daily_capital_snapshot import DailyCapitalSnapshotError
+
     snap = with_firestore_retry(
         lambda: db.collection("users").document(uid).collection("alpacaAccounts").document("snapshot").get()
     )
@@ -71,6 +69,10 @@ def load_daily_target_metrics_from_firestore(*, db: Any, tenant_id: str, uid: st
     tenant_s = str(tenant_id or "").strip()
     if not uid_s or not tenant_s:
         return None
+
+    # Lazy imports: keep this module unit-testable without firebase/firestore deps.
+    from backend.risk.daily_capital_snapshot import DailyCapitalSnapshotStore
+    from backend.time.nyse_time import to_nyse
 
     now = datetime.now(timezone.utc)
     acct = _read_user_account_snapshot(db=db, uid=uid_s)
@@ -142,6 +144,9 @@ class DailyTargetHaltController:
         self._now_mono = now_mono_fn
 
         if metrics_provider is None:
+            # Lazy import: keep module importable without firebase_admin for unit tests.
+            from backend.persistence.firebase_client import get_firestore_client
+
             db = get_firestore_client()
             self._metrics_provider = lambda: load_daily_target_metrics_from_firestore(
                 db=db, tenant_id=self._tenant_id, uid=self._uid
@@ -151,7 +156,7 @@ class DailyTargetHaltController:
 
         self._halted = False
         self._halt_log_emitted = False
-        self._last_check_mono: float = 0.0
+        self._last_check_mono: float | None = None
         self._last_metrics: DailyTargetMetrics | None = None
 
     @property
@@ -171,7 +176,7 @@ class DailyTargetHaltController:
             return False
 
         now = float(self._now_mono())
-        if self._last_check_mono and (now - self._last_check_mono) < self._check_interval_s:
+        if self._last_check_mono is not None and (now - self._last_check_mono) < self._check_interval_s:
             m = self._last_metrics
             if m is not None and float(m.daily_return_pct) >= self._threshold:
                 self._halted = True
