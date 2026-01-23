@@ -1,20 +1,16 @@
 """
-Options utilities (deterministic, in-memory).
+Protocol-layer option intent models + adapters.
 
-This package is intentionally:
-- network-free (no broker / market data calls)
-- execution-free (no order placement)
-- deterministic and explainable (stable tie-breakers, explicit reasons)
+This package is intentionally broker-agnostic and pure/deterministic.
 """
 
-from .selector import (  # noqa: F401
-    ContractSelectionError,
-    MarketSnapshot,
-    OptionOrderIntentLike,
-    OptionSelectorConfig,
-    OptionType,
-    ResolvedOptionContract,
-    SyntheticOptionQuote,
-    resolve_option_contract,
-)
+from backend.options.option_intent import OptionOrderIntent, OptionType, Side
+from backend.options.adapter import translate_equity_hedge_to_option_intent
+
+__all__ = [
+    "OptionOrderIntent",
+    "OptionType",
+    "Side",
+    "translate_equity_hedge_to_option_intent",
+]
 
