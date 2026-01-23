@@ -33,6 +33,7 @@ from backend.trading.agent_intent.models import (
     IntentKind,
     IntentSide,
 )
+from .daily_target_halt import DailyTargetHaltController
 
 _last_cycle_at_iso: str | None = None
 
@@ -84,6 +85,14 @@ async def run_strategy(execute: bool):
     today = date.today()
     iteration_id = uuid.uuid4().hex
     allocator = RiskAllocator()
+    tenant_id = (os.getenv("TENANT_ID") or "local").strip() or "local"
+    uid = (os.getenv("USER_ID") or os.getenv("UID") or "").strip()
+    daily_target = DailyTargetHaltController(
+        strategy_name=config.STRATEGY_NAME,
+        tenant_id=tenant_id,
+        uid=uid,
+        log_fn=log_json,
+    )
 
     try:
         log_json(intent_type="strategy_run_start", severity="INFO", strategy=config.STRATEGY_NAME, date=str(today), iteration_id=iteration_id)
@@ -312,6 +321,40 @@ async def run_strategy(execute: bool):
                 )
             except Exception:
                 pass
+
+        # Strategy-local daily target halt (profit lock): stop emitting new intents once the daily return target is hit.
+        if daily_target.should_halt(symbol=symbol, iteration_id=iteration_id):
+            m = daily_target.last_metrics
+            strategy_cycles_skipped_total.inc(1.0)
+            reason = "DAILY_TARGET_HALT: daily_return_pct >= 0.04 (stop emitting intents)"
+            await log_decision(
+                strategy_id,
+                symbol,
+                "flat",
+                reason,
+                {
+                    "daily_return_pct": (float(m.daily_return_pct) if m is not None else None),
+                    "daily_target_pct": 0.04,
+                    "current_equity_usd": (float(m.current_equity_usd) if m is not None else None),
+                    "starting_equity_usd": (float(m.starting_equity_usd) if m is not None else None),
+                },
+                False,
+            )
+            try:
+                log_json(
+                    intent_type="strategy_decision",
+                    severity="WARNING",
+                    symbol=symbol,
+                    strategy=config.STRATEGY_NAME,
+                    action="flat",
+                    reason=reason,
+                    iteration_id=iteration_id,
+                    blocked=True,
+                    block_reason="daily_target_halt",
+                )
+            except Exception:
+                pass
+            break
 
         # Centralized decision flow:
         # - strategies emit intent only (no qty/notional)
