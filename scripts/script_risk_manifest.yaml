@@ -1,123 +1,48 @@
-# Script Risk Manifest
-#
-# Scope (explicit; no globs):
-# - Enumerate scripts under scripts/** excluding:
-#   - scripts/lib/**
-#   - scripts/ci/**
-#   - *.md
-#
-# Requirements:
-# - Every in-scope script path appears exactly once across categories.
-# - Every manifest path must exist in-repo.
-# - Categories are conservative: prefer MUST_LOCK over SAFE if unsure.
-#
-# Categories:
-# - SAFE: read-only validation/reporting scripts suitable for automation.
-# - MUST_LOCK: scripts that touch external systems or write artifacts/config and should only run in controlled contexts.
-# - NEVER_AUTO: scripts that are interactive, long-running, mutate prod-like state, execute arbitrary commands, deploy/scale, or place orders.
-#
-SAFE:
-  - scripts/blueprint_generator.sh
-  - scripts/check_production_readiness.sh
-  - scripts/ci_import_gate.sh
-  - scripts/ci_safety_guard.sh
-  - scripts/ci_yaml_validate.sh
-  - scripts/deploy_report.sh
-  - scripts/generate_blueprint.py
-  - scripts/generate_blueprint.sh
-  - scripts/import_runtime_modules.py
-  - scripts/kubectl_status.sh
-  - scripts/ops_post_market.sh
-  - scripts/ops_pre_market.sh
-  - scripts/predeploy_guard.sh
-  - scripts/preflight.sh
-  - scripts/readiness_check.sh
-  - scripts/report_v2_deploy.py
-  - scripts/report_v2_deploy.sh
-  - scripts/set_google_application_credentials.sh
-  - scripts/smoke.sh
-  - scripts/smoke_check_imports.py
-  - scripts/smoke_cloudshell.sh
-  - scripts/snapshot_artifacts.sh
-  - scripts/test_ai_trade_analysis.py
-  - scripts/test_macro_scraper.py
-  - scripts/test_trade_executor.py
-  - scripts/validate_alpaca_account.py
-  - scripts/validate_ci_layout.sh
-  - scripts/validate_cloudbuild_configs.sh
-  - scripts/validate_cloudbuild_yaml.sh
-  - scripts/validate_day1_ops.sh
-  - scripts/validate_intent_logging.py
-  - scripts/validate_k8s_yaml.sh
-  - scripts/validate_production_lock.sh
-  - scripts/verify_observability.sh
-  - scripts/verify_risk_management.py
-  - scripts/verify_saas_migration.sh
-  - scripts/verify_service_discovery.sh
-  - scripts/verify_zero_trust.py
+# Define scripts and their associated risk policies.
+# This file is used to classify scripts based on their potential impact.
 
-MUST_LOCK:
-  - scripts/audit_cloudrun.sh
-  - scripts/backup_cluster_state.sh
-  - scripts/calc_monthly_performance_fees.py
-  - scripts/calc_monthly_strategy_perf_snapshot.py
-  - scripts/capture_config_snapshot.sh
-  - scripts/capture_lkg.sh
-  - scripts/data_plane_smoke_test.py
-  - scripts/data_plane_smoke_test.sh
-  - scripts/demo_whale_flow_service.py
-  - scripts/dlq_pull_sample.sh
-  - scripts/ingest_market_data.py
-  - scripts/ledger_pnl_demo.py
-  - scripts/realtime_test.sh
-  - scripts/replay_from_logs.py
-  - scripts/replay_ticks_to_candles.py
-  - scripts/rollout_guard.sh
-  - scripts/run_backtest_example.py
-  - scripts/run_congressional_ingest.sh
-  - scripts/run_experiment.py
-  - scripts/update_execution_board.py
+# Risk levels:
+#   SAFE: Scripts that pose minimal risk.
+#   HIGH: Scripts that could impact services or require careful monitoring.
+#   MUST_LOCK: Scripts that require explicit local opt-in and pose significant risk.
 
-NEVER_AUTO:
-  - scripts/01_setup_database.sql
-  - scripts/02_setup_paper_trades_table.sql
-  - scripts/agent_executor.py
-  - scripts/deploy_cloudrun_ingestor.sh
-  - scripts/deploy_firestore_scale.sh
-  - scripts/deploy_v2.sh
-  - scripts/deploy_v2_legacy.sh
-  - scripts/dev_all.sh
-  - scripts/dev_backend.sh
-  - scripts/dev_frontend.sh
-  - scripts/dlq_replay.sh
-  - scripts/emit_chaos_pubsub_events.py
-  - scripts/infra/provision_sandbox.sh
-  - scripts/infra/startup.sh
-  - scripts/init_shadow_mode_config.py
-  - scripts/insert_paper_order.py
-  - scripts/kubectl_logs.sh
-  - scripts/kubectl_scale.sh
-  - scripts/mock_market_feed.py
-  - scripts/mock_options_feed.py
-  - scripts/place_test_order.py
-  - scripts/populate_institutional_features_data.py
-  - scripts/populate_whale_flow_test_data.py
-  - scripts/restore_lkg.sh
-  - scripts/run-all-streamers.sh
-  - scripts/run-alpaca-minute-loop.sh
-  - scripts/run-alpaca-quotes-stream.sh
-  - scripts/run-backend-dev.sh
-  - scripts/run-dexter-research.sh
-  - scripts/run-ticker-service.sh
-  - scripts/run_gemini_with_master_prompt.sh
-  - scripts/run_sector_rotation_strategy.py
-  - scripts/run_sentiment_strategy.sh
-  - scripts/run_stress_test.py
-  - scripts/seed_sentiment_data.py
-  - scripts/seed_whale_flow_data.py
-  - scripts/setup_cloud_run_ingest.sh
-  - scripts/setup_cloud_run_strategy_engine.sh
-  - scripts/setup_cloud_run_stream_bridge.sh
-  - scripts/setup_cloud_scheduler_ingest.sh
-  - scripts/tag_production_lock.sh
-  - scripts/tag_release.sh
+scripts:
+  # MUST_LOCK scripts: Require explicit local opt-in and pose significant risk.
+  scripts/agent_executor.py:
+    risk: MUST_LOCK
+    note: "Runs arbitrary shell commands from a task file (high blast radius)."
+  scripts/place_test_order.py:
+    risk: MUST_LOCK
+    note: "Places a broker order (even if paper)."
+  scripts/insert_paper_order.py:
+    risk: MUST_LOCK
+    note: "Places a broker order and/or writes trading artifacts."
+  scripts/submit_option_intent_paper.py:
+    risk: MUST_LOCK
+    note: "Submits option intents for paper execution, requiring explicit unlock."
+  backend/strategy_service/scripts/insert_paper_order.py:
+    risk: MUST_LOCK
+    note: "Writes paper order rows to the database."
+  scripts/init_shadow_mode_config.py:
+    risk: MUST_LOCK
+    note: "Mutates runtime safety posture (shadow mode) in Firestore."
+
+  # HIGH risk scripts: Blocked in CI/runtime-like contexts.
+  scripts/emit_chaos_pubsub_events.py:
+    risk: HIGH
+    note: "Emits events to an HTTP endpoint; can impact services."
+  cloudrun_consumer/scripts/load_test_pubsub_push.py:
+    risk: HIGH
+    note: "Load tests an HTTP endpoint; can cause denial-of-service."
+  scripts/seed_whale_flow_data.py:
+    risk: HIGH
+    note: "Writes test data to Firestore."
+  scripts/seed_sentiment_data.py:
+    risk: HIGH
+    note: "Writes seed data (may mutate Firestore)."
+  scripts/populate_whale_flow_test_data.py:
+    risk: HIGH
+    note: "Populates test data (mutating operation)."
+  scripts/populate_institutional_features_data.py:
+    risk: HIGH
+    note: "Populates institutional features data (mutating operation)."

@@ -102,6 +102,11 @@ def _policies() -> dict[str, Policy]:
             risk=ScriptRisk.MUST_LOCK,
             note="Mutates runtime safety posture (shadow mode) in Firestore.",
         ),
+        # Add the new script policy here
+        "scripts/submit_option_intent_paper.py": Policy(
+            risk=ScriptRisk.MUST_LOCK,
+            note="Submits option intents for paper execution, requiring explicit unlock.",
+        ),
         # HIGH: blocked in CI/runtime-like contexts.
         "scripts/emit_chaos_pubsub_events.py": Policy(
             risk=ScriptRisk.HIGH,
