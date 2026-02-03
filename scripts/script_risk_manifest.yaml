@@ -77,6 +77,7 @@ MUST_LOCK:
   - scripts/run_congressional_ingest.sh
   - scripts/run_experiment.py
   - scripts/update_execution_board.py
+  - scripts/place_test_option_order.py
 
 NEVER_AUTO:
   - scripts/01_setup_database.sql

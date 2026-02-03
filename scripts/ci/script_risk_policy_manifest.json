@@ -272,6 +272,11 @@
       "requires_exec_guard": true
     },
     {
+      "path": "scripts/place_test_option_order.py",
+      "category": "execution",
+      "requires_exec_guard": true
+    },
+    {
       "path": "scripts/populate_institutional_features_data.py",
       "category": "dev",
       "requires_exec_guard": false

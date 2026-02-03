@@ -90,6 +90,10 @@ def _policies() -> dict[str, Policy]:
             risk=ScriptRisk.MUST_LOCK,
             note="Places a broker order (even if paper).",
         ),
+        "scripts/place_test_option_order.py": Policy(
+            risk=ScriptRisk.MUST_LOCK,
+            note="Places a broker option order (even if paper).",
+        ),
         "scripts/insert_paper_order.py": Policy(
             risk=ScriptRisk.MUST_LOCK,
             note="Places a broker order and/or writes trading artifacts.",
