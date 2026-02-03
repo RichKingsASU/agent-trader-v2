@@ -1,25 +1,4 @@
-"""
-0DTE Gamma Scalper Strategy
 
-This strategy implements a delta-neutral gamma scalping approach for 0DTE options.
-
-Core Logic:
-1. Calculate Net Portfolio Delta from all open positions
-2. If abs(Net Delta) > HEDGING_THRESHOLD (0.15), trigger hedge trade to neutralize delta
-3. Ingest GEX (Gamma Exposure) data from Firestore
-4. If GEX is negative, increase hedging frequency (tighter threshold)
-5. Exit all positions at 3:45 PM ET to avoid Market-on-Close volatility
-
-Safety:
-- All calculations use Decimal for precision
-- Time-based position exit at 3:45 PM ET
-- Dynamic hedging based on market regime (GEX)
-
-Contract:
-- implement: on_market_event(event: dict) -> list[dict] | dict | None
-- input event is a JSON object matching backend.strategy_runner.protocol.MarketEvent
-- output intents are JSON objects matching backend.strategy_runner.protocol.OrderIntent
-"""
 
 from __future__ import annotations
 
@@ -31,78 +10,7 @@ from datetime import datetime, time
 from datetime import date as date_type
 from decimal import Decimal, ROUND_HALF_DOWN, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
-from backend.time.nyse_time import NYSE_TZ, is_trading_day, parse_ts, to_nyse, utc_now
-from backend.common.trading_config import get_options_contract_multiplier
-from backend.common.logging import log_event
 
-logger = logging.getLogger(__name__)
-
-# Strategy configuration
-HEDGING_THRESHOLD = Decimal("0.15")  # Base delta threshold for hedging
-HEDGING_THRESHOLD_NEGATIVE_GEX = Decimal("0.10")  # Tighter threshold when GEX is negative
-EXIT_TIME_ET = time(15, 45, 0)  # 3:45 PM ET - exit time to avoid MOC volatility
-ALLOWED_UNDERLYING_SYMBOL = "SPY"
-
-# Global state (persists across market events in the same run)
-_portfolio_positions: Dict[str, Dict[str, Any]] = {}
-_last_gex_value: Optional[Decimal] = None
-_last_gex_update: Optional[datetime] = None
-_last_hedge_time: Optional[datetime] = None
-_macro_event_active: bool = False
-_stop_loss_multiplier: Decimal = Decimal("1.0")
-_position_size_multiplier: Decimal = Decimal("1.0")
-_last_macro_check: Optional[datetime] = None
-_last_hedge_trade_date: Optional[date] = None  # America/New_York date of last hedge intent
-_spy_hedge_qty: Decimal = Decimal("0")  # Running SPY hedge share exposure from emitted intents
-_halted: bool = False  # Hard halt latch after 15:45 ET exit logic
-
-# Daily safety latch (NYSE trading day scoped)
-_latch_trading_day: Optional[date_type] = None
-_latch_entry_used: bool = False
-_latch_flatten_used: bool = False
-_spy_position_qty: Decimal = Decimal("0")  # signed shares: +long, -short
-
-
-def _pnl_target_usd_from_env() -> Optional[Decimal]:
-    v = os.getenv("GAMMA_SCALPER_PNL_TARGET_USD") or os.getenv("PNL_TARGET_USD")
-    if not v:
-        return None
-    try:
-        d = Decimal(str(v))
-        return d if d > Decimal("0") else None
-    except Exception:
-        return None
-
-
-# PnL tracker (observability only; must never affect execution paths)
-try:
-    from backend.strategy_runner.examples.gamma_scalper_0dte.pnl_tracker import PnlTracker  # noqa: WPS433
-
-    _pnl_tracker = PnlTracker(symbol=ALLOWED_UNDERLYING_SYMBOL, pnl_target_usd=_pnl_target_usd_from_env())
-except Exception:  # pragma: no cover - best-effort import
-    _pnl_tracker = None  # type: ignore[assignment]
-
-_pnl_halt_logged: bool = False
-
-
-def get_options_contract_multiplier() -> int:
-    """
-    Options contract multiplier (shares per contract).
-
-    Kept as a function for test/implementation stability; default is 100.
-    """
-    return 100
-
-
-def _to_decimal(value: Any) -> Decimal:
-    """Safely convert a value to Decimal with precision."""
-    if value is None:
-        return Decimal("0")
-    if isinstance(value, Decimal):
-        return value
-    if isinstance(value, (int, float, str)):
-        return Decimal(str(value))
-    return Decimal("0")
 
 
 def _parse_timestamp(ts_str: str) -> datetime:
@@ -563,7 +471,6 @@ def _create_exit_orders(current_time: datetime, event_id: str, ts: str) -> List[
     return orders
 
 
-from __future__ import annotations
 
 import json
 import logging
