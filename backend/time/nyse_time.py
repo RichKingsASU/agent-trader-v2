@@ -204,6 +204,9 @@ def is_trading_day(date_ny: date | datetime) -> bool:
     True if NYSE is open for a regular session on the given NY date.
 
     Fallback (no exchange calendar): Mon–Fri only (does NOT account for holidays).
+    
+    If exchange calendar is available but the date is outside its supported range,
+    returns False (treat out-of-bounds dates as non-trading days for safety).
     """
 
     d = _as_ny_date(date_ny)
@@ -214,7 +217,11 @@ def is_trading_day(date_ny: date | datetime) -> bool:
     # exchange_calendars uses pandas sessions under the hood; keep imports local.
     import pandas as pd
 
-    return bool(backend.cal.is_session(pd.Timestamp(d)))
+    try:
+        return bool(backend.cal.is_session(pd.Timestamp(d)))
+    except Exception:  # Catches DateOutOfBounds and other calendar errors
+        # Out-of-bounds or invalid dates are treated as non-trading days
+        return False
 
 
 def market_open_dt(date_ny: date | datetime) -> datetime:
