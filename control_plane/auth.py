@@ -7,7 +7,7 @@ Only allows access to operators on the email allowlist.
 import os
 from typing import Optional
 from fastapi import HTTPException, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from authlib.integrations.starlette_client import OAuth
 from starlette.middleware.sessions import SessionMiddleware
@@ -74,14 +74,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         
         # Allow public routes
-        if path.startswith("/auth/") or path == "/health" or path == "/":
+        if path.startswith("/auth/") or path == "/health":
             return await call_next(request)
         
-        # Require auth for /api/* routes
-        if path.startswith("/api/"):
-            try:
-                await require_auth(request)
-            except HTTPException as e:
-                return RedirectResponse(url="/auth/login", status_code=302)
+        # Enforce auth for all other routes
+        try:
+            await require_auth(request)
+        except HTTPException as e:
+            # For API routes, return 401 so the frontend can handle it
+            if path.startswith("/api/"):
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": e.detail},
+                )
+            # For page routes (like root), redirect to login
+            return RedirectResponse(url="/auth/login", status_code=302)
         
         return await call_next(request)

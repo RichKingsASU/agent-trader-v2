@@ -11,16 +11,18 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from control_plane.config import (
     APP_NAME,
     APP_VERSION,
     CORS_ORIGINS,
     SESSION_SECRET,
+    GOOGLE_REDIRECT_URI,
     validate_config,
 )
 from control_plane.auth import AuthMiddleware, oauth
-from control_plane.routes import status, intent
+from control_plane.routes import status, intent, account
 
 # Configure logging
 logging.basicConfig(
@@ -28,6 +30,19 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+class ProxyHeadersMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to respect X-Forwarded-Proto from load balancers (Cloud Run).
+    Ensures that request.url_for generates https:// URLs.
+    """
+    async def dispatch(self, request: Request, call_next):
+        # Respect X-Forwarded-Proto from Cloud Run load balancer
+        proto = request.headers.get("x-forwarded-proto")
+        if proto:
+            request.scope["scheme"] = proto
+        return await call_next(request)
 
 
 @asynccontextmanager
@@ -60,16 +75,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add session middleware (required for OAuth)
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=SESSION_SECRET,
-    max_age=3600,  # 1 hour
-    same_site="lax",
-    https_only=True,
-)
+# Include routers
+app.include_router(status.router, prefix="/api", tags=["status"])
+app.include_router(intent.router, prefix="/api", tags=["intent"])
+app.include_router(account.router, prefix="/api", tags=["account"])
 
-# Add CORS middleware
+# ═══════════════════════════════════════════════════════════════════════════════
+# MIDDLEWARE STACK (ORDER MATTERS)
+# Outermost handlers run FIRST for requests and LAST for responses.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# 3. Authentication logic
+app.add_middleware(AuthMiddleware)
+
+# 2. CORS (Pre-flight checks)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -78,12 +97,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Add authentication middleware
-app.add_middleware(AuthMiddleware)
+# 1. Sessions (Must see HTTPS scheme to set Secure cookies)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET,
+    max_age=900,  # 15 minutes
+    same_site="lax",
+    https_only=True,
+)
 
-# Include routers
-app.include_router(status.router, prefix="/api", tags=["status"])
-app.include_router(intent.router, prefix="/api", tags=["intent"])
+# 0. Proxy Headers (Fixes request.scope['scheme'] for outermost layers)
+app.add_middleware(ProxyHeadersMiddleware)
+
 
 
 # --- Authentication Routes ---
@@ -91,7 +116,10 @@ app.include_router(intent.router, prefix="/api", tags=["intent"])
 @app.get("/auth/login")
 async def login(request: Request):
     """Initiate Google OAuth login flow."""
-    redirect_uri = request.url_for("auth_callback")
+    # Use the configured redirect URI if available, otherwise fall back to dynamic lookup
+    # This ensures HTTPS is used even when behind a proxy
+    redirect_uri = GOOGLE_REDIRECT_URI or request.url_for("auth_callback")
+    logger.info(f"Initiating login with redirect_uri: {redirect_uri}")
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 
@@ -99,6 +127,7 @@ async def login(request: Request):
 async def auth_callback(request: Request):
     """Handle Google OAuth callback."""
     try:
+        # authlib automatically uses the redirect_uri from the OAuth state
         token = await oauth.google.authorize_access_token(request)
         user_info = token.get("userinfo")
         
@@ -126,9 +155,14 @@ async def auth_callback(request: Request):
         
     except Exception as e:
         logger.error(f"OAuth callback error: {e}")
+        # Log specific details for debugging mismatching_state
+        logger.error(f"Request URL: {request.url}")
+        logger.error(f"Headers: {dict(request.headers)}")
+        logger.error(f"Session data: {request.session}")
+
         return JSONResponse(
             status_code=500,
-            content={"error": "Authentication failed"},
+            content={"error": "Authentication failed", "detail": str(e)},
         )
 
 
@@ -153,12 +187,17 @@ async def health_check():
 
 @app.get("/")
 async def root():
-    """Root endpoint."""
+    """Serve the frontend SPA root."""
+    # Check if frontend exists (frontend_dist defined later, but simplistic check here or import)
+    # Re-resolving path here to be safe given local scope order
+    dist_path = os.path.join(os.path.dirname(__file__), "frontend/dist")
+    if os.path.exists(os.path.join(dist_path, "index.html")):
+        return FileResponse(os.path.join(dist_path, "index.html"))
+    
     return {
         "service": APP_NAME,
         "version": APP_VERSION,
-        "message": "Operator Control Plane - Paper Trading Only",
-        "auth_required": True,
+        "message": "Operator Control Plane - API Mode (Frontend not found)",
     }
 
 

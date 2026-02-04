@@ -1,0 +1,8 @@
+steps:
+  # Build the image using the specific Dockerfile
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'us-central1-docker.pkg.dev/agenttrader-prod/agent-trader/agenttrader-control-plane:latest', '-f', 'control_plane/Dockerfile', '.']
+
+# Push the image to Artifact Registry
+images:
+  - 'us-central1-docker.pkg.dev/agenttrader-prod/agent-trader/agenttrader-control-plane:latest'

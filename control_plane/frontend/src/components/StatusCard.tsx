@@ -41,6 +41,12 @@ interface SystemStatus {
     apca_url_is_paper: boolean;
     timestamp: string;
     operator: string;
+    market_clock: {
+        is_open: boolean;
+        next_open: string;
+        next_close: string;
+        timestamp: string;
+    } | null;
 }
 
 export const StatusCard = ({ status }: { status: SystemStatus | null }) => {

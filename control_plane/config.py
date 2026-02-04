@@ -28,8 +28,10 @@ EXECUTION_HALTED = os.environ.get("EXECUTION_HALTED", "0") == "1"
 EXEC_GUARD_UNLOCK = os.environ.get("EXEC_GUARD_UNLOCK", "0") == "1"
 EXECUTION_CONFIRM_TOKEN = os.environ.get("EXECUTION_CONFIRM_TOKEN", "")
 
-# Alpaca configuration (for validation only - never used directly)
+# Alpaca configuration
 APCA_API_BASE_URL = os.environ.get("APCA_API_BASE_URL", "")
+APCA_API_KEY_ID = os.environ.get("APCA_API_KEY_ID", "")
+APCA_API_SECRET_KEY = os.environ.get("APCA_API_SECRET_KEY", "")
 PAPER_API_URL = "https://paper-api.alpaca.markets"
 
 # --- Application Configuration ---
@@ -63,6 +65,13 @@ def validate_config() -> List[str]:
     
     if SESSION_SECRET == "CHANGE_ME_IN_PRODUCTION":
         errors.append("SESSION_SECRET must be changed in production")
+    
+    if not APCA_API_KEY_ID:
+        errors.append("APCA_API_KEY_ID not set")
+    
+    if not APCA_API_SECRET_KEY:
+        errors.append("APCA_API_SECRET_KEY not set")
+
     
     return errors
 
