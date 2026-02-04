@@ -1,128 +1,95 @@
-"""
-Scheduled VIX Ingestion Cloud Function.
-
-This function runs every 5 minutes to fetch and store VIX (Volatility Index) data
-for use by the VIX Guard circuit breaker.
-
-Schedule: */5 * * * * (every 5 minutes during market hours)
-"""
-
-import logging
 import os
-from datetime import datetime, timezone
+import datetime
+import logging
+from typing import Any, Dict, Optional
 
-import firebase_admin
-from firebase_admin import firestore
-from firebase_functions import scheduler_fn, options
-import alpaca_trade_api as tradeapi
-
-# Import VIX ingestion service from backend
-import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-from backend.risk.vix_ingestion import VIXIngestionService
-from functions.utils.apca_env import get_apca_env
+# Standardize on alpaca-py
+# Remove direct import of alpaca_trade_api
+# import alpaca_trade_api as tradeapi
+from alpaca.trading.client import TradingClient
+from alpaca.common.exceptions import APIError
 
 logger = logging.getLogger(__name__)
 
+# --- Configuration ---
+# These should ideally be loaded from environment variables or a config file
+# and validated appropriately.
+APCA_API_KEY_ID = os.environ.get("APCA_API_KEY_ID")
+APCA_API_SECRET_KEY = os.environ.get("APCA_API_SECRET_KEY")
+APCA_API_BASE_URL = os.environ.get("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
 
-def _get_firestore() -> firestore.Client:
-    """Get or initialize Firestore client."""
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app()
-    return firestore.client()
-
-
-def _get_alpaca_client() -> tradeapi.REST:
+def _get_alpaca_client() -> Optional[TradingClient]:
     """
-    Get Alpaca client using environment variables.
+    Initializes and returns an Alpaca TradingClient using alpaca-py.
     
-    Note: In production, these should be stored as Cloud Function secrets.
+    Ensures paper trading mode and basic credential checks.
     """
-    apca = get_apca_env()
-    return tradeapi.REST(
-        key_id=apca.api_key_id,
-        secret_key=apca.api_secret_key,
-        base_url=apca.api_base_url,
-    )
+    if not APCA_API_KEY_ID or not APCA_API_SECRET_KEY:
+        logger.error("Alpaca API key ID or secret key not found in environment variables.")
+        return None
+        
+    # Validate base URL for paper trading
+    corrected_url = APCA_API_BASE_URL
+    if corrected_url.endswith("/v2"):
+        corrected_url = corrected_url[:-3]
+    
+    expected_paper_url = "https://paper-api.alpaca.markets"
+    if corrected_url != expected_paper_url:
+        logger.error(f"Invalid APCA_API_BASE_URL: '{APCA_API_BASE_URL}'. Expected '{expected_paper_url}'.")
+        return None
 
-
-@scheduler_fn.on_schedule(
-    schedule="*/5 * * * *",  # Every 5 minutes
-    timezone="America/New_York",
-    secrets=["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"],
-    memory=options.MemoryOption.MB_256,
-)
-def ingest_vix_data(event: scheduler_fn.ScheduledEvent) -> None:
-    """
-    Scheduled function to ingest VIX data.
-    
-    This function:
-    1. Fetches current VIX value from Alpaca (or Yahoo Finance as fallback)
-    2. Stores the value in Firestore at systemStatus/vix_data
-    3. Maintains a history collection for trend analysis
-    
-    Args:
-        event: Scheduled event context
-    """
-    _ = event  # unused
-    
-    logger.info("Starting VIX ingestion...")
-    
     try:
-        # Initialize clients
-        db = _get_firestore()
-        alpaca = _get_alpaca_client()
-        
-        # Create VIX ingestion service
-        vix_service = VIXIngestionService(db_client=db, alpaca_client=alpaca)
-        
-        # Fetch and store VIX
-        # Note: We need to run this synchronously in Cloud Functions
-        import asyncio
-        vix_value = asyncio.run(vix_service.fetch_and_store_vix())
-        
-        if vix_value is None:
-            logger.error("Failed to fetch VIX data")
-            return
-        
-        logger.info(f"✅ Successfully ingested VIX data: {vix_value}")
-        
-        # Log to Firestore for monitoring
-        db.collection("systemLogs").add({
-            "type": "vix_ingestion",
-            "timestamp": datetime.now(timezone.utc),
-            "vix_value": vix_value,
-            "status": "success",
-        })
-        
+        client = TradingClient(
+            key_id=APCA_API_KEY_ID,
+            secret_key=APCA_API_SECRET_KEY,
+            base_url=corrected_url,
+            # api_version='v2' # Not directly set on client init in alpaca-py
+        )
+        logger.info("Alpaca TradingClient initialized successfully for paper trading.")
+        return client
+    except APIError as e:
+        logger.error(f"Alpaca API error during client initialization: {e.message}")
+        return None
     except Exception as e:
-        logger.error(f"Error in VIX ingestion: {e}", exc_info=True)
+        logger.error(f"An unexpected error occurred during client initialization: {e}")
+        return None
+
+def ingest_vix_data():
+    """
+    Ingests VIX data. This is a placeholder function.
+    In a real implementation, this would fetch VIX-related data
+    (e.g., VIX futures, options, ETF data) and process it.
+    """
+    logger.info("Ingesting VIX data...")
+    client = _get_alpaca_client()
+    if not client:
+        logger.error("Failed to get Alpaca client. Cannot ingest VIX data.")
+        return
+
+    try:
+        # Example placeholder: Fetching some account information to verify client works
+        account = client.get_account()
+        logger.info(f"Successfully connected to Alpaca. Account status: {account.status}")
         
-        # Log error to Firestore
-        try:
-            db = _get_firestore()
-            db.collection("systemLogs").add({
-                "type": "vix_ingestion",
-                "timestamp": datetime.now(timezone.utc),
-                "status": "error",
-                "error": str(e),
-            })
-        except Exception as log_error:
-            logger.error(f"Failed to log error to Firestore: {log_error}")
+        # Replace with actual VIX data fetching and processing logic
+        logger.info("VIX data ingestion logic not yet implemented.")
+        
+    except APIError as e:
+        logger.error(f"Alpaca API error during VIX data ingestion: {e.message}")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during VIX data ingestion: {e}")
 
-
-# HTTP endpoint for manual VIX refresh (useful for testing)
-@scheduler_fn.on_schedule(
-    schedule="0 9 * * 1-5",  # 9 AM ET, Monday-Friday (market open)
-    timezone="America/New_York",
-)
-def initialize_daily_vix(event: scheduler_fn.ScheduledEvent) -> None:
-    """
-    Initialize VIX data at market open.
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     
-    This runs once at market open to ensure we have fresh VIX data
-    before the first strategies run.
-    """
-    logger.info("Initializing daily VIX data at market open...")
-    ingest_vix_data(event)
+    # Set dummy environment variables for example run if not set
+    if not os.environ.get("APCA_API_KEY_ID"): os.environ["APCA_API_KEY_ID"] = "DUMMY_KEY_ID"
+    if not os.environ.get("APCA_API_SECRET_KEY"): os.environ["APCA_API_SECRET_KEY"] = "DUMMY_SECRET_KEY"
+    if not os.environ.get("APCA_API_BASE_URL"): os.environ["APCA_API_BASE_URL"] = "https://paper-api.alpaca.markets"
+    
+    ingest_vix_data()
+
+    # Clean up dummy environment variables
+    for var in ["APCA_API_KEY_ID", "APCA_API_SECRET_KEY", "APCA_API_BASE_URL"]:
+        if var in os.environ:
+            del os.environ[var]

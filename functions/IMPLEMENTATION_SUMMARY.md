@@ -91,8 +91,8 @@ Demonstrates 8 different usage patterns:
    - Created with full implementation
 
 ✅ **Use alpaca_trade_api WebSockets to stream 'minute bars'**
-   - Implemented using `alpaca_trade_api.Stream`
-   - Subscribes to minute bars via `@conn.on_bar()`
+   - Implemented using `alpaca.data.live.stream.DataStream` (standardized from `alpaca_trade_api.Stream`)
+   - Subscribes to minute bars using `stream.subscribe_bars()`
 
 ✅ **Target tickers: AAPL, NVDA, TSLA**
    - Default configuration: `["AAPL", "NVDA", "TSLA"]`

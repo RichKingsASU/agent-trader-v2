@@ -20,9 +20,16 @@ The core calculation logic:
 
 ```python
 from functions.utils.gex_engine import calculate_net_gex
+# Assuming TradingClient is imported or available in the context
+from alpaca.trading.client import TradingClient 
+
+# Initialize Alpaca client using alpaca-py
+# Example:
+# api = TradingClient(key_id="...", secret_key="...", base_url="...")
 
 # Calculate GEX for SPY
-gex_data = calculate_net_gex(symbol="SPY", api=alpaca_client)
+# The calculate_net_gex function should accept the alpaca-py TradingClient
+# gex_data = calculate_net_gex(symbol="SPY", api=alpaca_client) 
 
 # Access results
 net_gex = gex_data["net_gex"]  # Total net GEX (string for fintech precision)
@@ -119,22 +126,42 @@ def _get_hedging_threshold() -> Decimal:
 
 ```python
 from functions.utils.gex_engine import calculate_net_gex, get_market_regime_summary
-import alpaca_trade_api as tradeapi
+# Import TradingClient from alpaca.trading.client
+from alpaca.trading.client import TradingClient
+from alpaca.common.exceptions import APIError
+import os
 
-# Initialize Alpaca client
-api = tradeapi.REST(key_id="...", secret_key="...", base_url="...")
+# Initialize Alpaca client using TradingClient
+api = TradingClient(
+    key_id=os.environ.get("APCA_API_KEY_ID"),
+    secret_key=os.environ.get("APCA_API_SECRET_KEY"),
+    base_url=os.environ.get("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
+)
 
 # Calculate GEX
-gex_data = calculate_net_gex(symbol="SPY", api=api)
+try:
+    gex_data = calculate_net_gex(symbol="SPY", api=api) # Pass TradingClient instance
+except APIError as e:
+    print(f"Alpaca API error: {e.message}")
+    gex_data = {"error": str(e)} # Handle error gracefully
+except Exception as e:
+    print(f"An error occurred: {e}")
+    gex_data = {"error": str(e)}
 
-# Print summary
-summary = get_market_regime_summary(gex_data)
-print(summary)
+# Print summary only if calculation was attempted
+if gex_data:
+    print(f"\nNet GEX: {gex_data.get('net_gex', 'N/A')}")
+    print(f"Volatility Bias: {gex_data.get('volatility_bias', 'N/A')}")
+    print(f"Options Processed: {gex_data.get('option_count', 'N/A')}")
+    
+    # Print summary
+    summary = get_market_regime_summary(gex_data)
+    print(summary)
 
-# Output:
-# SPY Market Regime: BEARISH (Negative GEX = -1234567.89)
-# Market makers are short gamma → expect volatility amplification
-# They will sell dips and buy rallies, increasing volatility.
+    # Output example:
+    # SPY Market Regime: BEARISH (Negative GEX = -1234567.89)
+    # Market makers are short gamma → expect volatility amplification
+    # They will sell dips and buy rallies, increasing volatility.
 ```
 
 ### Example 2: Reading GEX from Firestore (in Strategy)
@@ -216,9 +243,9 @@ gcloud functions logs read pulse --limit=50
 ```
 
 Look for log messages:
-- `"Calculating GEX for market regime..."`
-- `"GEX stored successfully: SPY=... (Bullish/Bearish)"`
-- `"Error calculating/storing GEX: ..."` (if errors occur)
+- "Calculating GEX for market regime..."
+- "GEX stored successfully: SPY=... (Bullish/Bearish)"
+- "Error calculating/storing GEX: ..." (if errors occur)
 
 ## Testing
 
@@ -233,23 +260,36 @@ pytest tests/test_gex_engine.py -v
 
 ```python
 # Create a test script: test_gex_manual.py
-from functions.utils.gex_engine import calculate_net_gex
-import alpaca_trade_api as tradeapi
+from functions.utils.gex_engine import calculate_net_gex, get_market_regime_summary
+# Use TradingClient from alpaca-py
+from alpaca.trading.client import TradingClient
+from alpaca.common.exceptions import APIError
 import os
 
-api = tradeapi.REST(
-    key_id=os.getenv("APCA_API_KEY_ID"),
-    secret_key=os.getenv("APCA_API_SECRET_KEY"),
-    base_url=os.getenv("APCA_API_BASE_URL"),
-    base_url="https://paper-api.alpaca.markets"
+# Initialize Alpaca TradingClient using alpaca-py
+api = TradingClient(
+    key_id=os.environ.get("APCA_API_KEY_ID"),
+    secret_key=os.environ.get("APCA_API_SECRET_KEY"),
+    base_url=os.environ.get("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 )
 
 print("Testing GEX calculation...")
-gex_data = calculate_net_gex(symbol="SPY", api=api)
+try:
+    # Call calculate_net_gex, passing the TradingClient instance
+    gex_data = calculate_net_gex(symbol="SPY", api=api) 
+    
+    print(f"Net GEX: {gex_data['net_gex']}")
+    print(f"Volatility Bias: {gex_data['volatility_bias']}")
+    print(f"Options Processed: {gex_data['option_count']}")
+    
+    summary = get_market_regime_summary(gex_data)
+    print(summary)
+    
+except APIError as e:
+    print(f"Alpaca API error: {e.message}")
+except Exception as e:
+    print(f"An error occurred: {e}")
 
-print(f"Net GEX: {gex_data['net_gex']}")
-print(f"Volatility Bias: {gex_data['volatility_bias']}")
-print(f"Options Processed: {gex_data['option_count']}")
 ```
 
 ## Troubleshooting

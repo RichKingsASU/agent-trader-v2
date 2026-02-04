@@ -6,8 +6,12 @@ import os
 import logging
 import uuid
 
-# Import necessary classes from alpaca_trade_api
-from alpaca_trade_api.rest import REST, APIError, TimeFrame
+# Import necessary classes from alpaca-py
+from alpaca.trading.client import TradingClient
+from alpaca.common.exceptions import APIError
+# TimeFrame might not be directly exposed or needed in the same way in alpaca-py.
+# If it's not used, it can be removed. Current code does not appear to use it directly.
+
 # Assuming OptionOrderIntent and Side, OptionRight enums are available or defined.
 # For this example, we'll use placeholder enums if not explicitly found in the context.
 # In a real scenario, these would be imported from backend.contracts.v2.trading or similar.
@@ -113,8 +117,8 @@ def _check_alpaca_credentials() -> bool:
     """Check if Alpaca API credentials are set."""
     return bool(APCA_API_KEY_ID) and bool(APCA_API_SECRET_KEY)
 
-def _get_alpaca_trading_client() -> Optional[REST]:
-    """Construct and return Alpaca REST client in paper mode if all invariants are met."""
+def _get_alpaca_trading_client() -> Optional[TradingClient]:
+    """Construct and return Alpaca TradingClient in paper mode if all invariants are met."""
     corrected_url = _validate_and_correct_apca_url()
     if not corrected_url:
         return None
@@ -132,16 +136,18 @@ def _get_alpaca_trading_client() -> Optional[REST]:
         return None
 
     try:
-        api = REST(
+        # Use TradingClient from alpaca-py
+        client = TradingClient(
             key_id=APCA_API_KEY_ID,
-            secret_api=APCA_API_SECRET_KEY,
+            secret_key=APCA_API_SECRET_KEY,
             base_url=corrected_url,
-            api_version='v2'
+            # oauth=None, # No OAuth needed for API key auth
+            # api_version='v2' # Not typically set directly on client init in alpaca-py
         )
-        logger.info("Alpaca REST client constructed successfully in paper mode.")
-        return api
+        logger.info("Alpaca TradingClient constructed successfully in paper mode.")
+        return client
     except Exception as e:
-        logger.error(f"Failed to construct Alpaca REST client: {e}")
+        logger.error(f"Failed to construct Alpaca TradingClient: {e}")
         return None
 
 # --- Main Execution Function for Paper Mode ---
@@ -163,12 +169,12 @@ def execute_option_intent_paper(intent: OptionOrderIntent) -> ExecutionResult:
     #    These checks are partially duplicated from the gate for executor robustness.
     if not _is_paper_mode_enabled_for_executor():
         error_msg = "Pre-execution safety invariants not met for paper trading."
-        logger.error(error_msg, extra={**log_common_fields, "error": error_msg})
+        logger.error(error_msg, extra={{**log_common_fields, "error": error_msg}})
         # Return a failed result
         return ExecutionResult(
             status="failed",
             error=error_msg,
-            timestamps={"start": start_time, "end": datetime.now(timezone.utc)},
+            timestamps={{"start": start_time, "end": datetime.now(timezone.utc)}}, 
             stored=None # No execution attempt made
         )
 
@@ -180,7 +186,7 @@ def execute_option_intent_paper(intent: OptionOrderIntent) -> ExecutionResult:
         return ExecutionResult(
             status="failed",
             error=error_msg,
-            timestamps={"start": start_time, "end": datetime.now(timezone.utc)},
+            timestamps={{"start": start_time, "end": datetime.now(timezone.utc)}}, 
             stored=None
         )
 
@@ -211,7 +217,7 @@ def execute_option_intent_paper(intent: OptionOrderIntent) -> ExecutionResult:
         order_response = trading_client.submit_order(**order_params)
         
         broker_order_id = order_response.id
-        status = order_response.status # e.g., 'new', 'partially_filled', 'filled', 'rejected', 'canceled'
+        status = order_response.status # e.g., 'new', 'partially_filled', 'filled', 'rejected', 'canceled' 
         
         # Log successful submission
         log_event(logger, "option_intent_submitted", "INFO", broker_order_id=broker_order_id, status=status, **log_common_fields)
@@ -228,26 +234,26 @@ def execute_option_intent_paper(intent: OptionOrderIntent) -> ExecutionResult:
         return ExecutionResult(
             broker_order_id=broker_order_id,
             status=status,
-            timestamps={"start": start_time, "end": datetime.now(timezone.utc)},
+            timestamps={{"start": start_time, "end": datetime.now(timezone.utc)}}, 
             stored=execution_data_to_store
         )
 
     except APIError as e:
         error_msg = f"Alpaca API Error during order submission: {e}"
-        logger.error(error_msg, extra={**log_common_fields, "error": error_msg, "alpaca_error_code": e.code, "alpaca_error_status": e.status})
+        logger.error(error_msg, extra={{**log_common_fields, "error": error_msg, "alpaca_error_code": e.code, "alpaca_error_status": e.status}})
         return ExecutionResult(
             status="failed",
             error=error_msg,
-            timestamps={"start": start_time, "end": datetime.now(timezone.utc)},
+            timestamps={{"start": start_time, "end": datetime.now(timezone.utc)}}, 
             stored=None # No execution attempt resulted in a stored record
         )
     except Exception as e:
         error_msg = f"Unexpected error during order submission: {e}"
-        logger.error(error_msg, extra={**log_common_fields, "error": error_msg})
+        logger.error(error_msg, extra={{**log_common_fields, "error": error_msg}})
         return ExecutionResult(
             status="failed",
             error=error_msg,
-            timestamps={"start": start_time, "end": datetime.now(timezone.utc)},
+            timestamps={{"start": start_time, "end": datetime.now(timezone.utc)}}, 
             stored=None
         )
 

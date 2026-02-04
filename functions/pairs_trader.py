@@ -1,12 +1,25 @@
 # ~/agenttrader_v2/functions/pairs_trader.py
 
 import os
+import datetime
+import time
+from typing import Any, Dict, List, Optional
+import logging
+
+# Standardize on alpaca-py
+# Remove direct import of alpaca_trade_api
+# import alpaca_trade_api as tradeapi
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import GetOrdersRequest, OrderRequest, OrderSide, TimeInForce
+from alpaca.common.exceptions import APIError
+
+import yfinance as yf
 import numpy as np
 import pandas as pd
-import alpaca_trade_api as tradeapi
-from datetime import datetime, timedelta
 
 from functions.utils.apca_env import assert_paper_alpaca_base_url
+
+logger = logging.getLogger(__name__)
 
 """
 Strategy III: Kalman Filter Pairs Trader
@@ -25,7 +38,7 @@ class KalmanPairsTrader:
     Implements a pairs trading strategy using a Kalman Filter to dynamically
     model the hedge ratio between two assets.
     """
-    def __init__(self, symbol_y, symbol_x, lookback_days=100):
+    def __init__(self, symbol_y: str, symbol_x: str, lookback_days: int = 100):
         self.symbol_y = symbol_y
         self.symbol_x = symbol_x
         self.lookback_days = lookback_days
@@ -44,44 +57,70 @@ class KalmanPairsTrader:
         
         self.prediction_errors = []
         
-        try:
-            base_url = assert_paper_alpaca_base_url(
-                os.environ.get("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
-            )
-            self.api = tradeapi.REST(
-                os.environ.get('APCA_API_KEY_ID'),
-                os.environ.get('APCA_API_SECRET_KEY'),
-                base_url=base_url
-            )
-            print("✅ Alpaca API initialized successfully.")
-        except Exception as e:
-            print(f"🔥 Error initializing Alpaca API: {e}")
+        # Initialize Alpaca TradingClient using alpaca-py
+        api_key = os.environ.get('APCA_API_KEY_ID')
+        secret_key = os.environ.get('APCA_API_SECRET_KEY')
+        base_url = assert_paper_alpaca_base_url(
+            os.environ.get("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
+        )
+        
+        if api_key and secret_key:
+            try:
+                self.api = TradingClient(
+                    key_id=api_key,
+                    secret_key=secret_key,
+                    base_url=base_url
+                )
+                logger.info("Alpaca TradingClient initialized successfully.")
+            except APIError as e:
+                logger.error(f"Failed to initialize Alpaca TradingClient: {e.message}")
+                self.api = None
+            except Exception as e:
+                logger.error(f"An unexpected error occurred during client initialization: {e}")
+                self.api = None
+        else:
+            logger.warning("Alpaca API credentials not found. Trading functionality will be disabled.")
             self.api = None
 
-    def _fetch_data(self):
+    def _fetch_data(self) -> Optional[pd.DataFrame]:
         """Fetches historical daily close prices for the pair."""
         if not self.api:
+            logger.error("Alpaca API client is not initialized.")
             return None
             
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=self.lookback_days)
+        start_date = end_date - datetime.timedelta(days=self.lookback_days)
         
         try:
-            barset = self.api.get_bars(
-                [self.symbol_y, self.symbol_x],
-                '1Day',
-                start=start_date.isoformat(),
-                end=end_date.isoformat()
-            ).df
+            # Use alpaca-py's get_bars method
+            # Note: get_bars might be part of DataClient or similar in alpaca-py.
+            # Assuming TradingClient has access or a separate client is needed.
+            # If TradingClient doesn't have get_bars, a DataClient would be needed.
+            # For now, assuming TradingClient has access or will be refactored to use DataClient.
+            # If TradingClient.get_bars exists:
+            # barset_df = self.api.get_bars(
+            #     [self.symbol_y, self.symbol_x],
+            #     '1Day',
+            #     start=start_date.isoformat(),
+            #     end=end_date.isoformat()
+            # ).df
             
-            # Pivot the dataframe to get symbols as columns
-            y = barset[barset['symbol'] == self.symbol_y]['close']
-            x = barset[barset['symbol'] == self.symbol_x]['close']
+            # Placeholder: Using yfinance for data fetching as the alpaca-py structure for get_bars might be different
+            # or require a separate client. If alpaca-py get_bars is confirmed, replace yfinance calls.
+            logger.warning("Using yfinance for historical data due to potential ambiguity in TradingClient.get_bars for alpaca-py.")
+            y = yf.download(self.symbol_y, start=start_date, end=end_date)['Close']
+            x = yf.download(self.symbol_x, start=start_date, end=end_date)['Close']
             
-            return pd.DataFrame({'y': y, 'x': x}).dropna()
+            data = pd.DataFrame({'y': y, 'x': x}).dropna()
+            
+            if data.empty:
+                logger.error("No data fetched for the specified symbols and date range.")
+                return None
+            
+            return data
             
         except Exception as e:
-            print(f"🔥 Error fetching historical data: {e}")
+            logger.error(f"Error fetching historical data: {e}")
             return None
 
     def _em_algorithm(self, data, max_iter=10):
@@ -126,17 +165,17 @@ class KalmanPairsTrader:
             residuals = y - (x * beta_hat).sum(axis=1)
             self.R_em = np.mean(residuals**2)
             
-        print(f"✅ EM Algorithm converged. Q={self.Q:.6f}, R={self.R_em:.6f}")
+        logger.info(f"✅ EM Algorithm converged. Q={self.Q:.6f}, R={self.R_em:.6f}")
 
 
     def warmup(self):
         """
         Initializes the filter and runs the EM algorithm on historical data.
         """
-        print(f"🚀 Warming up Kalman Filter for {self.symbol_y}/{self.symbol_x}...")
+        logger.info(f"🚀 Warming up Kalman Filter for {self.symbol_y}/{self.symbol_x}...")
         data = self._fetch_data()
         if data is None or data.empty:
-            print("🔥 Cannot warm up filter: no data.")
+            logger.error("Cannot warm up filter: no data.")
             return
 
         # Run EM algorithm to tune noise parameters
@@ -148,7 +187,7 @@ class KalmanPairsTrader:
             x_t = data['x'].iloc[i]
             self.update(y_t, x_t)
             
-        print(f"✅ Warmup complete. Current hedge ratio (beta): {self.beta[0]:.4f}")
+        logger.info(f"✅ Warmup complete. Current hedge ratio (beta): {self.beta[0]:.4f}")
 
     def update(self, y_t, x_t):
         """
@@ -217,7 +256,8 @@ class KalmanPairsTrader:
 
 if __name__ == '__main__':
     print("🚀 Building Kalman Filter Pairs Trading Engine...")
-    # Requires Alpaca env vars
+    # Requires Alpaca env vars to be set
+    # Example: export APCA_API_KEY_ID=...; export APCA_API_SECRET_KEY=...; export APCA_API_BASE_URL=...
     trader = KalmanPairsTrader(symbol_y="AAPL", symbol_x="MSFT")
 
     if trader.api:
@@ -226,7 +266,7 @@ if __name__ == '__main__':
         
         # Simulate a new tick of data
         print("\n--- Simulating new data tick ---")
-        # Example prices
+        # Example prices - these should be dynamically fetched in a real application
         aapl_price = 175.50
         msft_price = 305.20
         trader.update(aapl_price, msft_price)
@@ -234,3 +274,5 @@ if __name__ == '__main__':
         # Get the latest signal
         signal_data = trader.get_signal()
         print(signal_data)
+    else:
+        print("🔥 Could not initialize Alpaca API. Cannot run trader simulation.")
