@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import { getFirestore, doc, onSnapshot } from "firebase/firestore";
 
 type ListenerStatus = "idle" | "connecting" | "connected" | "error";
 
@@ -18,13 +19,12 @@ export interface AccountState {
   setListenerState: (next: { status: ListenerStatus; error?: string | null }) => void;
   setAccount: (data: unknown, updatedAtMs?: number | null) => void;
 
-  /**
-   * Placeholder for a future real-time listener (e.g., Firestore).
-   * For now, it just marks the listener as connected in a read-only way.
-   */
   startAccountListener: (tenantId: string) => void;
   stopAccountListener: () => void;
 }
+
+// Internal variable to hold the unsubscribe function
+let unsubscribeSnapshot: (() => void) | null = null;
 
 function coerceNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -83,11 +83,51 @@ export const useAccountStore = create<AccountState>()(
 
       startAccountListener: (tenantId: string) => {
         if (!tenantId || typeof tenantId !== "string") return;
-        // No-op listener for now: mark connected to avoid “loading” flicker.
-        get().setListenerState({ status: "connected", error: null });
+
+        // Prevent duplicate listeners
+        if (unsubscribeSnapshot) {
+          // If already listening to same tenant, do nothing? Or re-subscribe?
+          // Simple verification: if status is connected, maybe we are good.
+          // But let's be safe: unsubscribe previous and start new.
+          unsubscribeSnapshot();
+          unsubscribeSnapshot = null;
+        }
+
+        const db = getFirestore();
+        get().setListenerState({ status: "connecting", error: null });
+
+        try {
+          const docRef = doc(db, `tenants/${tenantId}/accounts/live`);
+
+          unsubscribeSnapshot = onSnapshot(
+            docRef,
+            (snap) => {
+              if (snap.exists()) {
+                const data = snap.data();
+                get().setAccount(data, data.updated_at_ms); // Use backend provided timestamp if valid
+                get().setListenerState({ status: "connected", error: null });
+              } else {
+                // Document might not exist yet if streamer hasn't run.
+                // We stay in connected state but maybe log?
+                get().setListenerState({ status: "connected", error: null });
+              }
+            },
+            (err) => {
+              console.error("Account listener failed:", err);
+              get().setListenerState({ status: "error", error: err.message });
+            }
+          );
+        } catch (e: any) {
+          console.error("Failed to start account listener:", e);
+          get().setListenerState({ status: "error", error: e.message });
+        }
       },
 
       stopAccountListener: () => {
+        if (unsubscribeSnapshot) {
+          unsubscribeSnapshot();
+          unsubscribeSnapshot = null;
+        }
         set({ listenerStatus: "idle", listenerError: null });
       },
     }),
@@ -109,4 +149,3 @@ export const useAccountStore = create<AccountState>()(
     },
   ),
 );
-

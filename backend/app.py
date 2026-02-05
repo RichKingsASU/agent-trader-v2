@@ -23,6 +23,7 @@ from backend.common.agent_mode_guard import enforce_agent_mode_guard
 from backend.common.app_heartbeat_writer import install_app_heartbeat
 from backend.common.ops_metrics import REGISTRY, agent_start_total, errors_total, mark_activity, update_marketdata_heartbeat_metrics
 from backend.streams.alpaca_quotes_streamer import get_last_marketdata_ts, main as alpaca_streamer_main
+from backend.streams.account_streamer import account_streamer_main
 from backend.observability.ops_json_logger import OpsLogger
 from backend.utils.session import get_market_session
 from backend.ops.status_contract import AgentIdentity, EndpointsBlock, build_ops_status
@@ -115,6 +116,13 @@ async def startup_event() -> None:
     stream_task: asyncio.Task = asyncio.create_task(alpaca_streamer_main(app.state.streamer_ready_event))
     app.state.stream_task = stream_task
 
+    # Start Account Streamer
+    # We share the same ready event or create a new one? Using same for simplicity implies both must be ready.
+    # But usually account streaming is secondary. Let's not gate readiness on it for now.
+    app.state.account_ready_event = asyncio.Event()
+    account_task: asyncio.Task = asyncio.create_task(account_streamer_main(app.state.account_ready_event))
+    app.state.account_task = account_task
+
     def _done_callback(t: asyncio.Task) -> None:
         try:
             t.result()
@@ -165,7 +173,13 @@ async def shutdown_event() -> None:
     loop_task: asyncio.Task | None = getattr(app.state, "loop_task", None)
     ready_task: asyncio.Task | None = getattr(app.state, "ready_task", None)
 
-    for t in (ready_task, stream_task, loop_task):
+    # Stop background tasks.
+    stream_task: asyncio.Task | None = getattr(app.state, "stream_task", None)
+    account_task: asyncio.Task | None = getattr(app.state, "account_task", None)
+    loop_task: asyncio.Task | None = getattr(app.state, "loop_task", None)
+    ready_task: asyncio.Task | None = getattr(app.state, "ready_task", None)
+
+    for t in (ready_task, stream_task, account_task, loop_task):
         if t is None:
             continue
         try:
@@ -174,7 +188,7 @@ async def shutdown_event() -> None:
             logger.exception("marketdata_mcp.background_task_cancel_failed")
             pass
 
-    tasks = [t for t in (ready_task, stream_task, loop_task) if t is not None]
+    tasks = [t for t in (ready_task, stream_task, account_task, loop_task) if t is not None]
     if not tasks:
         return
     try:
