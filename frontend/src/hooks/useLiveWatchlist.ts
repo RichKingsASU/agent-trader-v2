@@ -45,16 +45,19 @@ export function useLiveWatchlist() {
   const [sparklinesLoading, setSparklinesLoading] = useState(false);
   const { tenantId } = useAuth();
 
+  // Derive a stable key for the symbols list to prevent re-fetching on every price update
+  const symbolsKey = quotes.map(q => q.symbol).sort().join(',');
+
   // Fetch sparkline data from market_data_1m for symbols in quotes
   useEffect(() => {
     const fetchSparklines = async () => {
       if (!tenantId || quotes.length === 0) return;
-      
+
       setSparklinesLoading(true);
       try {
         const db = getFirestore();
         const symbols = quotes.map(q => q.symbol);
-        
+
         // Fetch last 6 bars per symbol
         const marketDataRef = tenantCollection(db, tenantId, 'market_data_1m');
         const q = query(marketDataRef, where('symbol', 'in', symbols), orderBy('ts', 'desc'), limit(symbols.length * 6));
@@ -81,11 +84,11 @@ export function useLiveWatchlist() {
     };
 
     fetchSparklines();
-    
+
     // Refresh sparklines every 60 seconds
     const interval = setInterval(fetchSparklines, 60000);
     return () => clearInterval(interval);
-  }, [quotes, tenantId]);
+  }, [symbolsKey, tenantId]);
 
   // Build watchlist items from live quotes
   const watchlist = useMemo((): WatchlistItem[] => {

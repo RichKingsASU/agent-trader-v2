@@ -1,6 +1,6 @@
 {
   "projects": {
-    "default": "agenttrader-dev",
+    "default": "agenttrader-prod",
     "dev": "agenttrader-dev",
     "staging": "agenttrader-staging",
     "prod": "agenttrader-prod"

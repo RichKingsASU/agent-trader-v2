@@ -16,29 +16,17 @@ export interface UseLiveAccountReturn {
 
 export function useLiveAccount(): UseLiveAccountReturn {
   const { tenantId } = useAuth();
-  const {
-    equity,
-    buying_power,
-    cash,
-    updated_at_ms,
-    hasWarmCache,
-    hasHydrated,
-    listenerStatus,
-    listenerError,
-    startAccountListener,
-    stopAccountListener,
-  } = useAccountStore((s) => ({
-    equity: s.equity,
-    buying_power: s.buying_power,
-    cash: s.cash,
-    updated_at_ms: s.updated_at_ms,
-    hasWarmCache: s.hasWarmCache,
-    hasHydrated: s.hasHydrated,
-    listenerStatus: s.listenerStatus,
-    listenerError: s.listenerError,
-    startAccountListener: s.startAccountListener,
-    stopAccountListener: s.stopAccountListener,
-  }));
+  // Select individual items to prevent valid object reference changes from triggering re-renders
+  const equity = useAccountStore((s) => s.equity);
+  const buying_power = useAccountStore((s) => s.buying_power);
+  const cash = useAccountStore((s) => s.cash);
+  const updated_at_ms = useAccountStore((s) => s.updated_at_ms);
+  const hasWarmCache = useAccountStore((s) => s.hasWarmCache);
+  const hasHydrated = useAccountStore((s) => s.hasHydrated);
+  const listenerStatus = useAccountStore((s) => s.listenerStatus);
+  const listenerError = useAccountStore((s) => s.listenerError);
+  const startAccountListener = useAccountStore((s) => s.startAccountListener);
+  const stopAccountListener = useAccountStore((s) => s.stopAccountListener);
 
   useEffect(() => {
     if (!tenantId) return;

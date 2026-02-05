@@ -1,18 +1,16 @@
 {
   "hosting": {
-    "public": "frontend/ops-ui/dist",
-    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
-    "headers": [
-      {
-        "source": "/config.js",
-        "headers": [
-          {
-            "key": "Cache-Control",
-            "value": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"
-          }
-        ]
-      }
+    "public": "frontend/dist",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
     ],
-    "rewrites": [{ "source": "**", "destination": "/index.html" }]
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
   }
 }

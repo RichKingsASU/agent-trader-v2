@@ -49,7 +49,7 @@ export interface UseLiveQuotesReturn {
  * `useAccountStore` and marks ingest as OFFLINE.
  */
 export const useLiveQuotes = (_options: UseLiveQuotesOptions = {}): UseLiveQuotesReturn => {
-  const { equity } = useAccountStore((s) => ({ equity: s.equity }));
+  const equity = useAccountStore((s) => s.equity);
 
   const quotesBySymbol = useMemo<LiveQuotesBySymbol>(() => ({}), []);
   const quotes = useMemo<LiveQuote[]>(() => [], []);

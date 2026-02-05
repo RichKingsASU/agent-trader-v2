@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { createChart, ColorType } from "lightweight-charts";
+import { createChart, ColorType, CandlestickSeries, HistogramSeries, LineSeries } from "lightweight-charts";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -48,7 +48,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
     sma200: false,
     bb: false,
   });
-  
+
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
 
   const [showLevels, setShowLevels] = useState(true);
@@ -70,7 +70,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
     const k = 2 / (period + 1);
     const emaData: number[] = [];
     emaData[0] = data[0];
-    
+
     for (let i = 1; i < data.length; i++) {
       emaData[i] = data[i] * k + emaData[i - 1] * (1 - k);
     }
@@ -105,7 +105,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
     const sma = calculateSMA(data, period);
     const upper: number[] = [];
     const lower: number[] = [];
-    
+
     for (let i = 0; i < data.length; i++) {
       if (i < period - 1) {
         upper[i] = NaN;
@@ -127,14 +127,14 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
     const timestamp = new Date();
     timestamp.setHours(9, 30, 0, 0); // Market open at 9:30 AM
     timestamp.setMinutes(timestamp.getMinutes() + i); // Add i minutes for each candle
-    
+
     const basePrice = 432;
     const variation = Math.sin(i / 10) * 3;
     const open = basePrice + variation + (Math.random() - 0.5);
     const close = open + (Math.random() - 0.5) * 2;
     const high = Math.max(open, close) + Math.random() * 0.5;
     const low = Math.min(open, close) - Math.random() * 0.5;
-    
+
     return {
       time: Math.floor(timestamp.getTime() / 1000) as any, // Unix timestamp in seconds
       open,
@@ -181,7 +181,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
     chartRef.current = chart;
 
     // Add candlestick series
-    const candlestickSeries = chart.addCandlestickSeries({
+    const candlestickSeries = chart.addSeries(CandlestickSeries, {
       upColor: `hsl(${styles.getPropertyValue('--bull').trim()})`,
       downColor: `hsl(${styles.getPropertyValue('--bear').trim()})`,
       borderVisible: false,
@@ -192,7 +192,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
     candlestickSeriesRef.current = candlestickSeries;
 
     // Add volume series
-    const volumeSeries = chart.addHistogramSeries({
+    const volumeSeries = chart.addSeries(HistogramSeries, {
       color: `hsl(${styles.getPropertyValue('--muted-foreground').trim()})`,
       priceFormat: {
         type: 'volume',
@@ -214,7 +214,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
     const volumeData = mockData.map(d => ({
       time: d.time as any,
       value: d.volume,
-      color: d.close >= d.open 
+      color: d.close >= d.open
         ? `hsl(${styles.getPropertyValue('--bull').trim()} / 0.5)`
         : `hsl(${styles.getPropertyValue('--bear').trim()} / 0.5)`,
     }));
@@ -233,7 +233,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
         axisLabelVisible: true,
         title: 'Prev High',
       });
-      
+
       candlestickSeries.createPriceLine({
         price: mockLevels.prev_day_low,
         color: '#dc2626',
@@ -252,7 +252,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
         axisLabelVisible: true,
         title: 'PM High',
       });
-      
+
       candlestickSeries.createPriceLine({
         price: mockLevels.premarket_low,
         color: '#2563eb',
@@ -271,7 +271,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
         axisLabelVisible: true,
         title: 'ORH 5m',
       });
-      
+
       candlestickSeries.createPriceLine({
         price: mockLevels.orl_5m,
         color: '#6b7280',
@@ -300,7 +300,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
 
     if (indicators.vwap) {
       const vwapValues = calculateVWAP(mockData);
-      const vwapSeries = chart.addLineSeries({
+      const vwapSeries = chart.addSeries(LineSeries, {
         color: '#2962FF',
         lineWidth: 2,
         title: 'VWAP',
@@ -311,7 +311,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
 
     if (indicators.ema9) {
       const ema9Values = calculateEMA(closePrices, 9);
-      const ema9Series = chart.addLineSeries({
+      const ema9Series = chart.addSeries(LineSeries, {
         color: '#F23645',
         lineWidth: 1,
         title: 'EMA 9',
@@ -322,7 +322,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
 
     if (indicators.ema21) {
       const ema21Values = calculateEMA(closePrices, 21);
-      const ema21Series = chart.addLineSeries({
+      const ema21Series = chart.addSeries(LineSeries, {
         color: '#FFA726',
         lineWidth: 1,
         title: 'EMA 21',
@@ -333,7 +333,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
 
     if (indicators.ema50) {
       const ema50Values = calculateEMA(closePrices, 50);
-      const ema50Series = chart.addLineSeries({
+      const ema50Series = chart.addSeries(LineSeries, {
         color: '#26A69A',
         lineWidth: 1,
         title: 'EMA 50',
@@ -344,7 +344,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
 
     if (indicators.sma200) {
       const sma200Values = calculateSMA(closePrices, 200);
-      const sma200Series = chart.addLineSeries({
+      const sma200Series = chart.addSeries(LineSeries, {
         color: '#AB47BC',
         lineWidth: 2,
         title: 'SMA 200',
@@ -359,8 +359,8 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
 
     if (indicators.bb) {
       const bb = calculateBollingerBands(closePrices, 20, 2);
-      
-      const bbUpperSeries = chart.addLineSeries({
+
+      const bbUpperSeries = chart.addSeries(LineSeries, {
         color: '#787B86',
         lineWidth: 1,
         lineStyle: 2,
@@ -371,8 +371,8 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
           .map((value, i) => ({ time: times[i], value }))
           .filter(d => !isNaN(d.value))
       );
-      
-      const bbMiddleSeries = chart.addLineSeries({
+
+      const bbMiddleSeries = chart.addSeries(LineSeries, {
         color: '#787B86',
         lineWidth: 1,
         title: 'BB Middle',
@@ -382,8 +382,8 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
           .map((value, i) => ({ time: times[i], value }))
           .filter(d => !isNaN(d.value))
       );
-      
-      const bbLowerSeries = chart.addLineSeries({
+
+      const bbLowerSeries = chart.addSeries(LineSeries, {
         color: '#787B86',
         lineWidth: 1,
         lineStyle: 2,
@@ -394,7 +394,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
           .map((value, i) => ({ time: times[i], value }))
           .filter(d => !isNaN(d.value))
       );
-      
+
       indicatorSeriesRef.current.set('bb-upper', bbUpperSeries);
       indicatorSeriesRef.current.set('bb-middle', bbMiddleSeries);
       indicatorSeriesRef.current.set('bb-lower', bbLowerSeries);
@@ -423,7 +423,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
   const chartContent = (
     <div className="relative h-full">
       <div ref={chartContainerRef} className="h-full" />
-      
+
       {/* Discrete Floating Indicator Button */}
       <Popover open={isPopoverOpen} onOpenChange={setIsPopoverOpen}>
         <PopoverTrigger asChild>
@@ -434,7 +434,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
             <Settings className="h-4 w-4 text-foreground" />
           </button>
         </PopoverTrigger>
-        <PopoverContent 
+        <PopoverContent
           className="w-64 bg-background/95 backdrop-blur-md border-white/10 shadow-2xl"
           align="end"
           side="top"
@@ -445,7 +445,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
                 Chart Controls
               </h4>
             </div>
-            
+
             {/* Key Levels Toggle */}
             <div className="flex items-center justify-between">
               <Label htmlFor="levels" className="text-xs font-medium cursor-pointer">
@@ -457,15 +457,15 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
                 onCheckedChange={(checked) => setShowLevels(checked as boolean)}
               />
             </div>
-            
+
             <div className="h-px bg-white/10" />
-            
+
             {/* Technical Indicators */}
             <div className="space-y-2">
               <h5 className="text-xs font-bold uppercase tracking-wider text-foreground/50">
                 Indicators
               </h5>
-              
+
               <div className="flex items-center justify-between">
                 <Label htmlFor="vwap" className="text-xs font-medium cursor-pointer">
                   VWAP
@@ -473,12 +473,12 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
                 <Checkbox
                   id="vwap"
                   checked={indicators.vwap}
-                  onCheckedChange={(checked) => 
+                  onCheckedChange={(checked) =>
                     setIndicators(prev => ({ ...prev, vwap: checked as boolean }))
                   }
                 />
               </div>
-              
+
               <div className="flex items-center justify-between">
                 <Label htmlFor="ema9" className="text-xs font-medium cursor-pointer">
                   EMA 9
@@ -486,12 +486,12 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
                 <Checkbox
                   id="ema9"
                   checked={indicators.ema9}
-                  onCheckedChange={(checked) => 
+                  onCheckedChange={(checked) =>
                     setIndicators(prev => ({ ...prev, ema9: checked as boolean }))
                   }
                 />
               </div>
-              
+
               <div className="flex items-center justify-between">
                 <Label htmlFor="ema21" className="text-xs font-medium cursor-pointer">
                   EMA 21
@@ -499,12 +499,12 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
                 <Checkbox
                   id="ema21"
                   checked={indicators.ema21}
-                  onCheckedChange={(checked) => 
+                  onCheckedChange={(checked) =>
                     setIndicators(prev => ({ ...prev, ema21: checked as boolean }))
                   }
                 />
               </div>
-              
+
               <div className="flex items-center justify-between">
                 <Label htmlFor="ema50" className="text-xs font-medium cursor-pointer">
                   EMA 50
@@ -512,12 +512,12 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
                 <Checkbox
                   id="ema50"
                   checked={indicators.ema50}
-                  onCheckedChange={(checked) => 
+                  onCheckedChange={(checked) =>
                     setIndicators(prev => ({ ...prev, ema50: checked as boolean }))
                   }
                 />
               </div>
-              
+
               <div className="flex items-center justify-between">
                 <Label htmlFor="sma200" className="text-xs font-medium cursor-pointer">
                   SMA 200
@@ -525,12 +525,12 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
                 <Checkbox
                   id="sma200"
                   checked={indicators.sma200}
-                  onCheckedChange={(checked) => 
+                  onCheckedChange={(checked) =>
                     setIndicators(prev => ({ ...prev, sma200: checked as boolean }))
                   }
                 />
               </div>
-              
+
               <div className="flex items-center justify-between">
                 <Label htmlFor="bb" className="text-xs font-medium cursor-pointer">
                   Bollinger Bands
@@ -538,7 +538,7 @@ export function TradingViewChart({ symbol, data, levels, showCard = true }: Trad
                 <Checkbox
                   id="bb"
                   checked={indicators.bb}
-                  onCheckedChange={(checked) => 
+                  onCheckedChange={(checked) =>
                     setIndicators(prev => ({ ...prev, bb: checked as boolean }))
                   }
                 />

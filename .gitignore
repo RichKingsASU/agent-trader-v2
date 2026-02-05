@@ -21,8 +21,8 @@ service-account-key.json
 !.firebaserc
 !scripts/ci/script_risk_policy_manifest.json
 !backend/contracts/schemas/**/*.json
-!package.json
-!package-lock.json
+package.json
+package-lock.json
 !npm-shrinkwrap.json
 !tsconfig.json
 !tsconfig.*.json
