@@ -172,7 +172,7 @@ export function useMarketLiveQuotes(options: UseMarketLiveQuotesOptions = {}): U
     setLoading(true);
     setError(null);
 
-    const q = query(tenantCollection(db, tenantId, "live_quotes"));
+    const q = query(tenantCollection(db!, tenantId, "market_intelligence", "quotes", "live"));
     const unsubscribe = onSnapshot(
       q,
       (querySnapshot) => {
@@ -215,9 +215,9 @@ export function useMarketLiveQuotes(options: UseMarketLiveQuotesOptions = {}): U
     if (!subscribeHeartbeat) return;
     if (!tenantId) return;
 
-    const ref = tenantDoc(db, tenantId, "ops", "market_ingest");
+    const statusRef = tenantDoc(db!, tenantId, "ops", "market_ingest");
     const unsubscribe = onSnapshot(
-      ref,
+      statusRef,
       (snap) => {
         const raw = (snap.exists() ? (snap.data() as Record<string, unknown>) : {}) as Record<string, unknown>;
         setHeartbeat({

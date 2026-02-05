@@ -16,8 +16,8 @@ export const ShadowModeIndicator = () => {
 
   useEffect(() => {
     // Subscribe to systemStatus/config document
-    const configRef = doc(db, "systemStatus", "config");
-    
+    const configRef = doc(db!, "systemStatus", "config");
+
     const unsubscribe = onSnapshot(
       configRef,
       (snapshot) => {

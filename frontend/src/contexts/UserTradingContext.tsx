@@ -63,17 +63,17 @@ interface UserTradingContextType {
   accountSnapshot: AlpacaSnapshot | null;
   accountLoading: boolean;
   accountError: Error | null;
-  
+
   // Shadow trades
   shadowTrades: ShadowTrade[];
   shadowTradesLoading: boolean;
   shadowTradesError: Error | null;
-  
+
   // Trading signals
   signals: TradingSignal[];
   signalsLoading: boolean;
   signalsError: Error | null;
-  
+
   // Derived data
   openShadowTrades: ShadowTrade[];
   totalUnrealizedPnL: number;
@@ -83,22 +83,22 @@ const UserTradingContext = createContext<UserTradingContextType | undefined>(und
 
 export const UserTradingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
-  
+
   // Alpaca account snapshot state
   const [accountSnapshot, setAccountSnapshot] = useState<AlpacaSnapshot | null>(null);
   const [accountLoading, setAccountLoading] = useState(true);
   const [accountError, setAccountError] = useState<Error | null>(null);
-  
+
   // Shadow trades state
   const [shadowTrades, setShadowTrades] = useState<ShadowTrade[]>([]);
   const [shadowTradesLoading, setShadowTradesLoading] = useState(true);
   const [shadowTradesError, setShadowTradesError] = useState<Error | null>(null);
-  
+
   // Trading signals state
   const [signals, setSignals] = useState<TradingSignal[]>([]);
   const [signalsLoading, setSignalsLoading] = useState(true);
   const [signalsError, setSignalsError] = useState<Error | null>(null);
-  
+
   // Listen to Alpaca account snapshot: users/{uid}/alpaca/snapshot
   useEffect(() => {
     if (!user) {
@@ -107,13 +107,13 @@ export const UserTradingProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setAccountError(null);
       return;
     }
-    
+
     setAccountLoading(true);
     setAccountError(null);
-    
+
     // Multi-tenant path: users/{uid}/data/snapshot
-    const snapshotRef = doc(db, "users", user.uid, "data", "snapshot");
-    
+    const snapshotRef = doc(db!, "users", user.uid, "data", "snapshot");
+
     const unsubscribe = onSnapshot(
       snapshotRef,
       (snapshot) => {
@@ -130,10 +130,10 @@ export const UserTradingProvider: React.FC<{ children: React.ReactNode }> = ({ c
         setAccountLoading(false);
       }
     );
-    
+
     return () => unsubscribe();
   }, [user]);
-  
+
   // Listen to shadow trades: users/{uid}/shadowTradeHistory
   useEffect(() => {
     if (!user) {
@@ -142,14 +142,14 @@ export const UserTradingProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setShadowTradesError(null);
       return;
     }
-    
+
     setShadowTradesLoading(true);
     setShadowTradesError(null);
-    
+
     // Multi-tenant path: users/{uid}/shadowTradeHistory
-    const tradesRef = collection(db, "users", user.uid, "shadowTradeHistory");
+    const tradesRef = collection(db!, "users", user.uid, "shadowTradeHistory");
     const tradesQuery = query(tradesRef, orderBy("created_at", "desc"), limit(100));
-    
+
     const unsubscribe = onSnapshot(
       tradesQuery,
       (snapshot) => {
@@ -166,10 +166,10 @@ export const UserTradingProvider: React.FC<{ children: React.ReactNode }> = ({ c
         setShadowTradesLoading(false);
       }
     );
-    
+
     return () => unsubscribe();
   }, [user]);
-  
+
   // Listen to trading signals: users/{uid}/signals
   useEffect(() => {
     if (!user) {
@@ -178,14 +178,14 @@ export const UserTradingProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setSignalsError(null);
       return;
     }
-    
+
     setSignalsLoading(true);
     setSignalsError(null);
-    
+
     // Multi-tenant path: users/{uid}/signals
-    const signalsRef = collection(db, "users", user.uid, "signals");
+    const signalsRef = collection(db!, "users", user.uid, "signals");
     const signalsQuery = query(signalsRef, orderBy("timestamp", "desc"), limit(50));
-    
+
     const unsubscribe = onSnapshot(
       signalsQuery,
       (snapshot) => {
@@ -202,19 +202,19 @@ export const UserTradingProvider: React.FC<{ children: React.ReactNode }> = ({ c
         setSignalsLoading(false);
       }
     );
-    
+
     return () => unsubscribe();
   }, [user]);
-  
+
   // Derived data: open shadow trades
   const openShadowTrades = shadowTrades.filter((trade) => trade.status === "OPEN");
-  
+
   // Derived data: total unrealized P&L
   const totalUnrealizedPnL = openShadowTrades.reduce((sum, trade) => {
     const pnl = parseFloat(trade.current_pnl || "0");
     return sum + (isNaN(pnl) ? 0 : pnl);
   }, 0);
-  
+
   return (
     <UserTradingContext.Provider
       value={{

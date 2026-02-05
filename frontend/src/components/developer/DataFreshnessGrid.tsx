@@ -58,7 +58,7 @@ export const DataFreshnessGrid = () => {
     return () => clearInterval(interval);
   }, []);
 
-  const freshnessItems: FreshnessItem[] = streams.map((stream) => ({
+  const freshnessItems: FreshnessItem[] = streams.map((stream: any) => ({
     name: stream.name,
     source: stream.isSupabase ? 'Supabase' : getExchangeById(stream.exchange)?.displayName || stream.exchange,
     lastUpdate: stream.lastMessage,

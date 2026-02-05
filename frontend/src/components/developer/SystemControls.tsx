@@ -4,8 +4,8 @@ import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { useDataStreams } from '@/contexts/DataStreamContext';
-import { 
-  RefreshCw, Pause, Play, Trash2, Download, Settings, 
+import {
+  RefreshCw, Pause, Play, Trash2, Download, Settings,
   Loader2, CheckCircle, XCircle
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -15,8 +15,8 @@ export const SystemControls = () => {
   const [mockMode, setMockMode] = useState(true);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [isPausing, setIsPausing] = useState(false);
-  
-  const allPaused = streams.every(s => s.status === 'paused');
+
+  const allPaused = streams.every((s: any) => s.status === 'paused');
 
   const handleReconnectAll = async () => {
     setIsReconnecting(true);
@@ -52,7 +52,7 @@ export const SystemControls = () => {
   const handleDownloadReport = () => {
     const report = {
       timestamp: new Date().toISOString(),
-      streams: streams.map(s => ({
+      streams: streams.map((s: any) => ({
         id: s.id,
         name: s.name,
         status: s.status,
@@ -83,8 +83,8 @@ export const SystemControls = () => {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
-          <Button 
-            onClick={handleReconnectAll} 
+          <Button
+            onClick={handleReconnectAll}
             disabled={isReconnecting}
             variant="outline"
             className="justify-start"
@@ -97,7 +97,7 @@ export const SystemControls = () => {
             Reconnect All
           </Button>
 
-          <Button 
+          <Button
             onClick={handlePauseResumeAll}
             disabled={isPausing}
             variant="outline"
@@ -144,15 +144,15 @@ export const SystemControls = () => {
           <div className="flex items-center gap-4 text-sm">
             <div className="flex items-center gap-1.5">
               <CheckCircle className="h-4 w-4 text-emerald-500" />
-              <span>{streams.filter(s => s.status === 'connected').length} Connected</span>
+              <span>{streams.filter((s: any) => s.status === 'connected').length} Connected</span>
             </div>
             <div className="flex items-center gap-1.5">
               <Pause className="h-4 w-4 text-blue-500" />
-              <span>{streams.filter(s => s.status === 'paused').length} Paused</span>
+              <span>{streams.filter((s: any) => s.status === 'paused').length} Paused</span>
             </div>
             <div className="flex items-center gap-1.5">
               <XCircle className="h-4 w-4 text-destructive" />
-              <span>{streams.filter(s => s.status === 'error').length} Errors</span>
+              <span>{streams.filter((s: any) => s.status === 'error').length} Errors</span>
             </div>
           </div>
         </div>

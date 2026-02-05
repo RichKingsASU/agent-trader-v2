@@ -56,7 +56,7 @@ export const useAISignals = (): UseAISignalsReturn => {
     setError(null);
 
     try {
-      const functions = getFunctions(app);
+      const functions = getFunctions(app!);
       const generateTradingSignal = httpsCallable<unknown, TradingSignal>(
         functions,
         "generate_trading_signal"
@@ -64,10 +64,10 @@ export const useAISignals = (): UseAISignalsReturn => {
 
       const result = await generateTradingSignal();
       const newSignal = result.data;
-      
+
       // Update state
       setSignal(newSignal);
-      
+
       // Cache to localStorage for warm cache on next mount
       try {
         localStorage.setItem(SIGNAL_CACHE_KEY, JSON.stringify(newSignal));

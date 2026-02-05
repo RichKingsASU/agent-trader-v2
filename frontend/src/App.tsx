@@ -66,8 +66,7 @@ const App = () => (
                       <Route path="/developer" element={<Developer />} />
                       <Route path="/mission-control" element={<MissionControl />} />
                       <Route path="/backtest" element={<BacktestDashboard />} />
-                      <Route path="/lovable/dashboard" element={<LovableDashboardPage />} />
-                      <Route path="/lovable/developer" element={<LovableDeveloperPage />} />
+                      <Route path="/backtesting" element={<Backtesting />} />
                       <Route path="/ops" element={<OpsLayout />}>
                         <Route index element={<OpsOverview />} />
                         <Route path="topics" element={<TopicHealth />} />
@@ -82,8 +81,8 @@ const App = () => (
                       <Route path="*" element={<NotFound />} />
                     </Route>
                   </Routes>
-              </MainLayout>
-            </TooltipProvider>
+                </MainLayout>
+              </TooltipProvider>
             </UserTradingProvider>
           </AuthProvider>
         </BrowserRouter>

@@ -24,8 +24,8 @@ export const ShadowToggle = () => {
 
   useEffect(() => {
     // Subscribe to systemStatus/config document
-    const configRef = doc(db, "systemStatus", "config");
-    
+    const configRef = doc(db!, "systemStatus", "config");
+
     const unsubscribe = onSnapshot(
       configRef,
       (snapshot) => {
@@ -59,15 +59,15 @@ export const ShadowToggle = () => {
 
   const handleToggle = async (checked: boolean) => {
     try {
-      const configRef = doc(db, "systemStatus", "config");
+      const configRef = doc(db!, "systemStatus", "config");
       await updateDoc(configRef, {
         is_shadow_mode: checked,
         updated_at: new Date(),
       });
-      
+
       toast({
         title: checked ? "Shadow Mode Enabled" : "⚠️ Shadow Mode Disabled",
-        description: checked 
+        description: checked
           ? "All trades will be simulated. No broker contact."
           : "⚠️ Trades will be submitted to the broker. Use with caution.",
         variant: checked ? "default" : "destructive",

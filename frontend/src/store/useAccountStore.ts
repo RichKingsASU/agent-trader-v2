@@ -94,7 +94,7 @@ export const useAccountStore = create<AccountState>()(
     {
       name: "alpaca-account-cache",
       version: 1,
-      storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : undefined)),
+      storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : localStorage)),
       partialize: (s) => ({
         equity: s.equity,
         buying_power: s.buying_power,

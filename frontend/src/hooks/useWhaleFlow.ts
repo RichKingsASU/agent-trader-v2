@@ -112,9 +112,9 @@ function determineMoneyness(
 ): "ITM" | "ATM" | "OTM" {
   const threshold = 0.02; // 2% threshold for ATM
   const ratio = strike / underlyingPrice;
-  
+
   if (Math.abs(ratio - 1) < threshold) return "ATM";
-  
+
   if (optionType === "call") {
     return strike > underlyingPrice ? "OTM" : "ITM";
   } else {
@@ -151,7 +151,7 @@ export function useWhaleFlow(maxTrades: number = 100) {
     setError(null);
 
     const q = query(
-      tenantCollection(db, tenantId, "market_intelligence", "options_flow", "live"),
+      tenantCollection(db!, tenantId, "market_intelligence", "options_flow", "live"),
       orderBy("timestamp", "desc"),
       limit(maxTrades)
     );
@@ -163,7 +163,7 @@ export function useWhaleFlow(maxTrades: number = 100) {
 
         querySnapshot.forEach((snap) => {
           const raw = snap.data() as Record<string, unknown>;
-          
+
           const strike = coerceNumber(raw.strike) ?? 0;
           const underlyingPrice = coerceNumber(raw.underlying_price) ?? 0;
           const premium = coerceNumber(raw.premium) ?? 0;
@@ -173,11 +173,11 @@ export function useWhaleFlow(maxTrades: number = 100) {
           const executionSide = (typeof raw.execution_side === "string" ? raw.execution_side.toLowerCase() : "mid") as "ask" | "bid" | "mid";
           const expiryDate = coerceDate(raw.expiry_date);
           const daysToExpiry = coerceNumber(raw.days_to_expiry) ?? calculateDaysToExpiry(expiryDate);
-          
+
           const moneyness = determineMoneyness(strike, underlyingPrice, optionType);
           const otmPercentage = calculateOTMPercentage(strike, underlyingPrice, optionType);
           const sentiment = determineSentiment(optionType, side);
-          
+
           // Golden Sweep: >$1M premium and <14 days to expiry
           const isGoldenSweep = premium > 1_000_000 && daysToExpiry < 14 && daysToExpiry > 0;
 
@@ -222,7 +222,7 @@ export function useWhaleFlow(maxTrades: number = 100) {
   useEffect(() => {
     if (!tenantId) return;
 
-    const statusRef = tenantCollection(db, tenantId, "ops");
+    const statusRef = tenantCollection(db!, tenantId, "ops");
     const q = query(statusRef, limit(1));
 
     const unsubscribe = onSnapshot(
@@ -232,8 +232,8 @@ export function useWhaleFlow(maxTrades: number = 100) {
           const raw = querySnapshot.docs[0].data() as Record<string, unknown>;
           setSystemStatus({
             net_gex: coerceNumber(raw.net_gex) ?? 0,
-            volatility_bias: (typeof raw.volatility_bias === "string" 
-              ? raw.volatility_bias 
+            volatility_bias: (typeof raw.volatility_bias === "string"
+              ? raw.volatility_bias
               : "Neutral") as "Bullish" | "Bearish" | "Neutral",
           });
         }

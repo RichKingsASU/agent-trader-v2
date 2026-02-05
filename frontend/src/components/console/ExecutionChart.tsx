@@ -76,14 +76,17 @@ export const ExecutionChart = ({ symbol, levelsData, currentPrice, vwap, atr, lo
     chartRef.current = chart;
 
     // Add candlestick series
-    const candleSeries = chart.addCandlestickSeries({
-      upColor: "hsl(142, 76%, 36%)",
-      downColor: "hsl(0, 72%, 51%)",
-      borderUpColor: "hsl(142, 76%, 36%)",
-      borderDownColor: "hsl(0, 72%, 51%)",
-      wickUpColor: "hsl(142, 76%, 36%)",
-      wickDownColor: "hsl(0, 72%, 51%)",
-    });
+    const candleSeries = chart.addSeries(
+      (window as any).LightweightCharts?.SeriesType?.Candlestick || 'Candlestick',
+      {
+        upColor: "hsl(142, 76%, 36%)",
+        downColor: "hsl(0, 72%, 51%)",
+        borderUpColor: "hsl(142, 76%, 36%)",
+        borderDownColor: "hsl(0, 72%, 51%)",
+        wickUpColor: "hsl(142, 76%, 36%)",
+        wickDownColor: "hsl(0, 72%, 51%)",
+      }
+    ) as ISeriesApi<"Candlestick">;
 
     candleSeriesRef.current = candleSeries;
 
@@ -92,11 +95,14 @@ export const ExecutionChart = ({ symbol, levelsData, currentPrice, vwap, atr, lo
 
     // Add VWAP line
     if (vwap) {
-      const vwapSeries = chart.addLineSeries({
-        color: "hsl(213, 94%, 58%)",
-        lineWidth: 2,
-        title: "VWAP",
-      });
+      const vwapSeries = chart.addSeries(
+        (window as any).LightweightCharts?.SeriesType?.Line || 'Line',
+        {
+          color: "hsl(213, 94%, 58%)",
+          lineWidth: 2,
+          title: "VWAP",
+        }
+      ) as ISeriesApi<"Line">;
       vwapSeriesRef.current = vwapSeries;
 
       const vwapData = mockData.map(d => ({
@@ -119,14 +125,14 @@ export const ExecutionChart = ({ symbol, levelsData, currentPrice, vwap, atr, lo
         // Calculate distance from current price
         const pctDist = Math.abs((level.price - currentPrice) / currentPrice) * 100;
         const isNear = pctDist <= 0.3; // Within 0.3%
-        
+
         // Only show levels within 2% of current price
         if (pctDist < 2) {
           const isResistance = level.price > currentPrice;
-          const label = isNear 
-            ? `${level.name} ${isResistance ? '(RESISTANCE)' : '(SUPPORT)'}` 
+          const label = isNear
+            ? `${level.name} ${isResistance ? '(RESISTANCE)' : '(SUPPORT)'}`
             : level.name;
-          
+
           candleSeries.createPriceLine({
             price: level.price,
             color: level.color,

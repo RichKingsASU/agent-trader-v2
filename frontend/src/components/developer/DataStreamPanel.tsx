@@ -3,7 +3,7 @@ import { useExchanges } from '@/contexts/ExchangeContext';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { 
+import {
   Radio, BarChart3, Newspaper, BookOpen, TrendingUp, Wallet,
   Pause, Play, RefreshCw, X, Wifi, WifiOff, AlertCircle, Loader2
 } from 'lucide-react';
@@ -37,8 +37,8 @@ export const DataStreamPanel = () => {
 
   return (
     <div className="space-y-3">
-      {streams.map(stream => {
-        const status = statusConfig[stream.status];
+      {streams.map((stream: any) => {
+        const status = statusConfig[stream.status as StreamStatus];
         const exchange = getExchangeById(stream.exchange);
 
         return (

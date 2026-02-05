@@ -1,5 +1,7 @@
 import { useMemo } from "react";
 import { useAccountStore } from "@/store/useAccountStore";
+import { useMarketLiveQuotes } from "./useMarketLiveQuotes";
+import { useMarketQuotes } from "./useMarketQuotes";
 
 export type LiveStatus = "LIVE" | "STALE" | "OFFLINE";
 

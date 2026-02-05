@@ -37,3 +37,6 @@ firebase-debug.log
 packages/*/dist/
 packages/shared-types/dist/
 *.tsbuildinfo
+
+# Local Netlify folder
+.netlify

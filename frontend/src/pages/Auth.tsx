@@ -9,11 +9,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, Mail, Lock, AlertCircle } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { isFirebaseConfigured } from "@/firebase";
 import { allowSignup, isOperatorEmail, getOperatorAccessPolicy } from "@/lib/auth/operatorAccess";
 
 export default function Auth() {
   const navigate = useNavigate();
-  const { user, loading: authLoading, authError } = useAuth();
+  const { user, loading: authLoading, authError, login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -44,14 +45,14 @@ export default function Auth() {
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    
+
     if (!validateInputs()) return;
 
     if (!isOperatorEmail(email)) {
       setError("Not authorized: this email is not on the operator allowlist.");
       return;
     }
-    
+
     setLoading(true);
     const auth = getAuth();
     try {
@@ -60,7 +61,7 @@ export default function Auth() {
     } catch (error: any) {
       setError(error.message);
     }
-    
+
     setLoading(false);
   };
 
@@ -68,7 +69,7 @@ export default function Auth() {
     e.preventDefault();
     setError(null);
     setMessage(null);
-    
+
     if (!validateInputs()) return;
 
     if (!signupEnabled) {
@@ -80,7 +81,7 @@ export default function Auth() {
       setError("Not authorized: this email is not on the operator allowlist.");
       return;
     }
-    
+
     setLoading(true);
     const auth = getAuth();
     try {
@@ -89,7 +90,7 @@ export default function Auth() {
     } catch (error: any) {
       setError(error.message);
     }
-    
+
     setLoading(false);
   };
 

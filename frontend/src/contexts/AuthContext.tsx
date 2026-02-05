@@ -89,7 +89,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Bootstrap: either Firebase auth state, or local/dev state.
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(firebaseAuth!, (user) => {
       setLoading(true);
       setAuthError(null);
 
@@ -103,10 +103,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       setUser({
-        uid: fbUser.uid,
-        email: fbUser.email ?? null,
-        displayName: fbUser.displayName ?? null,
-        photoURL: fbUser.photoURL ?? null,
+        uid: user.uid,
+        email: user.email ?? null,
+        displayName: user.displayName ?? null,
+        photoURL: user.photoURL ?? null,
       });
 
       (async () => {
@@ -118,7 +118,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setProfile(null);
           setIsOperator(false);
           setLoading(false);
-          await signOut(auth);
+          await firebaseSignOut(firebaseAuth!);
           return;
         }
 
@@ -153,7 +153,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    const ref = tenantDoc(firebaseDb, tenantId, "profiles", user.uid);
+    const ref = tenantDoc(firebaseDb!, tenantId, "profiles", user.uid);
     const unsub = onSnapshot(
       ref,
       (snap) => setProfile((snap.exists() ? (snap.data() as UserProfile) : null) ?? null),

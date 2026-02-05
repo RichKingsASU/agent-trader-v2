@@ -20,7 +20,7 @@ export default function Settings() {
   const navigate = useNavigate();
   const { user, tenantId, profile, loading: authLoading } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  
+
   const [displayName, setDisplayName] = useState("");
   const [tradingMode, setTradingMode] = useState("paper");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
@@ -41,7 +41,7 @@ export default function Settings() {
     if (profile) {
       setDisplayName(profile.display_name || "");
       setTradingMode(profile.trading_mode || "paper");
-      setAvatarUrl(profile.avatar_url);
+      setAvatarUrl(profile.avatar_url || null);
     }
   }, [profile]);
 
@@ -115,7 +115,7 @@ export default function Settings() {
 
       setSuccess(true);
       toast.success("Settings saved successfully");
-      
+
       // Clear success message after 3 seconds
       setTimeout(() => setSuccess(false), 3000);
     } catch (err: any) {
@@ -272,8 +272,8 @@ export default function Settings() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  {tradingMode === "paper" 
-                    ? "Practice trading with simulated money" 
+                  {tradingMode === "paper"
+                    ? "Practice trading with simulated money"
                     : "Trade with real money (requires connected broker)"}
                 </p>
               </div>

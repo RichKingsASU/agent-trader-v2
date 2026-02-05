@@ -39,7 +39,7 @@ export const TradingJournal: React.FC = () => {
       return;
     }
 
-    const db = getFirestore(app);
+    const db = getFirestore(app!);
     const journalRef = collection(db, "users", user.uid, "tradeJournal");
     
     // Query journal entries, ordered by most recent

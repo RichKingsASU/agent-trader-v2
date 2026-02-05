@@ -8,7 +8,7 @@ export const StreamMetricsChart = () => {
   const { metricsHistory, streams } = useDataStreams();
 
   const chartData = useMemo(() => {
-    return metricsHistory.slice(-60).map((snapshot, idx) => ({
+    return metricsHistory.slice(-60).map((snapshot: any, idx: number) => ({
       time: idx,
       total: snapshot.totalMessagesPerSecond,
       ...snapshot.streamMetrics
@@ -24,12 +24,12 @@ export const StreamMetricsChart = () => {
   };
 
   const stats = useMemo(() => {
-    const totalMps = streams.reduce((sum, s) => sum + s.messagesPerSecond, 0);
-    const avgLatency = streams.length > 0 
-      ? streams.reduce((sum, s) => sum + s.latencyMs, 0) / streams.length 
+    const totalMps = streams.reduce((sum: number, s: any) => sum + s.messagesPerSecond, 0);
+    const avgLatency = streams.length > 0
+      ? streams.reduce((sum: number, s: any) => sum + s.latencyMs, 0) / streams.length
       : 0;
-    const totalErrors = streams.reduce((sum, s) => sum + s.errorCount, 0);
-    const totalMessages = streams.reduce((sum, s) => sum + s.messageCount, 0);
+    const totalErrors = streams.reduce((sum: number, s: any) => sum + s.errorCount, 0);
+    const totalMessages = streams.reduce((sum: number, s: any) => sum + s.messageCount, 0);
     return { totalMps, avgLatency, totalErrors, totalMessages };
   }, [streams]);
 
@@ -60,9 +60,9 @@ export const StreamMetricsChart = () => {
         <Card>
           <CardContent className="pt-4">
             <div className="text-2xl font-bold font-mono">
-              {stats.totalMessages > 1000000 
-                ? `${(stats.totalMessages / 1000000).toFixed(1)}M` 
-                : stats.totalMessages > 1000 
+              {stats.totalMessages > 1000000
+                ? `${(stats.totalMessages / 1000000).toFixed(1)}M`
+                : stats.totalMessages > 1000
                   ? `${(stats.totalMessages / 1000).toFixed(1)}K`
                   : stats.totalMessages}
             </div>
@@ -85,25 +85,25 @@ export const StreamMetricsChart = () => {
               <AreaChart data={chartData}>
                 <defs>
                   <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3}/>
-                    <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0}/>
+                    <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <XAxis dataKey="time" hide />
                 <YAxis width={40} fontSize={10} tickFormatter={(v) => v.toString()} />
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: 'hsl(var(--card))', 
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'hsl(var(--card))',
                     border: '1px solid hsl(var(--border))',
                     borderRadius: '8px'
                   }}
                   labelFormatter={() => ''}
                 />
-                <Area 
-                  type="monotone" 
-                  dataKey="total" 
-                  stroke="hsl(var(--primary))" 
-                  fill="url(#colorTotal)" 
+                <Area
+                  type="monotone"
+                  dataKey="total"
+                  stroke="hsl(var(--primary))"
+                  fill="url(#colorTotal)"
                   strokeWidth={2}
                   name="Total"
                 />
@@ -124,16 +124,16 @@ export const StreamMetricsChart = () => {
               <BarChart data={chartData.slice(-20)}>
                 <XAxis dataKey="time" hide />
                 <YAxis width={40} fontSize={10} />
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: 'hsl(var(--card))', 
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'hsl(var(--card))',
                     border: '1px solid hsl(var(--border))',
                     borderRadius: '8px'
                   }}
                 />
                 <Legend wrapperStyle={{ fontSize: '10px' }} />
-                {streams.map(stream => (
-                  <Bar 
+                {streams.map((stream: any) => (
+                  <Bar
                     key={stream.id}
                     dataKey={stream.id}
                     stackId="a"

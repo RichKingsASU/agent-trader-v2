@@ -96,7 +96,7 @@ export const useTradeExecutor = (): UseTradeExecutorReturn => {
       }
 
       // Call Firebase Function
-      const functions = getFunctions(app);
+      const functions = getFunctions(app!);
       const executeTrade = httpsCallable<ExecuteTradeRequest, ExecuteTradeResponse>(
         functions,
         "execute_trade"

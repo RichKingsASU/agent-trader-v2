@@ -172,7 +172,7 @@ export const useMarketQuotes = (options: UseMarketQuotesOptions = {}): UseMarket
     setLoading(true);
     setError(null);
 
-    const q = query(tenantCollection(db, tenantId, "live_quotes"));
+    const q = query(tenantCollection(db!, tenantId, "market_intelligence", "quotes", "live"));
     const unsubscribe = onSnapshot(
       q,
       (querySnapshot) => {
@@ -214,10 +214,14 @@ export const useMarketQuotes = (options: UseMarketQuotesOptions = {}): UseMarket
   useEffect(() => {
     if (!subscribeHeartbeat) return;
     if (!tenantId) return;
+    // Assuming 'db' is available in scope, e.g., from a context or global import
+    if (!db) {
+      return; // Do not set error here, as it might override a quote error
+    }
 
     setError((prev) => prev); // no-op; keep prior quote error if any
 
-    const ref = tenantDoc(db, tenantId, "ops", "market_ingest");
+    const ref = tenantDoc(db!, tenantId, "ops", "market_ingest");
     const unsubscribe = onSnapshot(
       ref,
       (snap) => {

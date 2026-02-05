@@ -51,7 +51,7 @@ const createDivergingColorScale = () => {
   return (sentiment: number): string => {
     // Clamp sentiment to [-1, 1]
     const clampedSentiment = Math.max(-1, Math.min(1, sentiment));
-    
+
     if (clampedSentiment < -0.3) {
       // Extreme Bearish: -1.0 to -0.3
       // Map [-1, -0.3] to [0, 1] for interpolation
@@ -144,7 +144,7 @@ const MemoizedTreeMap = memo<{ data: TreeMapData; colorScale: (sentiment: number
   (prevProps, nextProps) => {
     // Custom comparison function: only re-render if sentiment changes by more than 0.05
     if (!prevProps.data.children || !nextProps.data.children) return false;
-    
+
     const hasSignificantChange = prevProps.data.children.some((prevNode, idx) => {
       const nextNode = nextProps.data.children[idx];
       if (!nextNode) return true;
@@ -172,13 +172,13 @@ export const SentimentHeatmap: React.FC<SentimentHeatmapProps> = ({ tenantId }) 
     setError(null);
 
     try {
-      const sectorsQuery = query(collection(db, "marketData", "sentiment", "sectors"));
-      
+      const sectorsQuery = query(collection(db!, "marketData", "sentiment", "sectors"));
+
       const unsubscribe = onSnapshot(
         sectorsQuery,
         (snapshot) => {
           const sectors: SectorSentiment[] = [];
-          
+
           snapshot.forEach((doc) => {
             const data = doc.data();
             sectors.push({
@@ -321,7 +321,7 @@ export const SentimentHeatmap: React.FC<SentimentHeatmapProps> = ({ tenantId }) 
         {/* Diverging Color Legend */}
         <div className="mt-6 p-4 bg-muted/30 rounded-lg border border-border">
           <h4 className="font-semibold mb-3 text-sm">Sentiment Color Scale</h4>
-          
+
           {/* Horizontal Gradient Bar */}
           <div className="relative h-12 rounded-lg overflow-hidden mb-4">
             <div

@@ -53,9 +53,9 @@ export const useShadowTrades = (): UseShadowTradesReturn => {
       return;
     }
 
-    const db = getFirestore(app);
+    const db = getFirestore(app!);
     const shadowTradesRef = collection(db, "shadowTradeHistory");
-    
+
     // Query OPEN shadow trades for current user
     const q = query(
       shadowTradesRef,
@@ -67,7 +67,7 @@ export const useShadowTrades = (): UseShadowTradesReturn => {
       q,
       (snapshot: QuerySnapshot<DocumentData>) => {
         const tradesData: ShadowTrade[] = [];
-        
+
         snapshot.forEach((doc) => {
           const data = doc.data();
           tradesData.push({
@@ -126,7 +126,7 @@ export const useShadowTrades = (): UseShadowTradesReturn => {
     });
 
     summary.totalPnL = totalPnL;
-    
+
     // Calculate weighted average P&L percent
     if (totalCostBasis > 0) {
       summary.totalPnLPercent = (totalPnL / totalCostBasis) * 100;
