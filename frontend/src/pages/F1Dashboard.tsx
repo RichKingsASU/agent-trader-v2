@@ -40,23 +40,28 @@ const F1Dashboard = () => {
   }, [watchlist, secondSymbol]);
 
   // Dynamic snapshot data for indicator cards
+  // Feature flag: VITE_ENABLE_SIMULATED_INDICATORS controls whether to show simulated data
+  const enableSimulated = ((import.meta.env.VITE_ENABLE_SIMULATED_INDICATORS as string | undefined) ?? "false").trim().toLowerCase() === "true";
+
   const [snapshotData, setSnapshotData] = useState({
-    rsi_14: 64,
-    rsi_zone: "Bullish",
-    macd_state: "Bullish",
-    rvol: 1.8,
-    trend_bias: "Bullish",
-    volatility_regime: "Normal",
+    rsi_14: enableSimulated ? 64 : 0,
+    rsi_zone: enableSimulated ? "Bullish" : "Loading...",
+    macd_state: enableSimulated ? "Bullish" : "Loading...",
+    rvol: enableSimulated ? 1.8 : 0,
+    trend_bias: enableSimulated ? "Bullish" : "Loading...",
+    volatility_regime: enableSimulated ? "Normal" : "Loading...",
   });
 
-  // Simulate real-time data updates every 3-5 seconds
+  // Simulate real-time data updates every 3-5 seconds (only if feature enabled)
   useEffect(() => {
+    if (!enableSimulated) return;
+
     const interval = setInterval(() => {
       setSnapshotData((prev) => {
         // Simulate RSI fluctuation
         const rsiDelta = (Math.random() - 0.5) * 8;
         const newRSI = Math.max(30, Math.min(85, prev.rsi_14 + rsiDelta));
-        
+
         let rsiZone = "Neutral";
         if (newRSI >= 70) rsiZone = "Overbought";
         else if (newRSI >= 55) rsiZone = "Bullish";
@@ -97,7 +102,7 @@ const F1Dashboard = () => {
     }, Math.random() * 2000 + 3000); // Random interval 3-5 seconds
 
     return () => clearInterval(interval);
-  }, []);
+  }, [enableSimulated]);
 
   const handleOpenConsole = (symbol: string) => {
     navigate(`/console/${symbol}`);
