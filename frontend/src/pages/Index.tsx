@@ -22,6 +22,7 @@ import { Target, ChevronDown, ChevronUp } from "lucide-react";
 import { toast } from "sonner";
 import { useLayout } from "@/contexts/LayoutContext";
 import { useLiveAccount } from "@/hooks/useLiveAccount";
+import { setBotControls as callBotAPI, panicStop } from "@/services/botControlService";
 
 interface AccountData {
   account_id: string;
@@ -147,21 +148,31 @@ const Index = () => {
     toast.info(`Switched to ${symbol}`);
   };
 
-  const handleControlChange = (controls: typeof botControls) => {
+  const handleControlChange = async (controls: typeof botControls) => {
     setBotControls(controls);
-    toast.success("Bot controls updated");
-    // TODO: POST to /api/bot/set_controls
+    try {
+      await callBotAPI(controls);
+      toast.success("Bot controls updated");
+    } catch (error) {
+      toast.error("Failed to update bot controls");
+      console.error(error);
+    }
   };
 
-  const handlePanic = () => {
-    toast.error("PANIC EXECUTED - All positions liquidated");
-    setBotStatus({ status: "flat" as const });
-    setBotControls({
-      bot_enabled: false,
-      buying_enabled: false,
-      selling_enabled: false,
-    });
-    // TODO: POST to /api/bot/panic
+  const handlePanic = async () => {
+    try {
+      await panicStop();
+      toast.error("PANIC EXECUTED - All positions liquidated");
+      setBotStatus({ status: "flat" as const });
+      setBotControls({
+        bot_enabled: false,
+        buying_enabled: false,
+        selling_enabled: false,
+      });
+    } catch (error) {
+      toast.error("Failed to execute panic stop");
+      console.error(error);
+    }
   };
 
   const handleOpenConsole = () => {
